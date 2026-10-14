@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Sayım</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+*{box-sizing:border-box}
+a{color:#1F5FBF}a:hover{color:#174A94}
+.ic{width:22px;height:22px;flex:none}
+.pill{display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:14px;font-size:12px;font-weight:600}
+.dot{width:8px;height:8px;border-radius:4px;background:currentColor}
+.mono{font-family:'IBM Plex Mono',monospace}
+.it{display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid #E2E5E0}
+.sm{width:44px;height:44px;border-radius:8px;border:1.5px solid #B9BFB7;background:#FFFFFF;color:#14181F;display:flex;align-items:center;justify-content:center}
+.q{width:40px;text-align:center;font-size:18px;font-weight:600}
+</style>
+</helmet>
+<div style="width: 360px; height: 640px; overflow: hidden; display: flex; flex-direction: column; background: #EEF0EC; color: #14181F; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 1.35">
+  <header style="height: 56px; flex: none; background: #1B2430; color: #FFFFFF; display: flex; align-items: center; gap: 4px; padding: 0 12px 0 4px">
+    <a href="Main.dc.html" aria-label="Geri" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: #FFFFFF">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polyline points="15.3333 20.3333 7 12 15.3333 3.6667" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></polyline></svg>
+    </a>
+    <div style="flex: 1; min-width: 0">
+      <div class="mono" style="font-size: 16px; font-weight: 600">SAY-0007</div>
+      <div style="font-size: 12px; color: #B8C0CC">Koridor A · kör sayım</div>
+    </div>
+    <div class="pill" style="background: #22392E; color: #7EE2A8"><span class="dot"></span>Çevrimiçi</div>
+  </header>
+
+  <div style="flex: 1; min-height: 0; padding: 12px; display: flex; flex-direction: column; gap: 10px">
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <div style="display: flex; justify-content: space-between; font-size: 13px; color: #3A414A"><span>Sayılan raf <b>7 / 24</b></span><span>186 okutma</span></div>
+      <div style="height: 8px; border-radius: 4px; background: #E2E5E0; overflow: hidden"><div style="width: 29%; height: 8px; background: #1B2430"></div></div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: #1B2430; color: #FFFFFF; border-radius: 12px">
+      <div style="flex: 1">
+        <div style="font-size: 12px; color: #B8C0CC">Şu an sayılan raf</div>
+        <div class="mono" style="font-size: 24px; font-weight: 600; color: #F2B705">A-03-02</div>
+      </div>
+      <a href="Sayim.dc.html" style="color: #FFFFFF; font-size: 13px; font-weight: 600">Raf değiştir</a>
+    </div>
+
+    <label style="display: flex; align-items: center; gap: 10px; height: 56px; padding: 0 14px; background: #FFFBEB; border: 2px solid #F2B705; border-radius: 10px">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M2 9V6.5C2 4.01 4.01 2 6.5 2H9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M15 2H17.5C19.99 2 22 4.01 22 6.5V9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M22 16V17.5C22 19.99 19.99 22 17.5 22H16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 22H6.5C4.01 22 2 19.99 2 17.5V15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.5 7V9C10.5 10 10 10.5 9 10.5H7C6 10.5 5.5 10 5.5 9V7C5.5 6 6 5.5 7 5.5H9C10 5.5 10.5 6 10.5 7Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M18.5 7V9C18.5 10 18 10.5 17 10.5H15C14 10.5 13.5 10 13.5 9V7C13.5 6 14 5.5 15 5.5H17C18 5.5 18.5 6 18.5 7Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.5 15V17C10.5 18 10 18.5 9 18.5H7C6 18.5 5.5 18 5.5 17V15C5.5 14 6 13.5 7 13.5H9C10 13.5 10.5 14 10.5 15Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M18.5 15V17C18.5 18 18 18.5 17 18.5H15C14 18.5 13.5 18 13.5 17V15C13.5 14 14 13.5 15 13.5H17C18 13.5 18.5 14 18.5 15Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div style="flex: 1">
+        <div style="font-weight: 600">Ürün okutun</div>
+        <div style="font-size: 12px; color: #545C66">Her okutma 1 adet ekler</div>
+      </div>
+    </label>
+
+    <div style="background: #FFFFFF; border: 1px solid #D5D9D3; border-radius: 12px; padding: 8px 12px 0">
+      <div style="font-size: 12px; font-weight: 600; color: #545C66; padding: 2px 0 6px">BU RAFTA SAYILAN</div>
+      <div class="it">
+        <div style="flex: 1; min-width: 0"><div style="font-weight: 600">Yağ filtresi</div><div class="mono" style="font-size: 12px; color: #545C66">YF-1042</div></div>
+        <button type="button" class="sm" aria-label="Azalt"><svg class="ic" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="width: 18px; height: 18px"><path d="M20.75 12C20.75 12.4142 20.4142 12.75 20 12.75H4C3.58579 12.75 3.25 12.4142 3.25 12C3.25 11.5858 3.58579 11.25 4 11.25H20C20.4142 11.25 20.75 11.5858 20.75 12Z" fill="currentColor"/></svg></button>
+        <span class="q mono">12</span>
+        <button type="button" class="sm" aria-label="Artır"><svg class="ic" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="width: 18px; height: 18px"><path d="M11.25 20C11.25 20.4142 11.5858 20.75 12 20.75C12.4142 20.75 12.75 20.4142 12.75 20V12.75H20C20.4142 12.75 20.75 12.4142 20.75 12C20.75 11.5858 20.4142 11.25 20 11.25H12.75V4C12.75 3.58579 12.4142 3.25 12 3.25C11.5858 3.25 11.25 3.58579 11.25 4V11.25H4C3.58579 11.25 3.25 11.5858 3.25 12C3.25 12.4142 3.58579 12.75 4 12.75H11.25V20Z" fill="currentColor"/></svg></button>
+      </div>
+      <div class="it">
+        <div style="flex: 1; min-width: 0"><div style="font-weight: 600">Hava filtresi</div><div class="mono" style="font-size: 12px; color: #545C66">HF-0310</div></div>
+        <button type="button" class="sm" aria-label="Azalt"><svg class="ic" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="width: 18px; height: 18px"><path d="M20.75 12C20.75 12.4142 20.4142 12.75 20 12.75H4C3.58579 12.75 3.25 12.4142 3.25 12C3.25 11.5858 3.58579 11.25 4 11.25H20C20.4142 11.25 20.75 11.5858 20.75 12Z" fill="currentColor"/></svg></button>
+        <span class="q mono">8</span>
+        <button type="button" class="sm" aria-label="Artır"><svg class="ic" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="width: 18px; height: 18px"><path d="M11.25 20C11.25 20.4142 11.5858 20.75 12 20.75C12.4142 20.75 12.75 20.4142 12.75 20V12.75H20C20.4142 12.75 20.75 12.4142 20.75 12C20.75 11.5858 20.4142 11.25 20 11.25H12.75V4C12.75 3.58579 12.4142 3.25 12 3.25C11.5858 3.25 11.25 3.58579 11.25 4V11.25H4C3.58579 11.25 3.25 11.5858 3.25 12C3.25 12.4142 3.58579 12.75 4 12.75H11.25V20Z" fill="currentColor"/></svg></button>
+      </div>
+    </div>
+  </div>
+
+  <footer style="flex: none; padding: 12px; background: #FFFFFF; border-top: 1px solid #D5D9D3; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px">
+    <a href="Sayim.dc.html" style="display: flex; align-items: center; justify-content: center; height: 52px; border-radius: 10px; background: #FFFFFF; border: 1.5px solid #1B2430; color: #14181F; font-weight: 600; font-size: 15px; text-decoration: none">Sonraki raf</a>
+    <a href="SayimFark.dc.html" style="display: flex; align-items: center; justify-content: center; height: 52px; border-radius: 10px; background: #F2B705; color: #14181F; font-weight: 700; font-size: 15px; text-decoration: none">Sayımı bitir</a>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":360,"height":640}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

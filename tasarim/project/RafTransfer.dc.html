@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Raf transferi</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+*{box-sizing:border-box}
+a{color:#1F5FBF}a:hover{color:#174A94}
+.ic{width:22px;height:22px;flex:none}
+.pill{display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:14px;font-size:12px;font-weight:600}
+.dot{width:8px;height:8px;border-radius:4px;background:currentColor}
+.mono{font-family:'IBM Plex Mono',monospace}
+.st{display:flex;align-items:center;gap:12px;padding:12px 14px;background:#FFFFFF;border:1px solid #D5D9D3;border-radius:12px}
+.n{width:32px;height:32px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;flex:none}
+.done{background:#E3F2EA;color:#14583A}
+.k{font-size:12px;color:#545C66}
+.v{font-size:17px;font-weight:600}
+.ed{font-size:13px;font-weight:600}
+</style>
+</helmet>
+<div style="width: 360px; height: 640px; overflow: hidden; display: flex; flex-direction: column; background: #EEF0EC; color: #14181F; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 1.35">
+  <header style="height: 56px; flex: none; background: #1B2430; color: #FFFFFF; display: flex; align-items: center; gap: 4px; padding: 0 12px 0 4px">
+    <a href="Main.dc.html" aria-label="Geri" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: #FFFFFF">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polyline points="15.3333 20.3333 7 12 15.3333 3.6667" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></polyline></svg>
+    </a>
+    <div style="flex: 1; font-size: 17px; font-weight: 600">Raf Transferi</div>
+    <div class="pill" style="background: #22392E; color: #7EE2A8"><span class="dot"></span>Çevrimiçi</div>
+  </header>
+
+  <div style="flex: 1; min-height: 0; padding: 12px; display: flex; flex-direction: column; gap: 8px">
+    <div class="st">
+      <div class="n done">✓</div>
+      <div style="flex: 1"><div class="k">Kaynak raf</div><div class="v mono">A-05-02</div></div>
+      <a href="RafTransfer.dc.html" class="ed">Değiştir</a>
+    </div>
+    <div class="st">
+      <div class="n done">✓</div>
+      <div style="flex: 1; min-width: 0"><div class="k">Ürün · rafta 10 takım</div><div class="v">Fren balatası ön takım</div><div class="mono" style="font-size: 12px; color: #545C66">FB-2210</div></div>
+    </div>
+    <div class="st">
+      <div class="n done">✓</div>
+      <div style="flex: 1"><div class="k">Miktar</div><div class="v mono">4 takım</div></div>
+      <a href="RafTransfer.dc.html" class="ed">Değiştir</a>
+    </div>
+
+    <div style="display: flex; justify-content: center; color: #545C66" aria-hidden="true">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" style="transform: rotate(90deg)"><path fill-rule="evenodd" clip-rule="evenodd" d="M20.6865 13.698C20.5668 13.4258 20.2974 13.25 20 13.25L4.00001 13.25C3.5858 13.25 3.25001 13.5858 3.25001 14C3.25001 14.4142 3.5858 14.75 4.00001 14.75L18.2951 14.75L13.9472 19.4932C13.6673 19.7985 13.6879 20.273 13.9932 20.5529C14.2986 20.8328 14.773 20.8121 15.0529 20.5068L20.5529 14.5068C20.7539 14.2876 20.8063 13.9703 20.6865 13.698Z" fill="currentColor"/></svg>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 12px; padding: 16px 14px; background: #FFFBEB; border: 2px dashed #C99600; border-radius: 12px">
+      <div class="n" style="background: #1B2430; color: #F2B705">4</div>
+      <div style="flex: 1">
+        <div class="v">Hedef rafı okutun</div>
+        <div class="k">Raf etiketindeki barkodu okutun ya da yazın</div>
+      </div>
+      <svg class="ic" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="width: 28px; height: 28px; color: #7A5A00"><path d="M2 9V6.5C2 4.01 4.01 2 6.5 2H9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M15 2H17.5C19.99 2 22 4.01 22 6.5V9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M22 16V17.5C22 19.99 19.99 22 17.5 22H16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 22H6.5C4.01 22 2 19.99 2 17.5V15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.5 7V9C10.5 10 10 10.5 9 10.5H7C6 10.5 5.5 10 5.5 9V7C5.5 6 6 5.5 7 5.5H9C10 5.5 10.5 6 10.5 7Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M18.5 7V9C18.5 10 18 10.5 17 10.5H15C14 10.5 13.5 10 13.5 9V7C13.5 6 14 5.5 15 5.5H17C18 5.5 18.5 6 18.5 7Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.5 15V17C10.5 18 10 18.5 9 18.5H7C6 18.5 5.5 18 5.5 17V15C5.5 14 6 13.5 7 13.5H9C10 13.5 10.5 14 10.5 15Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M18.5 15V17C18.5 18 18 18.5 17 18.5H15C14 18.5 13.5 18 13.5 17V15C13.5 14 14 13.5 15 13.5H17C18 13.5 18.5 14 18.5 15Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+  </div>
+
+  <footer style="flex: none; padding: 12px; background: #FFFFFF; border-top: 1px solid #D5D9D3">
+    <button type="button" disabled style="width: 100%; height: 52px; border: 0; border-radius: 10px; background: #DCE0DA; color: #5E6670; font-family: 'IBM Plex Sans', sans-serif; font-weight: 700; font-size: 16px">Transferi kaydet</button>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":360,"height":640}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

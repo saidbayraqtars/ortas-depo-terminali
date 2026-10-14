@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Sayım farkı</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+*{box-sizing:border-box}
+a{color:#1F5FBF}a:hover{color:#174A94}
+.ic{width:22px;height:22px;flex:none}
+.pill{display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:14px;font-size:12px;font-weight:600}
+.dot{width:8px;height:8px;border-radius:4px;background:currentColor}
+.mono{font-family:'IBM Plex Mono',monospace}
+.stat{padding:10px 12px;background:#FFFFFF;border:1px solid #D5D9D3;border-radius:12px}
+.stat span{display:block;font-size:12px;color:#545C66}
+.stat b{font-size:22px;font-weight:700}
+.tr{display:grid;grid-template-columns:minmax(0,1fr) 44px 52px 44px;gap:6px;align-items:center;padding:9px 0;border-top:1px solid #E2E5E0;font-size:14px}
+.th{display:grid;grid-template-columns:minmax(0,1fr) 44px 52px 44px;gap:6px;font-size:11px;font-weight:600;color:#545C66;padding-bottom:6px}
+.r{text-align:right}
+</style>
+</helmet>
+<div style="width: 360px; height: 640px; overflow: hidden; display: flex; flex-direction: column; background: #EEF0EC; color: #14181F; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 1.35">
+  <header style="height: 56px; flex: none; background: #1B2430; color: #FFFFFF; display: flex; align-items: center; gap: 4px; padding: 0 12px 0 4px">
+    <a href="Sayim.dc.html" aria-label="Geri" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: #FFFFFF">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polyline points="15.3333 20.3333 7 12 15.3333 3.6667" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></polyline></svg>
+    </a>
+    <div style="flex: 1; min-width: 0">
+      <div style="font-size: 16px; font-weight: 600">Sayım sonucu</div>
+      <div class="mono" style="font-size: 12px; color: #B8C0CC">SAY-0007 · Koridor A</div>
+    </div>
+    <div class="pill" style="background: #22392E; color: #7EE2A8"><span class="dot"></span>Çevrimiçi</div>
+  </header>
+
+  <div style="flex: 1; min-height: 0; padding: 12px; display: flex; flex-direction: column; gap: 10px">
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px">
+      <div class="stat"><span>Kalem</span><b class="mono">52</b></div>
+      <div class="stat"><span>Eşleşen</span><b class="mono">49</b></div>
+      <div class="stat" style="background: #FFF1E0; border-color: #A84A00"><span style="color: #7A3600">Farklı</span><b class="mono" style="color: #7A3600">3</b></div>
+    </div>
+
+    <div style="background: #FFFFFF; border: 1px solid #D5D9D3; border-radius: 12px; padding: 10px 12px 2px">
+      <div class="th"><span>ÜRÜN · RAF</span><span class="r">VEGA</span><span class="r">SAYILAN</span><span class="r">FARK</span></div>
+      <div class="tr">
+        <div style="min-width: 0"><div style="font-weight: 600">Hava filtresi</div><div class="mono" style="font-size: 12px; color: #545C66">HF-0310 · A-03-02</div></div>
+        <span class="mono r">10</span><span class="mono r">8</span><b class="mono r" style="color: #A84A00">−2</b>
+      </div>
+      <div class="tr">
+        <div style="min-width: 0"><div style="font-weight: 600">Silecek 600 mm</div><div class="mono" style="font-size: 12px; color: #545C66">SL-600 · A-04-01</div></div>
+        <span class="mono r">6</span><span class="mono r">7</span><b class="mono r" style="color: #1F5FBF">+1</b>
+      </div>
+      <div class="tr">
+        <div style="min-width: 0"><div style="font-weight: 600">Polen filtresi</div><div class="mono" style="font-size: 12px; color: #545C66">PF-0207 · A-02-03</div></div>
+        <span class="mono r">5</span><span class="mono r">0</span><b class="mono r" style="color: #A84A00">−5</b>
+      </div>
+    </div>
+
+    <div style="display: flex; gap: 10px; padding: 10px 12px; border-radius: 10px; background: #E6EEF9; color: #163F7F; font-size: 13px">
+      <span>Onaydan sonra farklar Vega'ya sayım fişi olarak aktarılır. Kör sayımda Vega miktarı yalnız bu ekranda görünür.</span>
+    </div>
+  </div>
+
+  <footer style="flex: none; padding: 12px; background: #FFFFFF; border-top: 1px solid #D5D9D3; display: flex; flex-direction: column; gap: 8px">
+    <a href="Sayim.dc.html" style="display: flex; align-items: center; justify-content: center; height: 48px; border-radius: 10px; background: #FFFFFF; border: 1.5px solid #1B2430; color: #14181F; font-weight: 600; font-size: 15px; text-decoration: none">Farklı 3 kalemi tekrar say</a>
+    <a href="Main.dc.html" style="display: flex; align-items: center; justify-content: center; height: 52px; border-radius: 10px; background: #F2B705; color: #14181F; font-weight: 700; font-size: 16px; text-decoration: none">Onayla, Vega'ya gönder</a>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":360,"height":640}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

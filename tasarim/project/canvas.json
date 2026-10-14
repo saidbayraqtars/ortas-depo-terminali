@@ -1,0 +1,36 @@
+{
+  "v": 3,
+  "createdOnFiles": {"v": 1, "at": "2026-10-14T13:05:00Z"},
+  "title": "Ortaş Depo Terminali",
+  "launch": {"view": "canvas"},
+  "pages": [],
+  "boards": {
+    "Giris.dc.html": {"x": 0, "y": 0, "w": 360, "h": 640, "title": "1 · Giriş"},
+    "Main.dc.html": {"x": 440, "y": 0, "w": 360, "h": 640, "title": "2 · Ana menü", "is_interactive": true},
+    "RafaKaldirBelge.dc.html": {"x": 880, "y": 0, "w": 360, "h": 640, "title": "3 · Rafa kaldır: belge seç", "is_interactive": true},
+    "RafaKaldirOkut.dc.html": {"x": 1320, "y": 0, "w": 360, "h": 640, "title": "4 · Rafa kaldır: okut", "is_interactive": true},
+    "RafHata.dc.html": {"x": 1760, "y": 0, "w": 360, "h": 640, "title": "5 · Uyarı: farklı raf", "is_interactive": true},
+    "UrunSorgu.dc.html": {"x": 0, "y": 1000, "w": 360, "h": 640, "title": "6 · Ürün sorgu", "is_interactive": true},
+    "RafTransfer.dc.html": {"x": 440, "y": 1000, "w": 360, "h": 640, "title": "7 · Raf transferi", "is_interactive": true},
+    "Sayim.dc.html": {"x": 880, "y": 1000, "w": 360, "h": 640, "title": "8 · Sayım", "is_interactive": true},
+    "SayimFark.dc.html": {"x": 1320, "y": 1000, "w": 360, "h": 640, "title": "9 · Sayım farkı", "is_interactive": true},
+    "Senkron.dc.html": {"x": 1760, "y": 1000, "w": 360, "h": 640, "title": "10 · Çevrimdışı kuyruk", "is_interactive": true}
+  },
+  "order": [
+    "Giris.dc.html",
+    "Main.dc.html",
+    "RafaKaldirBelge.dc.html",
+    "RafaKaldirOkut.dc.html",
+    "RafHata.dc.html",
+    "UrunSorgu.dc.html",
+    "RafTransfer.dc.html",
+    "Sayim.dc.html",
+    "SayimFark.dc.html",
+    "Senkron.dc.html"
+  ],
+  "notes": {
+    "row1": {"x": 0, "y": -260, "text": "Giriş, menü ve rafa kaldırma", "kind": "title1", "maxW": 2120},
+    "row2": {"x": 0, "y": 740, "text": "Sorgu, transfer, sayım, çevrimdışı", "kind": "title1", "maxW": 2120}
+  },
+  "designSystems": []
+}

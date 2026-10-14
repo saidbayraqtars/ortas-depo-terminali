@@ -1,0 +1,19 @@
+# Android derleme çıktıları
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml
+
+# İmza anahtarı ve parolası asla depoya girmez
+android/keystore/
+android/keystore.properties
+*.jks
+*.keystore
+
+# APK'lar GitHub Releases'e konur
+cikti/
+
+.claude/

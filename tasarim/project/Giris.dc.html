@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Giriş</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+*{box-sizing:border-box}
+a{color:#1F5FBF}a:hover{color:#174A94}
+.fld{display:flex;flex-direction:column;gap:6px}
+.fld label{font-size:13px;font-weight:600;color:#3A414A}
+.fld input,.fld select{height:52px;border:1.5px solid #B9BFB7;border-radius:10px;padding:0 14px;font-family:'IBM Plex Sans',sans-serif;font-size:16px;color:#14181F;background:#FFFFFF}
+</style>
+</helmet>
+<div style="width: 360px; height: 640px; overflow: hidden; display: flex; flex-direction: column; background: #1B2430; color: #14181F; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 1.35">
+  <div style="flex: none; padding: 48px 24px 28px; display: flex; flex-direction: column; gap: 14px; color: #FFFFFF">
+    <div style="width: 56px; height: 56px; border-radius: 14px; background: #F2B705; color: #1B2430; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 26px">O</div>
+    <div>
+      <div style="font-size: 26px; font-weight: 700; letter-spacing: 0.01em">ORTAŞ</div>
+      <div style="font-size: 15px; color: #B8C0CC">Depo Terminali</div>
+    </div>
+  </div>
+
+  <div style="flex: 1; min-height: 0; background: #EEF0EC; border-radius: 20px 20px 0 0; padding: 24px; display: flex; flex-direction: column; gap: 16px">
+    <div class="fld">
+      <label for="kul">Kullanıcı</label>
+      <input id="kul" type="text" value="ismail">
+    </div>
+    <div class="fld">
+      <label for="pin">Şifre</label>
+      <input id="pin" type="password" value="123456">
+    </div>
+    <div class="fld">
+      <label for="depo">Depo</label>
+      <select id="depo"><option>Merkez Depo</option><option>Yedek Parça Deposu</option></select>
+    </div>
+    <a href="Main.dc.html" style="display: flex; align-items: center; justify-content: center; height: 54px; margin-top: 6px; border-radius: 10px; background: #F2B705; color: #14181F; font-weight: 700; font-size: 17px; text-decoration: none">Giriş yap</a>
+    <div style="margin-top: auto; display: flex; justify-content: space-between; font-size: 12px; color: #545C66">
+      <span>Cihaz: TRM-01</span>
+      <span>Sürüm 1.0.0</span>
+    </div>
+    <div style="font-size: 12px; color: #545C66">İnternet yoksa son giriş yapılan kullanıcıyla çevrimdışı açılır.</div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":360,"height":640}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

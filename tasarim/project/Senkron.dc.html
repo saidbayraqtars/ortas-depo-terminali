@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Çevrimdışı kuyruk</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+*{box-sizing:border-box}
+a{color:#1F5FBF}a:hover{color:#174A94}
+.ic{width:22px;height:22px;flex:none}
+.pill{display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:14px;font-size:12px;font-weight:600}
+.dot{width:8px;height:8px;border-radius:4px;background:currentColor}
+.mono{font-family:'IBM Plex Mono',monospace}
+.q{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-top:1px solid #E2E5E0}
+.q .t{flex:1;min-width:0}
+.q .t b{display:block;font-size:14px;font-weight:600}
+.q .t span{display:block;font-size:12px;color:#545C66}
+.tag{flex:none;height:24px;padding:0 8px;border-radius:12px;font-size:11px;font-weight:700;display:flex;align-items:center}
+.wait{background:#EEF0EC;color:#3A414A}
+.bad{background:#FDECEA;color:#9A1C12}
+</style>
+</helmet>
+<div style="width: 360px; height: 640px; overflow: hidden; display: flex; flex-direction: column; background: #EEF0EC; color: #14181F; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 1.35">
+  <header style="height: 56px; flex: none; background: #1B2430; color: #FFFFFF; display: flex; align-items: center; gap: 4px; padding: 0 12px 0 4px">
+    <a href="Main.dc.html" aria-label="Geri" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: #FFFFFF">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polyline points="15.3333 20.3333 7 12 15.3333 3.6667" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></polyline></svg>
+    </a>
+    <div style="flex: 1; font-size: 17px; font-weight: 600">Gönderim Kuyruğu</div>
+    <div class="pill" style="background: #4A2E12; color: #FFB86B"><span class="dot"></span>Çevrimdışı</div>
+  </header>
+
+  <div style="flex: 1; min-height: 0; padding: 12px; display: flex; flex-direction: column; gap: 10px">
+    <div style="display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; background: #FFF1E0; border: 1.5px solid #A84A00; border-radius: 12px; color: #4D2300">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="width: 26px; height: 26px; color: #A84A00"><path d="M1.53033 0.46967C1.23744 0.176777 0.762563 0.176777 0.46967 0.46967C0.176777 0.762563 0.176777 1.23744 0.46967 1.53033L4.14206 5.20272C2.78413 5.93942 1.546 6.87123 0.46432 7.97507C0.174412 8.27092 0.179227 8.74577 0.475075 9.03568C0.770924 9.32559 1.24577 9.32077 1.53568 9.02493C2.61576 7.92272 3.86948 7.00963 5.25359 6.31425L7.92568 8.98635C6.44921 9.54018 5.11311 10.3859 3.98463 11.4532C3.6837 11.7379 3.67049 12.2126 3.95512 12.5135C4.23975 12.8144 4.71444 12.8276 5.01537 12.543C6.16754 11.4532 7.56373 10.631 9.10928 10.1699L12.1921 13.2528C12.1284 13.2509 12.0643 13.25 11.9999 13.25C10.2928 13.25 8.85429 13.9067 7.73739 14.9525C7.43503 15.2356 7.41942 15.7102 7.70253 16.0126C7.98563 16.315 8.46025 16.3306 8.76261 16.0475C9.6272 15.2379 10.7073 14.75 11.9999 14.75C12.8577 14.75 13.6157 14.9645 14.2771 15.3378L22.4697 23.5303C22.7626 23.8232 23.2374 23.8232 23.5303 23.5303C23.8232 23.2374 23.8232 22.7626 23.5303 22.4697L15.2801 14.2194C15.2725 14.2115 15.2648 14.2038 15.2569 14.1962L9.87116 8.8105C9.86507 8.80419 9.85887 8.79799 9.85257 8.79191L5.95099 4.89033C5.94296 4.88191 5.93475 4.8737 5.92637 4.86571L1.53033 0.46967Z" fill="currentColor"/><path d="M12 4.75C10.815 4.75 9.6649 4.88038 8.5649 5.13018C8.16097 5.22191 7.75916 4.96883 7.66743 4.5649C7.5757 4.16097 7.82878 3.75916 8.23271 3.66743C9.4432 3.39253 10.7048 3.25 12 3.25C16.5037 3.25 20.5947 4.97382 23.5357 7.97507C23.8256 8.27092 23.8208 8.74577 23.5249 9.03568C23.2291 9.32559 22.7542 9.32077 22.4643 9.02493C19.815 6.32136 16.1145 4.75 12 4.75Z" fill="currentColor"/><path d="M12.3039 8.97846C12.3436 8.56616 12.71 8.26413 13.1223 8.30386C15.7771 8.55967 18.1732 9.71184 20.0155 11.4552C20.3164 11.74 20.3295 12.2146 20.0448 12.5155C19.76 12.8164 19.2854 12.8295 18.9845 12.5448C17.374 11.0208 15.2865 10.0193 12.9785 9.79694C12.5662 9.75721 12.2641 9.39077 12.3039 8.97846Z" fill="currentColor"/><path d="M11 19C11 18.4477 11.4477 18 12 18C12.5523 18 13.0001 18.4477 13.0001 19C13.0001 19.5523 12.5524 20 12.0001 20C11.4478 20 11 19.5523 11 19Z" fill="currentColor"/></svg>
+      <div>
+        <div style="font-weight: 700">Bağlantı yok, çalışmaya devam edin</div>
+        <div style="font-size: 13px">İşlemler cihazda saklanıyor. Bağlantı gelince kendiliğinden gönderilir.</div>
+      </div>
+    </div>
+
+    <div style="background: #FFFFFF; border: 1px solid #D5D9D3; border-radius: 12px; padding: 8px 14px 0">
+      <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; color: #545C66; padding: 2px 0 6px"><span>BEKLEYEN 4 İŞLEM</span><span>En eski 12:44</span></div>
+      <div class="q">
+        <div class="t"><b>Rafa kaldırma · 12 adet</b><span class="mono">YF-1042 → A-03-02 · 12:44</span></div>
+        <div class="tag wait">Bekliyor</div>
+      </div>
+      <div class="q">
+        <div class="t"><b>Raf transferi · 4 takım</b><span class="mono">FB-2210 A-05-02 → C-02-03 · 12:47</span></div>
+        <div class="tag wait">Bekliyor</div>
+      </div>
+      <div class="q">
+        <div class="t"><b>Sayım satırı · 8 adet</b><span class="mono">HF-0310 · A-03-02 · 12:52</span></div>
+        <div class="tag wait">Bekliyor</div>
+      </div>
+      <div class="q">
+        <div class="t"><b>Rafa kaldırma · 3 adet</b><span style="color: #9A1C12">Belge Vega'da kapatılmış. Kontrol gerekli.</span></div>
+        <div class="tag bad">Hata</div>
+      </div>
+    </div>
+
+    <div style="font-size: 12px; color: #545C66">Son başarılı eşitleme: 14.10 · 12:40. Ürün ve raf listesi cihazda güncel tutulur, sorgular internetsiz de çalışır.</div>
+  </div>
+
+  <footer style="flex: none; padding: 12px; background: #FFFFFF; border-top: 1px solid #D5D9D3">
+    <a href="Senkron.dc.html" style="display: flex; align-items: center; justify-content: center; gap: 8px; height: 52px; border-radius: 10px; background: #FFFFFF; border: 1.5px solid #1B2430; color: #14181F; font-weight: 600; font-size: 16px; text-decoration: none">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M2.93077 11.2003C3.00244 6.23968 7.07619 2.25 12.0789 2.25C15.3873 2.25 18.287 3.99427 19.8934 6.60721C20.1103 6.96007 20.0001 7.42199 19.6473 7.63892C19.2944 7.85585 18.8325 7.74565 18.6156 7.39279C17.2727 5.20845 14.8484 3.75 12.0789 3.75C7.8945 3.75 4.50372 7.0777 4.431 11.1982L4.83138 10.8009C5.12542 10.5092 5.60029 10.511 5.89203 10.8051C6.18377 11.0991 6.18191 11.574 5.88787 11.8657L4.20805 13.5324C3.91565 13.8225 3.44398 13.8225 3.15157 13.5324L1.47176 11.8657C1.17772 11.574 1.17585 11.0991 1.46759 10.8051C1.75933 10.5111 2.2342 10.5092 2.52824 10.8009L2.93077 11.2003ZM19.7864 10.4666C20.0786 10.1778 20.5487 10.1778 20.8409 10.4666L22.5271 12.1333C22.8217 12.4244 22.8245 12.8993 22.5333 13.1939C22.2421 13.4885 21.7673 13.4913 21.4727 13.2001L21.0628 12.7949C20.9934 17.7604 16.9017 21.75 11.8825 21.75C8.56379 21.75 5.65381 20.007 4.0412 17.3939C3.82366 17.0414 3.93307 16.5793 4.28557 16.3618C4.63806 16.1442 5.10016 16.2536 5.31769 16.6061C6.6656 18.7903 9.09999 20.25 11.8825 20.25C16.0887 20.25 19.4922 16.9171 19.5625 12.7969L19.1546 13.2001C18.86 13.4913 18.3852 13.4885 18.094 13.1939C17.8028 12.8993 17.8056 12.4244 18.1002 12.1333L19.7864 10.4666Z" fill="currentColor"/></svg>
+      Şimdi dene
+    </a>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":360,"height":640}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

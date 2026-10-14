@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Rafa kaldır: belge seç</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+*{box-sizing:border-box}
+a{color:#1F5FBF}a:hover{color:#174A94}
+.ic{width:22px;height:22px;flex:none}
+.pill{display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:14px;font-size:12px;font-weight:600}
+.dot{width:8px;height:8px;border-radius:4px;background:currentColor}
+.doc{display:flex;flex-direction:column;gap:8px;padding:12px 14px;background:#FFFFFF;border:1px solid #D5D9D3;border-radius:12px;color:#14181F;text-decoration:none}
+.doc:hover{border-color:#1B2430;color:#14181F}
+.mono{font-family:'IBM Plex Mono',monospace}
+.trk{height:8px;border-radius:4px;background:#E2E5E0;overflow:hidden}
+.trk div{height:8px;background:#1C7A4A}
+</style>
+</helmet>
+<div style="width: 360px; height: 640px; overflow: hidden; display: flex; flex-direction: column; background: #EEF0EC; color: #14181F; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 1.35">
+  <header style="height: 56px; flex: none; background: #1B2430; color: #FFFFFF; display: flex; align-items: center; gap: 4px; padding: 0 12px 0 4px">
+    <a href="Main.dc.html" aria-label="Geri" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: #FFFFFF">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polyline points="15.3333 20.3333 7 12 15.3333 3.6667" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></polyline></svg>
+    </a>
+    <div style="flex: 1; font-size: 17px; font-weight: 600">Rafa Kaldır</div>
+    <div class="pill" style="background: #22392E; color: #7EE2A8"><span class="dot"></span>Çevrimiçi</div>
+  </header>
+
+  <div style="flex: 1; min-height: 0; padding: 12px; display: flex; flex-direction: column; gap: 10px">
+    <label style="display: flex; align-items: center; gap: 10px; height: 48px; padding: 0 14px; background: #FFFFFF; border: 1.5px solid #B9BFB7; border-radius: 10px; color: #545C66">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="width: 20px; height: 20px"><path fill-rule="evenodd" clip-rule="evenodd" d="M11.5 2.75C6.66751 2.75 2.75 6.66751 2.75 11.5C2.75 16.3325 6.66751 20.25 11.5 20.25C16.3325 20.25 20.25 16.3325 20.25 11.5C20.25 6.66751 16.3325 2.75 11.5 2.75ZM1.25 11.5C1.25 5.83908 5.83908 1.25 11.5 1.25C17.1609 1.25 21.75 5.83908 21.75 11.5C21.75 14.0605 20.8111 16.4017 19.2589 18.1982L22.5303 21.4697C22.8232 21.7626 22.8232 22.2374 22.5303 22.5303C22.2374 22.8232 21.7626 22.8232 21.4697 22.5303L18.1982 19.2589C16.4017 20.8111 14.0605 21.75 11.5 21.75C5.83908 21.75 1.25 17.1609 1.25 11.5Z" fill="currentColor"/></svg>
+      <input type="text" placeholder="Belge no, tedarikçi ya da okutun" aria-label="Belge ara" style="flex: 1; min-width: 0; border: 0; outline: none; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; color: #14181F; background: transparent">
+    </label>
+
+    <div role="tablist" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; background: #E2E5E0; border-radius: 10px; padding: 4px">
+      <button type="button" role="tab" aria-selected="true" style="height: 40px; border: 0; border-radius: 8px; background: #FFFFFF; font-family: 'IBM Plex Sans', sans-serif; font-size: 14px; font-weight: 600; color: #14181F">Bekleyen (3)</button>
+      <button type="button" role="tab" aria-selected="false" style="height: 40px; border: 0; border-radius: 8px; background: transparent; font-family: 'IBM Plex Sans', sans-serif; font-size: 14px; font-weight: 500; color: #545C66">Tamamlanan</button>
+    </div>
+
+    <div style="font-size: 12px; color: #545C66">Vega'da mal kabulü yapılmış, rafa kaldırılmayı bekleyen belgeler</div>
+
+    <a class="doc" href="RafaKaldirOkut.dc.html">
+      <div style="display: flex; justify-content: space-between; align-items: baseline">
+        <span class="mono" style="font-weight: 600; font-size: 15px">İRS-004182</span>
+        <span style="font-size: 12px; color: #545C66">14.10.2026</span>
+      </div>
+      <div style="font-weight: 600">Kuzey Oto Parça Ltd.</div>
+      <div class="trk"><div style="width: 30%"></div></div>
+      <div style="display: flex; justify-content: space-between; font-size: 13px; color: #3A414A">
+        <span>12 / 40 kalem rafta</span><span style="font-weight: 600; color: #A84A00">28 bekliyor</span>
+      </div>
+    </a>
+
+    <a class="doc" href="RafaKaldirOkut.dc.html">
+      <div style="display: flex; justify-content: space-between; align-items: baseline">
+        <span class="mono" style="font-weight: 600; font-size: 15px">İRS-004179</span>
+        <span style="font-size: 12px; color: #545C66">14.10.2026</span>
+      </div>
+      <div style="font-weight: 600">Karadeniz Filtre San.</div>
+      <div class="trk"><div style="width: 0%"></div></div>
+      <div style="display: flex; justify-content: space-between; font-size: 13px; color: #3A414A">
+        <span>0 / 16 kalem rafta</span><span style="font-weight: 600; color: #A84A00">16 bekliyor</span>
+      </div>
+    </a>
+
+    <a class="doc" href="RafaKaldirOkut.dc.html">
+      <div style="display: flex; justify-content: space-between; align-items: baseline">
+        <span class="mono" style="font-weight: 600; font-size: 15px">İRS-004171</span>
+        <span style="font-size: 12px; color: #545C66">13.10.2026</span>
+      </div>
+      <div style="font-weight: 600">Anadolu Fren Sistemleri</div>
+      <div class="trk"><div style="width: 88%"></div></div>
+      <div style="display: flex; justify-content: space-between; font-size: 13px; color: #3A414A">
+        <span>22 / 25 kalem rafta</span><span style="font-weight: 600; color: #A84A00">3 bekliyor</span>
+      </div>
+    </a>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":360,"height":640}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

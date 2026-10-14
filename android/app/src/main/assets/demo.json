@@ -1,0 +1,63 @@
+{
+  "_not": "Demo modu örnek verisi. Ürünler, belgeler ve tedarikçiler uydurmadır. Demo kullanıcının şifresi demoPin alanındadır.",
+  "products": [
+    {"id": "P1", "code": "YF-1042", "name": "Yağ filtresi", "unit": "Adet", "vegaStock": 24, "barcodes": ["8691234500412"]},
+    {"id": "P2", "code": "HF-0310", "name": "Hava filtresi", "unit": "Adet", "vegaStock": 20, "barcodes": ["8691234500313"]},
+    {"id": "P3", "code": "PF-0207", "name": "Polen filtresi", "unit": "Adet", "vegaStock": 11, "barcodes": ["8691234500214"]},
+    {"id": "P4", "code": "FB-2210", "name": "Fren balatası ön takım", "unit": "Takım", "vegaStock": 52, "barcodes": ["8691234522101"]},
+    {"id": "P5", "code": "SL-600", "name": "Silecek 600 mm", "unit": "Adet", "vegaStock": 6, "barcodes": ["8691234560009"]},
+    {"id": "P6", "code": "BJ-1450", "name": "Buji iridyum", "unit": "Adet", "vegaStock": 40, "barcodes": ["8691234514502"]},
+    {"id": "P7", "code": "AN-0040", "name": "Antifriz 4 L", "unit": "Adet", "vegaStock": 26, "barcodes": ["8691234500405"]},
+    {"id": "P8", "code": "MY-5W30", "name": "Motor yağı 5W-30 4 L", "unit": "Adet", "vegaStock": 42, "barcodes": ["8691234553006"]},
+    {"id": "P9", "code": "AM-3301", "name": "Amortisör ön sağ", "unit": "Adet", "vegaStock": 4, "barcodes": ["8691234533015"]},
+    {"id": "P10", "code": "KY-0090", "name": "Triger kayışı seti", "unit": "Set", "vegaStock": 4, "barcodes": ["8691234500900"]},
+    {"id": "P11", "code": "FD-0120", "name": "Fren diski ön", "unit": "Adet", "vegaStock": 12, "barcodes": ["8691234501204"]},
+    {"id": "P12", "code": "AK-7260", "name": "Akü 72 Ah", "unit": "Adet", "vegaStock": 3, "barcodes": ["8691234572606"]}
+  ],
+  "shelves": [
+    {"code": "A-01-01", "zone": "A"}, {"code": "A-01-02", "zone": "A"}, {"code": "A-02-01", "zone": "A"}, {"code": "A-02-03", "zone": "A"},
+    {"code": "A-03-01", "zone": "A"}, {"code": "A-03-02", "zone": "A"}, {"code": "A-04-01", "zone": "A"}, {"code": "A-04-02", "zone": "A"},
+    {"code": "A-05-01", "zone": "A"}, {"code": "A-05-02", "zone": "A"},
+    {"code": "B-01-01", "zone": "B"}, {"code": "B-01-04", "zone": "B"}, {"code": "B-02-01", "zone": "B"}, {"code": "B-02-02", "zone": "B"},
+    {"code": "C-01-01", "zone": "C"}, {"code": "C-02-03", "zone": "C"}, {"code": "C-03-01", "zone": "C"}
+  ],
+  "locations": [
+    {"productId": "P1", "shelf": "A-03-02", "qty": 12},
+    {"productId": "P2", "shelf": "A-03-02", "qty": 10},
+    {"productId": "P3", "shelf": "A-02-03", "qty": 5},
+    {"productId": "P4", "shelf": "A-05-01", "qty": 30},
+    {"productId": "P4", "shelf": "A-05-02", "qty": 10},
+    {"productId": "P4", "shelf": "C-02-03", "qty": 6},
+    {"productId": "P5", "shelf": "A-04-01", "qty": 6},
+    {"productId": "P6", "shelf": "A-01-01", "qty": 40},
+    {"productId": "P7", "shelf": "B-02-01", "qty": 18},
+    {"productId": "P8", "shelf": "B-02-02", "qty": 30},
+    {"productId": "P9", "shelf": "C-01-01", "qty": 4},
+    {"productId": "P11", "shelf": "C-03-01", "qty": 12},
+    {"productId": "P12", "shelf": "B-01-01", "qty": 3}
+  ],
+  "receipts": [
+    {"id": "R4182", "docNo": "İRS-004182", "supplier": "Kuzey Oto Parça Ltd.", "date": "14.10.2026", "lines": [
+      {"id": "R4182-1", "productId": "P1", "accepted": 24, "shelved": 12},
+      {"id": "R4182-2", "productId": "P2", "accepted": 10, "shelved": 0},
+      {"id": "R4182-3", "productId": "P3", "accepted": 6, "shelved": 0},
+      {"id": "R4182-4", "productId": "P6", "accepted": 20, "shelved": 20}
+    ]},
+    {"id": "R4179", "docNo": "İRS-004179", "supplier": "Karadeniz Filtre San.", "date": "14.10.2026", "lines": [
+      {"id": "R4179-1", "productId": "P8", "accepted": 12, "shelved": 0},
+      {"id": "R4179-2", "productId": "P7", "accepted": 8, "shelved": 0},
+      {"id": "R4179-3", "productId": "P10", "accepted": 4, "shelved": 0}
+    ]},
+    {"id": "R4171", "docNo": "İRS-004171", "supplier": "Anadolu Fren Sistemleri", "date": "13.10.2026", "lines": [
+      {"id": "R4171-1", "productId": "P4", "accepted": 16, "shelved": 10},
+      {"id": "R4171-2", "productId": "P11", "accepted": 8, "shelved": 8}
+    ]}
+  ],
+  "counts": [
+    {"id": "C7", "no": "SAY-0007", "title": "Koridor A", "blind": true}
+  ],
+  "users": [
+    {"username": "ismail", "name": "İsmail", "demoPin": "1234"},
+    {"username": "depo", "name": "Depo Personeli", "demoPin": "1234"}
+  ]
+}
