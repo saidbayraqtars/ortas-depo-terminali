@@ -198,3 +198,29 @@ fun LabelDialog(title: String, sub: String, onPrint: (Int) -> Unit, onDismiss: (
         dismissButton = { androidx.compose.material3.TextButton(onClick = onDismiss) { Text("Vazgeç") } },
     )
 }
+/** Çalışılan depoyu seçme. Mal kabul belgeleri her depodan görünür; transfer, sayım ve sorgu seçili depoda. */
+@Composable
+fun DepotDialog(depots: List<tr.arcteknik.depo.data.Depot>, current: Int, onPick: (Int) -> Unit, onDismiss: () -> Unit) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Çalışılan depo") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Hint("Raf transferi, sayım ve sorgu seçilen depoda yapılır. Rafa kaldırma her zaman belgenin deposunda.")
+                depots.forEach { d ->
+                    val on = d.id == current
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(if (on) C.AccentBg else C.Surface)
+                            .border(if (on) 2.dp else 1.dp, if (on) C.Accent else C.Line, RoundedCornerShape(10.dp))
+                            .clickable { onPick(d.id) }.padding(horizontal = 14.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(d.name, fontWeight = if (on) FontWeight.Bold else FontWeight.Medium, modifier = Modifier.weight(1f))
+                        if (on) Icon(Ic.Check, null, tint = C.Ink, modifier = Modifier.size(20.dp))
+                    }
+                }
+            }
+        },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = onDismiss) { Text("Kapat") } },
+    )
+}

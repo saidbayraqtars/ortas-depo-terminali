@@ -17,11 +17,11 @@ android {
 
     defaultConfig {
         applicationId = "tr.arcteknik.depo"
-        // Sahadaki el terminalleri Android 8.0 (API 26) ile geliyor.
-        minSdk = 26
+        // Sahadaki en eski el terminali Android 7.1.2 (API 25).
+        minSdk = 25
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "1.1.0"
     }
 
     signingConfigs {

@@ -72,7 +72,8 @@ fun ReceiptListScreen(vm: AppVm, online: Boolean, version: Int) {
             Segment("Bekleyen ($openCount)", open, Modifier.weight(1f)) { open = true }
             Segment("Tamamlanan", !open, Modifier.weight(1f)) { open = false }
         }
-        Hint("Vega'da mal kabulü yapılmış belgeler")
+        val multiDepot = remember(version) { vm.repo.db.depots().size > 1 }
+        Hint(if (multiDepot) "Vega'da mal kabulü yapılmış belgeler, bütün depolar. Mal belgenin deposunda rafa kalkar." else "Vega'da mal kabulü yapılmış belgeler")
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(receipts, key = { it.id }) { r ->
                 Card(onClick = { vm.go(Route.PutAway(r.id)) }) {
@@ -80,6 +81,8 @@ fun ReceiptListScreen(vm: AppVm, online: Boolean, version: Int) {
                         MonoText(r.docNo)
                         Hint(r.date)
                     }
+                    // Belge başka depoya girdiyse göze çarpsın: rafa kaldırma o depoda olur.
+                    if (multiDepot) Text(r.depotName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (r.depot == vm.repo.db.depot) C.Muted else C.Info)
                     Text(r.supplier, fontWeight = FontWeight.SemiBold)
                     val ratio = if (r.lineCount == 0) 0f else r.doneLines.toFloat() / r.lineCount
                     Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(C.LineSoft)) {
@@ -116,7 +119,9 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
     var conflict by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     val line = lines.firstOrNull { it.id == lineId }
-    val suggested = remember(version, line?.product?.id) { line?.let { db.locationsOf(it.product.id).firstOrNull()?.shelf } }
+    // Belge depo bazlı: raflar ve öneri belgenin deposundan. Rafta yoksa ürünün asıl rafı (Excel'den) önerilir.
+    val rd = receipt?.depot ?: db.depot
+    val suggested = remember(version, line?.product?.id) { line?.let { db.locationsOf(it.product.id, rd).firstOrNull()?.shelf ?: db.homeShelf(it.product.id, rd) } }
 
     fun pick(l: ReceiptLine) {
         if (l.remaining <= 0) {
@@ -136,7 +141,7 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
     fun onShelf(code: String) {
         val s = code.uppercase()
         if (db.findProduct(code) != null) return vm.error("Raf barkodu okutun; bu bir ürün barkodu")
-        if (!db.shelfExists(s)) return vm.error("\"$s\" tanımlı bir raf değil")
+        if (!db.shelfExists(s, rd)) return vm.error("\"$s\" ${receipt?.depotName?.ifBlank { null }?.let { "$it deposunda " } ?: ""}tanımlı bir raf değil")
         if (suggested != null && suggested != s) {
             vm.feedback.error()
             conflict = suggested to s
@@ -147,7 +152,7 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
     }
 
     Screen(
-        receipt?.docNo ?: "Belge", sub = receipt?.let { "${it.supplier} · ${it.doneLines} / ${it.lineCount}" },
+        receipt?.docNo ?: "Belge", sub = receipt?.let { listOf(it.depotName.takeIf { n -> n.isNotBlank() && db.depots().size > 1 }, it.supplier, "${it.doneLines} / ${it.lineCount}").filterNotNull().joinToString(" · ") },
         online = online, onBack = { vm.back() }, monoTitle = true,
         footer = if (line != null && shelf != null) ({
             MessageBar(vm.message?.first, vm.message?.second == true)
@@ -191,7 +196,7 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
                         Icon(Ic.Check, null, tint = C.Ok, modifier = Modifier.size(22.dp))
                         Column(Modifier.weight(1f)) {
                             MonoText(shelf!!, size = 20)
-                            Text(if (shelf == suggested) "Önerilen raf · ürün zaten burada" else "Okutulan raf", fontSize = 12.sp, color = C.OkText)
+                            Text(if (shelf == suggested) (if (db.qtyAt(line.product.id, shelf!!, rd) > 0) "Önerilen raf · ürün zaten burada" else "Önerilen raf · ürünün asıl rafı") else "Okutulan raf", fontSize = 12.sp, color = C.OkText)
                         }
                         Text("Değiştir", color = C.Info, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.clickable { shelf = null }.padding(8.dp))
                     }
@@ -237,10 +242,14 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
                     }
                     Text("Bu ürün başka rafta duruyor", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 }
-                val here = line?.let { db.qtyAt(it.product.id, current) } ?: 0.0
-                Text("${line?.product?.name} şu an $current rafında (${fmt(here)} ${line?.product?.unit?.lowercase()}). Okuttuğunuz raf farklı.", color = C.Text2)
+                val here = line?.let { db.qtyAt(it.product.id, current, rd) } ?: 0.0
+                Text(
+                    if (here > 0) "${line?.product?.name} şu an $current rafında (${fmt(here)} ${line?.product?.unit?.lowercase()}). Okuttuğunuz raf farklı."
+                    else "${line?.product?.name} ürününün asıl rafı $current. Okuttuğunuz raf farklı.",
+                    color = C.Text2,
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ShelfBox("Mevcut raf", current, false, Modifier.weight(1f))
+                    ShelfBox("Önerilen raf", current, false, Modifier.weight(1f))
                     ShelfBox("Okutulan raf", scanned, true, Modifier.weight(1f))
                 }
                 PrimaryButton("$current rafına koy (önerilen)", { shelf = current; conflict = null })

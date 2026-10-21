@@ -96,7 +96,7 @@ fun LoginScreen(vm: AppVm, version: Int) {
             LabeledField("Şifre", pin, { pin = it }, password = true, onDone = ::submit)
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Depo", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = C.Text2)
-                Text(vm.repo.prefs.warehouse, fontSize = 16.sp)
+                Text(remember(version) { vm.repo.depotName() }, fontSize = 16.sp)
             }
             PrimaryButton("Giriş yap", ::submit, enabled = username.isNotBlank() && pin.isNotBlank())
             MessageBar(vm.message?.first, vm.message?.second == true)

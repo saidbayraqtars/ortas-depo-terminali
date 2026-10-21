@@ -84,6 +84,7 @@ export const HAREKET = {
   TRANSFER_IN: ['Transfer giriş', 'b-info'],
   TRANSFER_OUT: ['Transfer çıkış', 'b-info'],
   COUNT: ['Sayım', 'b-acc'],
+  IMPORT: ['Excel', 'b-mute'],
   ADJUST: ['Düzeltme', 'b-warn'],
 };
 
@@ -114,6 +115,14 @@ export function git(yol) {
 
 export const Ctx = createContext({ surum: 0, toast: () => {}, durum: null, yenile: () => {} });
 export const useApp = () => useContext(Ctx);
+
+/** Depo süzgeci ve depo listesi. `qs`: istek sonuna eklenecek "&depo=.." (bütün depolarda boş). */
+export function useDepo() {
+  const { depo, setDepo, durum } = useApp();
+  const depolar = durum?.depolar || [];
+  const ad = (ind) => depolar.find((d) => d.ind === Number(ind))?.ad || String(ind ?? '');
+  return { depo, setDepo, depolar, ad, cok: depolar.length > 1, varsayilan: durum?.varsayilanDepo, qs: depo ? `&depo=${depo}` : '' };
+}
 
 /** Sunucu verisi; sunucuda değişiklik olunca (surum) kendiliğinden yeniden yüklenir. */
 export function useVeri(yol, bag = []) {

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Alan, api, Btn, Durum, Icon, indir, miktar, Modal, Rozet, SAYIM_DURUM, SayfaBaslik, Secim, tarihSaat, useApp, useOnay, useVeri } from '../lib.jsx';
+import { Alan, api, Btn, Durum, Icon, indir, miktar, Modal, Rozet, SAYIM_DURUM, SayfaBaslik, Secim, tarihSaat, useApp, useDepo, useOnay, useVeri } from '../lib.jsx';
 
 function YeniSayim({ kapat, tamam }) {
   const { toast } = useApp();
@@ -7,9 +7,11 @@ function YeniSayim({ kapat, tamam }) {
   const [kind, setKind] = useState('RAF');
   const [blind, setBlind] = useState(true);
   const [note, setNote] = useState('');
+  const { depolar, cok, depo: secili, varsayilan } = useDepo();
+  const [depo, setDepo] = useState(String(secili || varsayilan || depolar[0]?.ind || ''));
   const ac = async () => {
     try {
-      const r = await api('/sayimlar', { method: 'POST', body: { title: title || (kind === 'GENEL' ? 'Genel sayım' : 'Raf sayımı'), kind, blind, note } });
+      const r = await api('/sayimlar', { method: 'POST', body: { title: title || (kind === 'GENEL' ? 'Genel sayım' : 'Raf sayımı'), kind, blind, note, depo } });
       toast(`${r.no} açıldı; terminallerde bir dakika içinde görünür`);
       tamam(r.id);
     } catch (e) {
@@ -18,6 +20,13 @@ function YeniSayim({ kapat, tamam }) {
   };
   return (
     <Modal baslik="Yeni sayım" kapat={kapat} alt={<><Btn onClick={kapat}>Vazgeç</Btn><Btn kind="primary" onClick={ac}>Sayımı aç</Btn></>}>
+      {cok && (
+        <Alan etiket="Depo" ipucu="Terminalde yalnız bu depoyu seçen cihazlar sayar">
+          <select className="inp" value={depo} onChange={(e) => setDepo(e.target.value)}>
+            {depolar.map((d) => <option key={d.ind} value={d.ind}>{d.ad}</option>)}
+          </select>
+        </Alan>
+      )}
       <Alan etiket="Başlık" ipucu="Terminalde görünür: Koridor A, Yıl sonu sayımı…"><input className="inp" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus /></Alan>
       <Alan etiket="Sayım türü">
         <Secim deger={kind} degis={setKind} secenekler={[['RAF', 'Raf sayımı'], ['GENEL', 'Genel sayım (Vega\'ya yazılır)']]} />
@@ -37,7 +46,9 @@ function YeniSayim({ kapat, tamam }) {
 }
 
 export default function Sayimlar() {
-  const { veri, hata, yukleniyor, yukle } = useVeri('/sayimlar');
+  const { veri: hamVeri, hata, yukleniyor, yukle } = useVeri('/sayimlar');
+  const { depo: dSuz, cok } = useDepo();
+  const veri = hamVeri && (dSuz ? hamVeri.filter((s) => String(s.depo) === String(dSuz)) : hamVeri);
   const [yeni, setYeni] = useState(false);
   const [filtre, setFiltre] = useState('aktif');
   const liste = (veri || []).filter((s) => filtre === 'tumu' || (filtre === 'aktif' ? ['OPEN', 'CLOSED'].includes(s.status) : ['APPROVED', 'CANCELLED'].includes(s.status)));
@@ -56,7 +67,7 @@ export default function Sayimlar() {
             <tbody>
               {liste.map((s) => (
                 <tr key={s.id} className="click" onClick={() => (window.location.hash = `/sayim/${s.id}`)}>
-                  <td className="mono">{s.no}</td>
+                  <td className="mono">{s.no}{cok && <div className="code">{s.depoAd}</div>}</td>
                   <td><b>{s.title}</b>{s.source === 'TERMINAL' && <div className="muted small">Terminalde başlatıldı · {s.note}</div>}</td>
                   <td>{s.kind === 'GENEL' ? <Rozet tur="b-acc">Genel</Rozet> : <Rozet tur="b-mute">Raf</Rozet>}{s.blind ? <span className="muted small"> · kör</span> : ''}</td>
                   <td><Rozet tur={SAYIM_DURUM[s.status][1]}>{SAYIM_DURUM[s.status][0]}</Rozet></td>
@@ -169,7 +180,7 @@ export function SayimDetay({ id }) {
         const docs = s.vega_docs?.docs || [];
         return (
           <>
-            <SayfaBaslik baslik={<><span className="mono">{s.no}</span> · {s.title}</>} alt={<>{s.kind === 'GENEL' ? 'Genel sayım' : 'Raf sayımı'}{s.blind ? ' · kör' : ''} · açılış {tarihSaat(s.created_at)}{s.note ? ` · ${s.note}` : ''}</>} geri={['/sayimlar', 'Sayımlar']}>
+            <SayfaBaslik baslik={<><span className="mono">{s.no}</span> · {s.title}</>} alt={<>{s.depoAd} deposu · {s.kind === 'GENEL' ? 'Genel sayım' : 'Raf sayımı'}{s.blind ? ' · kör' : ''} · açılış {tarihSaat(s.created_at)}{s.note ? ` · ${s.note}` : ''}</>} geri={['/sayimlar', 'Sayımlar']}>
               <Rozet tur={SAYIM_DURUM[s.status][1]}>{SAYIM_DURUM[s.status][0]}</Rozet>
               <Btn icon="export" onClick={() => indir(`/sayim/${id}/csv?tur=${gorunum === 'raf' ? 'raf' : 'urun'}${dahil ? '&dahil=1' : ''}`, `${s.no}.csv`).catch((e) => toast(e.message, true))}>CSV</Btn>
               {s.status === 'OPEN' && <Btn icon="lock" onClick={() => durumDegis('kapat', ['Sayım kapatılsın mı?', 'Terminallerde görünmez olur; onay için hazır hale gelir. Gerekirse yeniden açılabilir.', { tamam: 'Kapat' }])}>Sayımı kapat</Btn>}
@@ -233,7 +244,7 @@ export function SayimDetay({ id }) {
                     <tbody>
                       {satirlar.map((l) => (
                         <tr key={l.shelf + l.product_id}>
-                          <td className="mono"><a href={`#/raf/${encodeURIComponent(l.shelf)}`}>{l.shelf}</a></td>
+                          <td className="mono"><a href={`#/raf/${o.oturum.depo}/${encodeURIComponent(l.shelf)}`}>{l.shelf}</a></td>
                           <td><div className="name">{l.urunAd}</div><div className="code">{l.urunKod}</div></td>
                           <td className="num">{miktar(l.server_before)}</td>
                           <td className="num">{miktar(l.counted)}</td>

@@ -1,10 +1,11 @@
 import React, { useMemo, useState } from 'react';
-import { api, Ara, Btn, Durum, Icon, Ilerleme, miktar, Rozet, SayfaBaslik, Secim, tarihSaat, useApp, useOnay, useVeri } from '../lib.jsx';
+import { api, Ara, Btn, Durum, Icon, Ilerleme, miktar, Rozet, SayfaBaslik, Secim, tarihSaat, useApp, useDepo, useOnay, useVeri } from '../lib.jsx';
 
 export default function Kabul() {
   const [durum, setDurum] = useState('acik');
   const [q, setQ] = useState('');
-  const { veri, hata, yukleniyor } = useVeri(`/kabul?durum=${durum}`, [durum]);
+  const { qs, cok, depo } = useDepo();
+  const { veri, hata, yukleniyor } = useVeri(`/kabul?durum=${durum}${qs}`, [durum, qs]);
   const liste = useMemo(() => {
     const a = q.trim().toLocaleUpperCase('tr');
     return (veri || []).filter((b) => !a || b.docNo.toLocaleUpperCase('tr').includes(a) || b.supplier.toLocaleUpperCase('tr').includes(a));
@@ -23,12 +24,13 @@ export default function Kabul() {
           <div className="tbl-wrap">
             <table className="tbl">
               <thead>
-                <tr><th>Tarih</th><th>Belge</th><th>Tür</th><th>Tedarikçi</th><th className="num">Kalem</th><th>İlerleme</th><th className="num">Kalan</th><th /></tr>
+                <tr><th>Tarih</th>{cok && !depo && <th>Depo</th>}<th>Belge</th><th>Tür</th><th>Tedarikçi</th><th className="num">Kalem</th><th>İlerleme</th><th className="num">Kalan</th><th /></tr>
               </thead>
               <tbody>
                 {liste.map((b) => (
                   <tr key={b.id} className="click" onClick={() => (window.location.hash = `/kabul/${encodeURIComponent(b.id)}`)}>
                     <td className="muted">{b.date}</td>
+                    {cok && !depo && <td>{b.depoAd}</td>}
                     <td className="mono">{b.docNo}</td>
                     <td className="muted">{b.tur}</td>
                     <td>{b.supplier || '—'}</td>
@@ -65,7 +67,7 @@ export function KabulDetay({ id }) {
     <Durum yukleniyor={yukleniyor && !b} hata={hata}>
       {b && (
         <>
-          <SayfaBaslik baslik={<span className="mono">{b.docNo}</span>} alt={`${b.tur} · ${b.date} · ${b.supplier || 'tedarikçi yok'}`} geri={['/kabul', 'Mal kabul']}>
+          <SayfaBaslik baslik={<span className="mono">{b.docNo}</span>} alt={`${b.depoAd} deposu · ${b.tur} · ${b.date} · ${b.supplier || 'tedarikçi yok'}`} geri={['/kabul', 'Mal kabul']}>
             {b.elleKapali ? <Btn icon="refresh" onClick={() => kapatAc(false)}>Yeniden aç</Btn> : b.acik ? <Btn icon="x" onClick={() => kapatAc(true)}>Elle kapat</Btn> : null}
           </SayfaBaslik>
           <div className="card" style={{ marginBottom: 14 }}>
@@ -97,7 +99,7 @@ export function KabulDetay({ id }) {
                     <tr key={h.id}>
                       <td className="muted">{tarihSaat(h.ts)}</td>
                       <td><div className="name">{h.urunAd}</div><div className="code">{h.urunKod}</div></td>
-                      <td className="mono"><a href={`#/raf/${encodeURIComponent(h.shelf)}`}>{h.shelf}</a></td>
+                      <td className="mono"><a href={`#/raf/${h.depo}/${encodeURIComponent(h.shelf)}`}>{h.shelf}</a></td>
                       <td className="num">{miktar(h.delta)}</td>
                       <td className="muted">{h.user} · {h.device}</td>
                     </tr>

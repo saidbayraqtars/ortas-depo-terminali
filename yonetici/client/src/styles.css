@@ -214,3 +214,7 @@ select.inp { padding-right: 28px; }
 hr.sep { border: 0; border-top: 1px solid var(--line-soft); margin: 4px 0; }
 .chip-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { font-family: var(--mono); font-size: 12px; background: #eceeea; border-radius: 6px; padding: 2px 8px; font-weight: 500; }
+
+.depo-sec { background: var(--bar2); border-color: #334155; color: #fff; margin: 0 0 10px; }
+.depo-sec option { color: var(--ink); background: #fff; }
+

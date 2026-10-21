@@ -125,7 +125,7 @@ class AppVm(app: Application) : AndroidViewModel(app) {
     /** Etiket sunucu bilgisayarındaki yazıcıdan çıkar; bağlantı yoksa kuyruğa alınmaz (sonradan basılması kafa karıştırır). */
     fun printLabel(type: String, id: String, copies: Int) {
         viewModelScope.launch {
-            val r = withContext(Dispatchers.IO) { runCatching { sync.backend().printLabel(type, id, copies, userName) } }
+            val r = withContext(Dispatchers.IO) { runCatching { sync.backend().printLabel(type, id, copies, userName, repo.db.depot) } }
             r.onSuccess { ok(it) }.onFailure { error(it.message ?: "Etiket basılamadı") }
         }
     }

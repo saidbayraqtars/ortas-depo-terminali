@@ -35,7 +35,7 @@ function Sayfa({ yol }) {
     case 'raflar':
       return <Raflar />;
     case 'raf':
-      return <RafDetay kod={p} />;
+      return <RafDetay depo={Number(p)} kod={decodeURIComponent(b || '')} />;
     case 'sayimlar':
       return <Sayimlar />;
     case 'sayim':
@@ -98,6 +98,20 @@ export default function App() {
   const yol = useHash();
   const [durum, setDurum] = useState(null);
   const [surum, setSurum] = useState(0);
+  // Yönetim ekranının depo süzgeci: '' = bütün depolar. Bu bilgisayarda hatırlanır.
+  const [depo, setDepoState] = useState(() => {
+    try {
+      return localStorage.getItem('ortas-depo') || '';
+    } catch {
+      return '';
+    }
+  });
+  const setDepo = (d) => {
+    setDepoState(d);
+    try {
+      localStorage.setItem('ortas-depo', d);
+    } catch {}
+  };
   const [oturum, setOturum] = useState(null); // null: bilinmiyor
   const [toasts, setToasts] = useState([]);
   const tid = useRef(0);
@@ -139,13 +153,19 @@ export default function App() {
   const v = durum?.vega;
 
   return (
-    <Ctx.Provider value={{ surum, toast, durum, yenile: durumAl }}>
+    <Ctx.Provider value={{ surum, toast, durum, yenile: durumAl, depo, setDepo }}>
       <div className="shell">
         <nav className="side">
           <div className="brand">
             <div className="brand-mark"><Icon name="layers" /></div>
-            <div><b>Ortaş Depo</b><span>{v?.depoAd ? `${v.depoAd} deposu` : 'Yönetici'}</span></div>
+            <div><b>Ortaş Depo</b><span>Yönetici</span></div>
           </div>
+          {(durum?.depolar?.length || 0) > 1 && (
+            <select className="inp depo-sec" value={depo} onChange={(e) => setDepo(e.target.value)} title="Ekranlarda gösterilecek depo">
+              <option value="">Bütün depolar</option>
+              {durum.depolar.map((d) => <option key={d.ind} value={d.ind}>{d.ad}</option>)}
+            </select>
+          )}
           {MENU.map(([h, ic, ad, say]) => {
             const n = say ? say(durum) : 0;
             return (

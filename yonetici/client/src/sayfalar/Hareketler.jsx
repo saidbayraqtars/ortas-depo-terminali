@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Btn, Durum, HAREKET, Icon, indir, miktar, Rozet, SayfaBaslik, tarihSaat, useApp, useVeri } from '../lib.jsx';
+import { Btn, Durum, HAREKET, Icon, indir, miktar, Rozet, SayfaBaslik, tarihSaat, useApp, useDepo, useVeri } from '../lib.jsx';
 
 const bugun = () => new Date().toISOString().slice(0, 10);
 const gunOnce = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
@@ -8,7 +8,8 @@ export default function Hareketler() {
   const { toast } = useApp();
   const [f, setF] = useState({ bas: gunOnce(7), bit: bugun(), tur: '', kullanici: '', cihaz: '', raf: '' });
   const [gorunum, setGorunum] = useState('hareket');
-  const qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v)).toString();
+  const { depo, cok } = useDepo();
+  const qs = new URLSearchParams(Object.entries({ ...f, depo }).filter(([, v]) => v)).toString();
   const { veri, hata, yukleniyor } = useVeri(gorunum === 'hareket' ? `/hareketler?${qs}` : null, [qs, gorunum]);
   const islem = useVeri(gorunum === 'islem' ? '/islemler?hatali=1' : null, [gorunum]);
   const d = (k) => (e) => setF((x) => ({ ...x, [k]: e.target.value }));
@@ -49,7 +50,7 @@ export default function Hareketler() {
           <Durum yukleniyor={yukleniyor && !veri} hata={hata} bos={veri && veri.liste.length === 0 && 'Bu aralıkta hareket yok.'}>
             <div className="tbl-wrap tbl-scroll" style={{ maxHeight: 'calc(100vh - 220px)' }}>
               <table className="tbl">
-                <thead><tr><th>Zaman</th><th>Tür</th><th>Ürün</th><th>Raf</th><th className="num">Miktar</th><th className="num">Sonra</th><th>Belge / not</th><th>Kullanıcı</th><th>Cihaz</th></tr></thead>
+                <thead><tr><th>Zaman</th><th>Tür</th><th>Ürün</th><th>Raf</th>{cok && !depo && <th>Depo</th>}<th className="num">Miktar</th><th className="num">Sonra</th><th>Belge / not</th><th>Kullanıcı</th><th>Cihaz</th></tr></thead>
                 <tbody>
                   {veri?.liste.map((h) => (
                     <tr key={h.id} className="click" onClick={() => (window.location.hash = `/urun/${h.product_id}`)}>
@@ -57,6 +58,7 @@ export default function Hareketler() {
                       <td><Rozet tur={(HAREKET[h.kind] || [])[1]}>{(HAREKET[h.kind] || [h.kind])[0]}</Rozet></td>
                       <td><div className="name">{h.urunAd}</div><div className="code">{h.urunKod}</div></td>
                       <td className="mono">{h.shelf}</td>
+                      {cok && !depo && <td className="muted">{h.depoAd}</td>}
                       <td className={`num ${h.delta > 0 ? 'pos' : h.delta < 0 ? 'neg' : ''}`}>{miktar(h.delta, true)}</td>
                       <td className="num">{miktar(h.after)}</td>
                       <td className="muted">{h.ref || ''}</td>

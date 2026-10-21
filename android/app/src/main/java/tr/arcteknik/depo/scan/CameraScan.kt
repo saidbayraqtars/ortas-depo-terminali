@@ -64,6 +64,8 @@ fun CameraScanner(onResult: (String) -> Unit, onClose: () -> Unit) {
     }
 }
 
+// proxy.image deneysel işaretli; CameraX + ML Kit'in belgelenmiş kullanımı.
+@androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
 @Composable
 private fun CameraPreview(onResult: (String) -> Unit) {
     val context = LocalContext.current

@@ -39,6 +39,11 @@ Cevapta `ETag` başlığı gelir. Terminal sonraki istekte `If-None-Match` ile g
 `304` döner ve liste yeniden inmez. Terminal o turda işlem gönderdiyse etiketi göndermez (reddedilen işlem cihazdaki
 hali sunucudan farklı bırakmış olabilir). Gövde gzip'lidir.
 
+**Çok depo (1.1.0):** `depots` (`[{id, name}]`, Vega depo numarası ve adı), `defaultDepot`; `shelves`, `locations`,
+`homes` (ürünün asıl rafı: `{depot, productId, shelf}`), `receipts` (`depot`, `depotName`) ve `counts` (`depot`)
+depo taşır; ürünlerde `stocks` (`{"<depo>": miktar}`), `vegaStock` bütün depoların toplamı. İşlemlerde `payload.depot`
+çalışılan depodur; `PUTAWAY`'de sunucu belgenin deposunu esas alır (belge depo bazlı).
+
 Ek alanlar: `warehouse` (Vega depo adı, terminalde gösterilir) ve `app` (`{"versionName","versionCode","path"}`;
 sunucudaki APK cihazdakinden yeniyse terminal "Yeni sürüm" gösterir, indirme `sunucu + path`).
 

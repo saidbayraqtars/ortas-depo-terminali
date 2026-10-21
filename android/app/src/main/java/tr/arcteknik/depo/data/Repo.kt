@@ -13,6 +13,30 @@ import java.util.UUID
  */
 class Repo(val db: Db, val prefs: Prefs) {
 
+    init {
+        db.depot = prefs.depot
+    }
+
+    /** Çalışılan depoyu değiştirir (transfer, sayım, sorgu bu depoda). */
+    fun selectDepot(id: Int) {
+        prefs.depotChosen = true
+        prefs.depot = id
+        db.depot = id
+        changed()
+    }
+
+    /** Çalışılan deponun adı (ana menü ve giriş ekranında). */
+    fun depotName(): String = db.depotName(db.depot).ifBlank { prefs.warehouse }
+
+    /** Ana veri gelince: depo hiç seçilmediyse ya da artık yoksa sunucunun varsayılanı. */
+    fun ensureDepot(defaultDepot: Int) {
+        val ids = db.depots().map { it.id }
+        if (!prefs.depotChosen || (ids.isNotEmpty() && prefs.depot !in ids)) {
+            prefs.depot = defaultDepot
+            db.depot = defaultDepot
+        }
+    }
+
     private val _version = MutableStateFlow(0)
     /** Ekranlar bunu izler; veri değişince artar. */
     val version: StateFlow<Int> = _version
@@ -33,11 +57,13 @@ class Repo(val db: Db, val prefs: Prefs) {
     fun putAway(line: ReceiptLine, shelf: String, qty: Double, user: String) {
         val s = shelf.uppercase()
         val receipt = db.receipt(line.receiptId)
+        // Belge depo bazlı: mal belgenin deposunda rafa kalkar.
+        val d = receipt?.depot ?: db.depot
         val w = db.writableDatabase
         w.beginTransaction()
         try {
-            db.ensureShelf(w, s)
-            db.addQty(w, line.product.id, s, qty)
+            db.ensureShelf(w, d, s)
+            db.addQty(w, d, line.product.id, s, qty)
             w.execSQL("UPDATE receipt_line SET shelved=shelved+? WHERE id=?", arrayOf<Any>(qty, line.id))
             db.addMovement(w, line.product.id, "Rafa kaldırma → $s", qty)
             db.insertOp(w, op(
@@ -48,6 +74,7 @@ class Repo(val db: Db, val prefs: Prefs) {
                     .put("productId", line.product.id)
                     .put("shelf", s)
                     .put("qty", qty)
+                    .put("depot", d)
                     .put("user", user),
                 "Rafa kaldırma · ${fmt(qty)} ${line.product.unit.lowercase()}|${line.product.code} → $s" +
                     (receipt?.let { " · ${it.docNo}" } ?: ""),
@@ -67,13 +94,14 @@ class Repo(val db: Db, val prefs: Prefs) {
         val w = db.writableDatabase
         w.beginTransaction()
         try {
-            db.ensureShelf(w, t)
-            db.addQty(w, product.id, f, -qty)
-            db.addQty(w, product.id, t, qty)
+            val d = db.depot
+            db.ensureShelf(w, d, t)
+            db.addQty(w, d, product.id, f, -qty)
+            db.addQty(w, d, product.id, t, qty)
             db.addMovement(w, product.id, "Transfer $f → $t", qty)
             db.insertOp(w, op(
                 OpType.TRANSFER,
-                JSONObject().put("productId", product.id).put("from", f).put("to", t).put("qty", qty).put("user", user),
+                JSONObject().put("productId", product.id).put("from", f).put("to", t).put("qty", qty).put("depot", d).put("user", user),
                 "Raf transferi · ${fmt(qty)} ${product.unit.lowercase()}|${product.code} $f → $t",
             ))
             w.setTransactionSuccessful()
@@ -90,8 +118,8 @@ class Repo(val db: Db, val prefs: Prefs) {
         val id = "LOCAL-" + UUID.randomUUID().toString().take(8)
         val no = "SAY-T" + (System.currentTimeMillis() / 1000 % 100000)
         db.writableDatabase.execSQL(
-            "INSERT INTO count_session(id, no, title, blind, status) VALUES(?,?,?,?,?)",
-            arrayOf<Any>(id, no, "Serbest sayım", 0, "OPEN"),
+            "INSERT INTO count_session(id, no, title, blind, status, depot) VALUES(?,?,?,?,?,?)",
+            arrayOf<Any>(id, no, "Serbest sayım", 0, "OPEN", db.depot),
         )
         changed()
         return db.countSession(id)!!
@@ -131,10 +159,11 @@ class Repo(val db: Db, val prefs: Prefs) {
      * okutulmayan ürün de 0 sayılmış kabul edilir.
      */
     fun countDiffs(sessionId: String): List<CountDiff> {
+        val dep = db.countSession(sessionId)?.depot ?: db.depot
         val out = mutableListOf<CountDiff>()
         for (shelf in db.countedShelves(sessionId)) {
             val counted = db.countLines(sessionId, shelf).associateBy { it.product.id }
-            val system = db.shelfContents(shelf).associateBy { it.product.id }
+            val system = db.shelfContents(shelf, dep).associateBy { it.product.id }
             for (pid in counted.keys + system.keys) {
                 val product = counted[pid]?.product ?: system[pid]!!.product
                 out += CountDiff(shelf, product, system[pid]?.qty ?: 0.0, counted[pid]?.qty ?: 0.0)
@@ -157,14 +186,14 @@ class Repo(val db: Db, val prefs: Prefs) {
         w.beginTransaction()
         try {
             diffs.forEach { d ->
-                db.setQty(w, d.product.id, d.shelf, d.counted)
+                db.setQty(w, session.depot, d.product.id, d.shelf, d.counted)
                 if (d.diff != 0.0) db.addMovement(w, d.product.id, "Sayım farkı ${d.shelf} (${session.no})", d.diff)
             }
             w.execSQL("UPDATE count_session SET status='SUBMITTED' WHERE id=?", arrayOf<Any>(session.id))
             val changedCount = diffs.count { it.diff != 0.0 }
             db.insertOp(w, op(
                 OpType.COUNT_SUBMIT,
-                JSONObject().put("sessionId", session.id).put("no", session.no).put("title", session.title)
+                JSONObject().put("sessionId", session.id).put("no", session.no).put("title", session.title).put("depot", session.depot)
                     .put("shelves", JSONArray(db.countedShelves(session.id))).put("lines", lines).put("user", user),
                 "Sayım · ${session.no}|${diffs.size} kalem, $changedCount farklı",
             ))

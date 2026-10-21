@@ -33,7 +33,7 @@ interface Backend {
      * Sunucu bilgisayarındaki etiket yazıcısına etiket bastırır. [type]: "PRODUCT" ya da "SHELF".
      * Dönen: kullanıcıya gösterilecek metin. Ulaşılamazsa IOException.
      */
-    fun printLabel(type: String, id: String, copies: Int, user: String): String
+    fun printLabel(type: String, id: String, copies: Int, user: String, depot: Int): String
 }
 
 /**
@@ -61,7 +61,7 @@ class DemoBackend(private val context: Context, private val online: () -> Boolea
         return ops.map { OpResult(it.id, true, null) }
     }
 
-    override fun printLabel(type: String, id: String, copies: Int, user: String): String =
+    override fun printLabel(type: String, id: String, copies: Int, user: String, depot: Int): String =
         throw IOException("Demo modunda etiket basılmaz")
 }
 
@@ -104,8 +104,8 @@ class HttpBackend(private val baseUrl: String, private val deviceKey: String, pr
         }
     }
 
-    override fun printLabel(type: String, id: String, copies: Int, user: String): String {
-        val body = JSONObject().put("type", type).put("copies", copies).put("user", user)
+    override fun printLabel(type: String, id: String, copies: Int, user: String, depot: Int): String {
+        val body = JSONObject().put("type", type).put("copies", copies).put("user", user).put("depot", depot)
             .put(if (type == "SHELF") "shelf" else "productId", id).toString()
             .toRequestBody("application/json; charset=utf-8".toMediaType())
         client.newCall(request("/api/label").post(body).build()).execute().use { r ->

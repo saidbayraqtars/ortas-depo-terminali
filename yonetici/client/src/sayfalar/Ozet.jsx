@@ -157,7 +157,7 @@ export default function Ozet() {
                   <td className="muted">{tarihSaat(h.ts)}</td>
                   <td><Rozet tur={(HAREKET[h.kind] || [])[1]}>{(HAREKET[h.kind] || [h.kind])[0]}</Rozet></td>
                   <td><div className="name">{h.urunAd}</div><div className="code">{h.urunKod}</div></td>
-                  <td className="mono">{h.shelf}</td>
+                  <td className="mono">{h.shelf}{d.depolar?.length > 1 && <div className="code">{h.depoAd}</div>}</td>
                   <td className={`num ${h.delta > 0 ? 'pos' : h.delta < 0 ? 'neg' : ''}`}>{miktar(h.delta, true)}</td>
                   <td className="muted">{h.user || '—'}{h.device ? ` · ${h.device}` : ''}</td>
                 </tr>

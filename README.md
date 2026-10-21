@@ -5,7 +5,7 @@ rafa kaldırma, raf transferi, ürün/raf sorgu, sayım ve raf/ürün etiketi. �
 
 | Klasör | İçerik |
 |---|---|
-| [`android/`](android/) | Terminal ve telefon uygulaması (Kotlin + Compose, Android 8.0+) |
+| [`android/`](android/) | Terminal ve telefon uygulaması (Kotlin + Compose, Android 7.1+) |
 | [`yonetici/`](yonetici/) | Ortaş Depo Yönetici: Windows programı, terminallerin bağlandığı sunucu + yönetim ekranı (Electron) |
 | [`docs/KURULUM.md`](docs/KURULUM.md) | Kurulum, günlük kullanım, sayım ve Vega, şubeler |
 | [`docs/API.md`](docs/API.md) | Terminal ile sunucu arasındaki sözleşme |

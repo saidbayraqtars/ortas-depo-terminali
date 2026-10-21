@@ -3,7 +3,7 @@
 Vega'da kabul edilen malzemeyi el terminaliyle rafa kaldırma, raf transferi, ürün/raf sorgu ve sayım.
 Çevrimdışı çalışır; işlemler cihazda kuyruğa alınır, bağlantı gelince yönetici programındaki sunucuya gider.
 
-- Kotlin + Jetpack Compose, minSdk 26 (Android 8.0), yerel veri SQLite (`data/Db.kt`).
+- Kotlin + Jetpack Compose, minSdk 25 (Android 7.1; sahadaki en eski terminal 7.1.2), yerel veri SQLite (`data/Db.kt`).
 - Sunucu sözleşmesi: [`../docs/API.md`](../docs/API.md). Terminal kurulumu: [`../docs/TERMINAL.md`](../docs/TERMINAL.md).
 - Demo modu (varsayılan açık): sunucu olmadan `app/src/main/assets/demo.json` ile çalışır.
   Demo kullanıcı adları ve şifreleri o dosyadadır.

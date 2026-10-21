@@ -18,6 +18,7 @@ const vega = require('./vega');
 const depo = require('./depo');
 const apk = require('./apk');
 const etiket = require('./etiket');
+const iceaktar = require('./iceaktar');
 
 const SURUM = require('../package.json').version;
 let yedekKlasoru = null;
@@ -108,19 +109,34 @@ function yedekZamanla() {
 // ---- Etiket -------------------------------------------------------------------------------------
 
 /** Etikete girecek raflar ya da ürünler. */
-function etiketOgeleri(tur, { kodlar = [], urunler = [] }) {
+/**
+ * Etikete girecek raflar ya da ürünler. Raf: `kodlar` "depo|kod" ya da yalnız kod (o zaman `depo`).
+ * Ürün etiketindeki raf, verilen depoda (yoksa herhangi bir depoda) en çok bulunduğu raf.
+ */
+function etiketOgeleri(tur, { kodlar = [], urunler = [], depo: d }) {
+  const varsDepo = depo.depoCoz(d);
   if (tur === 'raf') {
     return kodlar
-      .map(depo.rafKodu)
-      .filter(Boolean)
-      .map((c) => db.get('SELECT code, zone FROM shelf WHERE code=?', c) || { code: c, zone: '' });
+      .map((k) => {
+        const [a, b] = String(k).includes('|') ? String(k).split('|') : [varsDepo, k];
+        return { depo: Number(a), code: depo.rafKodu(b) };
+      })
+      .filter((x) => x.code)
+      .map((x) => {
+        const s = db.get('SELECT code, zone FROM shelf WHERE depo=? AND code=?', x.depo, x.code) || { code: x.code, zone: '' };
+        return { ...s, depoAd: depo.depolar().length > 1 ? depo.depoAdi(x.depo) : '' };
+      });
   }
   const g = depo.goruntu();
   const rafGoster = config.load().etiket?.rafGoster !== false;
   return urunler.map(String).map((id) => {
     const u = depo.urun(id);
     if (!u) throw Object.assign(new Error(`Ürün bulunamadı (${id})`), { status: 404 });
-    const raf = rafGoster ? db.get('SELECT shelf FROM location WHERE product_id=? AND qty>0 ORDER BY qty DESC LIMIT 1', id)?.shelf : null;
+    const raf = rafGoster
+      ? (d !== undefined && d !== null && d !== ''
+          ? db.get('SELECT shelf FROM location WHERE depo=? AND product_id=? AND qty>0 ORDER BY qty DESC LIMIT 1', varsDepo, id)
+          : db.get('SELECT shelf FROM location WHERE product_id=? AND qty>0 ORDER BY qty DESC LIMIT 1', id))?.shelf
+      : null;
     return { ...u, barcodes: (g && g.barcodes[id]) || [], raf };
   });
 }
@@ -192,7 +208,7 @@ function terminalApi() {
     sar(async (req) => {
       const b = req.body || {};
       const adet = Math.max(1, Math.min(100, Number(b.copies) || 1));
-      const govde = b.type === 'SHELF' ? { tur: 'raf', kodlar: [b.shelf], adet } : { tur: 'urun', urunler: [b.productId], adet };
+      const govde = b.type === 'SHELF' ? { tur: 'raf', kodlar: [b.shelf], depo: b.depot, adet } : { tur: 'urun', urunler: [b.productId], depo: b.depot, adet };
       return await etiketBas(govde, sunucu.address().port, `${req.cihaz.name} · ${b.user || ''}`);
     }),
   );
@@ -268,12 +284,14 @@ function yoneticiApi() {
           hazir: vega.hazirMi(cfg.vega),
           firma: g?.firma,
           donem: g?.donem,
-          depoAd: g?.depoAd,
+          depoAd: depo.depoAdi(depo.varsayilanDepo()),
           urun: g?.products.length || 0,
         },
+        depolar: depo.depolar(),
+        varsayilanDepo: depo.varsayilanDepo(),
         sayilar: {
           raf: db.get('SELECT COUNT(*) AS n FROM shelf').n,
-          doluRaf: db.get('SELECT COUNT(DISTINCT shelf) AS n FROM location WHERE qty>0').n,
+          doluRaf: db.get('SELECT COUNT(*) AS n FROM (SELECT DISTINCT depo, shelf FROM location WHERE qty>0)').n,
           rafUrun: db.get('SELECT COUNT(DISTINCT product_id) AS n FROM location WHERE qty>0').n,
           acikBelge: bel.filter((b) => b.acik).length,
           bekleyenKalem: bel.filter((b) => b.acik).reduce((t, b) => t + (b.kalemSayisi - b.biten), 0),
@@ -286,7 +304,7 @@ function yoneticiApi() {
         cihazlar,
         sonHareketler: db
           .all('SELECT * FROM movement ORDER BY ts DESC, id DESC LIMIT 12')
-          .map((h) => ({ ...h, ...depo.urunAdi(h.product_id) })),
+          .map((h) => ({ ...h, depoAd: depo.depoAdi(h.depo), ...depo.urunAdi(h.product_id) })),
         apk: ap ? { versionName: ap.versionName, versionCode: ap.versionCode, boyut: ap.boyut } : null,
         sonYedek: Number(db.meta('sonYedek', 0)) || null,
         masaustu: Boolean(masaustu.klasorAc),
@@ -304,6 +322,7 @@ function yoneticiApi() {
       const yeni = JSON.parse(JSON.stringify(cfg));
       if (b.vega) {
         for (const k of ['server', 'port', 'database', 'user', 'firma', 'donem', 'depo']) if (k in b.vega) yeni.vega[k] = b.vega[k];
+        if (Array.isArray(b.vega.depolar)) yeni.vega.depolar = b.vega.depolar.map(Number).filter(Number.isInteger);
         if (typeof b.vega.password === 'string' && b.vega.password) yeni.vega.password = b.vega.password;
       }
       if (b.kabul) {
@@ -361,56 +380,60 @@ function yoneticiApi() {
   r.get('/vega/fis-varsayilan', sar(async () => vega.fisVarsayilanlari(config.load())));
 
   // Ürünler
-  r.get('/urunler', sar((req) => depo.urunListesi({ q: req.query.q, filtre: req.query.filtre || 'hepsi', limit: Math.min(2000, Number(req.query.limit) || 300) })));
+  r.get('/urunler', sar((req) => depo.urunListesi({ q: req.query.q, filtre: req.query.filtre || 'hepsi', depo: depo.depoSuzgec(req.query.depo), limit: Math.min(2000, Number(req.query.limit) || 300) })));
   r.get('/urunler.csv', sar((req, res) => {
-    const { liste } = depo.urunListesi({ q: req.query.q, filtre: req.query.filtre || 'hepsi', limit: 1e9 });
+    const { liste } = depo.urunListesi({ q: req.query.q, filtre: req.query.filtre || 'hepsi', depo: depo.depoSuzgec(req.query.depo), limit: 1e9 });
     csv(res, 'urunler.csv', ['Kod', 'Ad', 'Birim', 'Vega stok', 'Rafta', 'Raf sayısı', 'Rafa kaldırılacak', 'Yerleşmemiş'], liste.map((u) => [u.code, u.name, u.unit, u.vegaStock, u.raf, u.rafSayisi, u.bekleyen, u.fark]));
   }));
   r.get('/urun/:id', sar((req) => depo.urunDetay(req.params.id)));
   r.post('/konum', sar((req) => {
     const b = req.body || {};
     const shelf = depo.rafKodu(b.shelf);
+    const d = depo.depoCoz(b.depo);
     const qty = Number(b.qty);
     if (!b.productId || !shelf || !Number.isFinite(qty) || qty < 0) throw Object.assign(new Error('Ürün, raf ve miktar gerekli'), { status: 400 });
-    if (!depo.rafVarMi(shelf)) throw Object.assign(new Error(`${shelf} tanımlı bir raf değil`), { status: 400 });
-    db.tx(() => depo.miktarAyarla(String(b.productId), shelf, qty, { kind: 'ADJUST', ref: String(b.not || 'Yönetici düzeltmesi').slice(0, 100), user: 'yönetici', device: 'PC' }));
+    if (!depo.rafVarMi(d, shelf)) throw Object.assign(new Error(`${shelf}, ${depo.depoAdi(d)} deposunda tanımlı bir raf değil`), { status: 400 });
+    db.tx(() => depo.miktarAyarla(d, String(b.productId), shelf, qty, { kind: 'ADJUST', ref: String(b.not || 'Yönetici düzeltmesi').slice(0, 100), user: 'yönetici', device: 'PC' }));
     depo.degisti();
     return { ok: true };
   }));
 
   // Raflar
-  r.get('/raflar', sar(() => depo.raflar()));
+  r.get('/raflar', sar((req) => depo.raflar(depo.depoSuzgec(req.query.depo))));
   r.get('/raflar.csv', sar((req, res) => {
-    csv(res, 'raflar.csv', ['Raf', 'Bölge', 'Ürün çeşidi', 'Toplam miktar', 'Not'], depo.raflar().map((s) => [s.code, s.zone, s.cesit, s.miktar, s.note]));
+    csv(res, 'raflar.csv', ['Depo', 'Raf', 'Bölge', 'Ürün çeşidi', 'Toplam miktar', 'Not'], depo.raflar(depo.depoSuzgec(req.query.depo)).map((s) => [s.depoAd, s.code, s.zone, s.cesit, s.miktar, s.note]));
   }));
-  r.get('/raf/:code', sar((req) => depo.rafDetay(req.params.code)));
+  r.get('/raf/:depo/:code', sar((req) => depo.rafDetay(Number(req.params.depo), req.params.code)));
   r.post('/raflar', sar((req) => {
     const kodlar = (Array.isArray(req.body.kodlar) ? req.body.kodlar : [req.body.kod]).map(depo.rafKodu).filter(Boolean);
     if (!kodlar.length) throw Object.assign(new Error('Raf kodu girin'), { status: 400 });
     if (kodlar.length > 5000) throw Object.assign(new Error('Bir seferde en çok 5000 raf'), { status: 400 });
+    const d = depo.depoCoz(req.body.depo);
     const bad = kodlar.find((k) => !/^[A-Z0-9ÇĞİÖŞÜ][A-Z0-9ÇĞİÖŞÜ\-./ ]{0,23}$/.test(k));
     if (bad) throw Object.assign(new Error(`Geçersiz raf kodu: ${bad}`), { status: 400 });
     let yeni = 0;
     db.tx(() => {
       for (const k of kodlar) {
-        if (!depo.rafVarMi(k)) yeni++;
-        depo.rafEkle(k, { zone: req.body.zone || undefined, note: String(req.body.note || '') });
+        if (!depo.rafVarMi(d, k)) yeni++;
+        depo.rafEkle(d, k, { zone: req.body.zone || undefined, note: String(req.body.note || '') });
       }
     });
     depo.degisti();
     return { eklenen: yeni, toplam: kodlar.length };
   }));
-  r.put('/raf/:code', sar((req) => {
+  r.put('/raf/:depo/:code', sar((req) => {
     const c = depo.rafKodu(req.params.code);
+    const d = Number(req.params.depo);
     db.run('UPDATE shelf SET zone=COALESCE(?, zone), note=COALESCE(?, note) WHERE code=?', req.body.zone ?? null, req.body.note ?? null, c);
     depo.degisti();
     return { ok: true };
   }));
-  r.delete('/raf/:code', sar((req) => {
+  r.delete('/raf/:depo/:code', sar((req) => {
     const c = depo.rafKodu(req.params.code);
-    const dolu = db.get('SELECT COUNT(*) AS n FROM location WHERE shelf=? AND qty>0', c).n;
+    const d = Number(req.params.depo);
+    const dolu = db.get('SELECT COUNT(*) AS n FROM location WHERE depo=? AND shelf=? AND qty>0', d, c).n;
     if (dolu) throw Object.assign(new Error(`${c} rafında ${dolu} ürün var; önce boşaltın ya da transfer edin`), { status: 400 });
-    db.run('DELETE FROM shelf WHERE code=?', c);
+    db.run('DELETE FROM shelf WHERE depo=? AND code=?', d, c);
     depo.degisti();
     return { ok: true };
   }));
@@ -418,9 +441,10 @@ function yoneticiApi() {
   // Mal kabul
   r.get('/kabul', sar((req) => {
     const d = req.query.durum || 'acik';
+    const dp = depo.depoSuzgec(req.query.depo);
     return depo
       .belgeler()
-      .filter((b) => (d === 'acik' ? b.acik : d === 'kapali' ? !b.acik : true))
+      .filter((b) => (d === 'acik' ? b.acik : d === 'kapali' ? !b.acik : true) && (dp === null || b.depo === dp))
       .map(({ lines, ...b }) => b);
   }));
   r.get('/kabul/:id', sar((req) => {
@@ -454,6 +478,7 @@ function yoneticiApi() {
     const satir = new Map(db.all('SELECT session_id, COUNT(*) AS n, COUNT(DISTINCT shelf) AS raf, SUM(CASE WHEN ABS(counted-server_before)>0.000001 THEN 1 ELSE 0 END) AS fark FROM count_line GROUP BY session_id').map((x) => [x.session_id, x]));
     return db.all('SELECT * FROM count_session ORDER BY created_at DESC LIMIT 500').map((s) => ({
       ...s,
+      depoAd: depo.depoAdi(s.depo),
       vega_docs: s.vega_docs ? JSON.parse(s.vega_docs).docs : null,
       kalem: satir.get(s.id)?.n || 0,
       raf: satir.get(s.id)?.raf || 0,
@@ -465,7 +490,7 @@ function yoneticiApi() {
     const id = 'C' + crypto.randomBytes(5).toString('hex');
     const no = depo.sayimNo();
     db.run(
-      'INSERT INTO count_session(id, no, title, blind, kind, status, source, note, created_at) VALUES(?,?,?,?,?,?,?,?,?)',
+      'INSERT INTO count_session(id, no, title, blind, kind, status, source, note, created_at, depo) VALUES(?,?,?,?,?,?,?,?,?,?)',
       id,
       no,
       String(b.title || 'Sayım').trim().slice(0, 60) || 'Sayım',
@@ -475,6 +500,7 @@ function yoneticiApi() {
       'ADMIN',
       String(b.note || '').slice(0, 300),
       Date.now(),
+      depo.depoCoz(b.depo),
     );
     depo.degisti();
     log.bilgi(`Sayım açıldı: ${no}`);
@@ -537,13 +563,14 @@ function yoneticiApi() {
     if (q.kullanici) { w.push('user = ?'); a.push(q.kullanici); }
     if (q.cihaz) { w.push('device = ?'); a.push(q.cihaz); }
     if (q.raf) { w.push('shelf = ?'); a.push(depo.rafKodu(q.raf)); }
+    if (depo.depoSuzgec(q.depo) !== null) { w.push('depo = ?'); a.push(depo.depoSuzgec(q.depo)); }
     if (q.urun) { w.push('product_id = ?'); a.push(String(q.urun)); }
     return { where: w.length ? 'WHERE ' + w.join(' AND ') : '', args: a };
   };
   r.get('/hareketler', sar((req) => {
     const { where, args } = hareketSorgu(req.query);
     const limit = Math.min(5000, Number(req.query.limit) || 500);
-    const liste = db.all(`SELECT * FROM movement ${where} ORDER BY ts DESC, id DESC LIMIT ${limit}`, ...args).map((h) => ({ ...h, ...depo.urunAdi(h.product_id) }));
+    const liste = db.all(`SELECT * FROM movement ${where} ORDER BY ts DESC, id DESC LIMIT ${limit}`, ...args).map((h) => ({ ...h, depoAd: depo.depoAdi(h.depo), ...depo.urunAdi(h.product_id) }));
     const toplam = db.get(`SELECT COUNT(*) AS n FROM movement ${where}`, ...args).n;
     const kisiler = db.all('SELECT DISTINCT user FROM movement WHERE user IS NOT NULL ORDER BY user').map((x) => x.user);
     const cihazlar = db.all('SELECT DISTINCT device FROM movement WHERE device IS NOT NULL ORDER BY device').map((x) => x.device);
@@ -552,8 +579,8 @@ function yoneticiApi() {
   r.get('/hareketler.csv', sar((req, res) => {
     const { where, args } = hareketSorgu(req.query);
     const liste = db.all(`SELECT * FROM movement ${where} ORDER BY ts DESC, id DESC LIMIT 200000`, ...args);
-    csv(res, 'hareketler.csv', ['Zaman', 'Tür', 'Raf', 'Kod', 'Ad', 'Miktar', 'Sonra', 'Belge/Not', 'Kullanıcı', 'Cihaz'],
-      liste.map((h) => { const u = depo.urunAdi(h.product_id); return [tarihSaat(h.ts), h.kind, h.shelf, u.urunKod, u.urunAd, h.delta, h.after, h.ref, h.user, h.device]; }));
+    csv(res, 'hareketler.csv', ['Zaman', 'Tür', 'Depo', 'Raf', 'Kod', 'Ad', 'Miktar', 'Sonra', 'Belge/Not', 'Kullanıcı', 'Cihaz'],
+      liste.map((h) => { const u = depo.urunAdi(h.product_id); return [tarihSaat(h.ts), h.kind, depo.depoAdi(h.depo), h.shelf, u.urunKod, u.urunAd, h.delta, h.after, h.ref, h.user, h.device]; }));
   }));
   r.get('/islemler', sar((req) => {
     const w = req.query.hatali === '1' ? 'WHERE ok=0' : '';
@@ -623,6 +650,42 @@ function yoneticiApi() {
     // Terminal Ayarlar › "QR ile kur" bu metni okur.
     const metin = `ORTASDEPO|${url}|${c.key}|${c.name}`;
     return { url, metin, qr: await QRCode.toDataURL(metin, { margin: 1, width: 320, errorCorrectionLevel: 'M' }), apkQr: await QRCode.toDataURL(`${url}/kur`, { margin: 1, width: 320 }) };
+  }));
+
+  // Excel'den raf içe aktarma: oku → eşleştir/önizle → uygula. Okunan dosya bir saat bellekte durur.
+  const yuklenen = new Map();
+  const dosyaAl = (anahtar) => {
+    const x = yuklenen.get(String(anahtar || ''));
+    if (!x) throw Object.assign(new Error('Dosya bulunamadı; yeniden yükleyin'), { status: 400 });
+    return x;
+  };
+  r.post('/ice-aktar/oku', sar(async (req) => {
+    const b = req.body || {};
+    const buf = Buffer.from(String(b.icerik || ''), 'base64');
+    if (!buf.length) throw Object.assign(new Error('Dosya boş'), { status: 400 });
+    const t = await iceaktar.oku(String(b.ad || ''), buf);
+    const anahtar = crypto.randomBytes(8).toString('hex');
+    yuklenen.set(anahtar, t);
+    setTimeout(() => yuklenen.delete(anahtar), 3600 * 1000).unref?.();
+    return { anahtar, basliklar: t.basliklar, ornek: t.satirlar.slice(0, 8), toplam: t.satirlar.length, tahmin: iceaktar.tahminEt(t.basliklar), depolar: depo.depolar() };
+  }));
+  r.post('/ice-aktar/onizle', sar((req) => {
+    const b = req.body || {};
+    const c = iceaktar.coz({ ...dosyaAl(b.anahtar), eslesme: b.eslesme || {}, depoEslesme: b.depoEslesme || {}, sabitDepo: b.sabitDepo });
+    return { ozet: iceaktar.ozet(c), hatalar: c.hatalar.slice(0, 200), depolar: c.depolar };
+  }));
+  r.post('/ice-aktar/uygula', sar((req) => {
+    const b = req.body || {};
+    const c = iceaktar.coz({ ...dosyaAl(b.anahtar), eslesme: b.eslesme || {}, depoEslesme: b.depoEslesme || {}, sabitDepo: b.sabitDepo });
+    const s = iceaktar.uygula(c, { miktarModu: b.miktarModu === 'ekle' ? 'ekle' : 'ayarla' });
+    log.bilgi(`Excel içe aktarma: ${c.satirlar.length} satır, ${s.yeniRaf} yeni raf, ${s.miktar} miktar, ${s.asilRaf} asıl raf, ${c.hatalar.length} hatalı satır atlandı`);
+    yuklenen.delete(String(b.anahtar));
+    return { ...s, atlanan: c.hatalar.length };
+  }));
+  r.get('/ice-aktar/sablon.xlsx', sar(async (req, res) => {
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', "attachment; filename*=UTF-8''raf-sablonu.xlsx");
+    res.send(await iceaktar.sablon());
   }));
 
   // Etiket
@@ -701,7 +764,7 @@ async function baslat({ veriKlasoru, apkKlasoru, arayuz, host = '0.0.0.0', port 
   fs.mkdirSync(veriKlasoru, { recursive: true });
   log.kur(path.join(veriKlasoru, 'gunluk'));
   config.init(path.join(veriKlasoru, 'config.json'));
-  db.open(path.join(veriKlasoru, 'depo.db'));
+  db.open(path.join(veriKlasoru, 'depo.db'), { varsayilanDepo: config.load().vega.depo });
   yedekKlasoru = path.join(veriKlasoru, 'yedek');
   fs.mkdirSync(yedekKlasoru, { recursive: true });
   apk.kur(apkKlasoru || path.join(__dirname, '..', 'apk'));

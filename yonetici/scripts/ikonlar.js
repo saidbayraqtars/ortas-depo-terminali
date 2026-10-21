@@ -16,6 +16,7 @@ const IKONLAR = {
   search: 'search/search',
   printer: 'devices/printer',
   download: 'arrows-action/download',
+  upload: 'arrows-action/upload',
   plus: 'ui/plus',
   trash: 'ui/trash',
   refresh: 'arrows/refresh',

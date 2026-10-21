@@ -29,6 +29,15 @@ class Prefs(context: Context) {
         get() = sp.getString("warehouse", "Merkez Depo") ?: "Merkez Depo"
         set(v) = sp.edit().putString("warehouse", v).apply()
 
+    /** Çalışılan Vega deposu. Kullanıcı seçene kadar sunucunun varsayılanı. */
+    var depot: Int
+        get() = sp.getInt("depot", 0)
+        set(v) = sp.edit().putInt("depot", v).apply()
+
+    var depotChosen: Boolean
+        get() = sp.getBoolean("depotChosen", false)
+        set(v) = sp.edit().putBoolean("depotChosen", v).apply()
+
     var lastUser: String
         get() = sp.getString("lastUser", "") ?: ""
         set(v) = sp.edit().putString("lastUser", v).apply()

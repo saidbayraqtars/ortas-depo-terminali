@@ -1,4 +1,6 @@
 // Depo iş mantığı: Vega görüntüsü + programın kendi tabloları. Terminal ve yönetici ekranı buradan beslenir.
+// Çok depo: raf, raf stoku, hareket ve sayım bir Vega deposuna bağlıdır (depo = F{firma}TBLDEPOLAR.IND).
+// Mal kabul belgesi kendi deposunu taşır; rafa kaldırma o depoda olur.
 const crypto = require('crypto');
 const db = require('./db');
 const config = require('./config');
@@ -40,8 +42,12 @@ const vegaDurum = { ok: false, hata: null, at: null, sureMs: null, calisiyor: fa
 function goruntuKur(g) {
   goruntu = g;
   urunIndex = new Map(g.products.map((p) => [p.id, p]));
-  goruntu.stockMap = new Map(Object.entries(g.stock || {}));
+  // depo → (ürün → Vega stoku); toplam ürün başına.
+  goruntu.stokDepo = new Map(Object.entries(g.stock || {}).map(([d, m]) => [Number(d), new Map(Object.entries(m))]));
+  goruntu.stokToplam = new Map();
+  for (const m of goruntu.stokDepo.values()) for (const [pid, q] of m) goruntu.stokToplam.set(pid, (goruntu.stokToplam.get(pid) || 0) + Number(q));
   goruntu.movedSet = new Set(g.moved || []);
+  goruntu.depoAd = new Map((g.depolar || []).map((d) => [Number(d.ind), d.ad]));
   aramaIndex = null;
 }
 
@@ -56,7 +62,10 @@ function goruntuYukleOnbellek() {
   const r = db.get("SELECT json, updated_at FROM vega_cache WHERE key='goruntu'");
   if (!r) return;
   try {
-    goruntuKur(JSON.parse(r.json));
+    const g = JSON.parse(r.json);
+    // Tek depolu eski önbellek kullanılmaz; ilk Vega okumasında yenisi gelir.
+    if (g.surum !== 2) return;
+    goruntuKur(g);
     vegaDurum.at = r.updated_at;
     vegaDurum.onbellek = true;
   } catch (e) {
@@ -104,21 +113,64 @@ function urun(id) {
   return urunIndex.get(String(id)) || null;
 }
 
-function vegaStok(id) {
-  return goruntu ? Number(goruntu.stockMap.get(String(id)) || 0) : 0;
+/** Vega stoku: depo verilirse o depoda, verilmezse bütün kullanılan depoların toplamı. */
+function vegaStok(id, depo = null) {
+  if (!goruntu) return 0;
+  if (depo === null || depo === undefined) return Number(goruntu.stokToplam.get(String(id)) || 0);
+  return Number(goruntu.stokDepo.get(Number(depo))?.get(String(id)) || 0);
+}
+
+// ---- Depolar -------------------------------------------------------------------------------
+
+/** Kullanılan depolar: Vega'dan; Vega hiç okunmadıysa raflarda geçen depolar. */
+function depolar() {
+  if (goruntu && goruntu.depolar && goruntu.depolar.length) return goruntu.depolar.map((d) => ({ ind: Number(d.ind), ad: d.ad }));
+  return db.all('SELECT DISTINCT depo FROM shelf ORDER BY depo').map((r) => ({ ind: r.depo, ad: String(r.depo) }));
+}
+
+function depoAdi(depo) {
+  const d = Number(depo);
+  return (goruntu && goruntu.depoAd.get(d)) || String(d);
+}
+
+function varsayilanDepo() {
+  const cfg = config.load();
+  const v = Number(cfg.vega.depo);
+  const liste = depolar();
+  if (Number.isInteger(v) && v > 0 && (!liste.length || liste.some((d) => d.ind === v))) return v;
+  return liste[0] ? liste[0].ind : Number.isInteger(v) ? v : 0;
+}
+
+/** İstekten gelen depo; yoksa ya da geçersizse varsayılan. */
+function depoCoz(x) {
+  const n = Number(x);
+  return Number.isInteger(n) && x !== null && x !== '' && x !== undefined ? n : varsayilanDepo();
+}
+
+/** Yönetim ekranı süzgeci: boş / "hepsi" → null (bütün depolar). */
+function depoSuzgec(x) {
+  if (x === undefined || x === null || x === '' || x === 'hepsi') return null;
+  const n = Number(x);
+  return Number.isInteger(n) ? n : null;
 }
 
 // ---- Raf stoku -----------------------------------------------------------------------------
 
-function rafVarMi(code) {
-  return Boolean(db.get('SELECT 1 FROM shelf WHERE code=?', code));
+// Terminal raf kodunu Kotlin uppercase() ile (dilden bağımsız) büyütür; sunucu da aynısını yapmalı, yoksa "i" farklı büyür.
+function rafKodu(code) {
+  return String(code || '').trim().toUpperCase();
 }
 
-function rafEkle(code, { zone, note = '', source = 'ADMIN' } = {}) {
+function rafVarMi(depo, code) {
+  return Boolean(db.get('SELECT 1 FROM shelf WHERE depo=? AND code=?', depo, rafKodu(code)));
+}
+
+function rafEkle(depo, code, { zone, note = '', source = 'ADMIN' } = {}) {
   const c = rafKodu(code);
   if (!c) throw new Error('Raf kodu boş');
   db.run(
-    'INSERT INTO shelf(code, zone, note, source, created_at) VALUES(?,?,?,?,?) ON CONFLICT(code) DO NOTHING',
+    'INSERT INTO shelf(depo, code, zone, note, source, created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(depo, code) DO NOTHING',
+    depo,
     c,
     zone ?? c.split(/[-./ ]/)[0],
     note,
@@ -128,23 +180,20 @@ function rafEkle(code, { zone, note = '', source = 'ADMIN' } = {}) {
   return c;
 }
 
-function rafKodu(code) {
-  return String(code || '').trim().toUpperCase();
-}
-
-function miktar(productId, shelf) {
-  return Number(db.get('SELECT qty FROM location WHERE product_id=? AND shelf=?', String(productId), shelf)?.qty || 0);
+function miktar(depo, productId, shelf) {
+  return Number(db.get('SELECT qty FROM location WHERE depo=? AND product_id=? AND shelf=?', depo, String(productId), shelf)?.qty || 0);
 }
 
 /** Raftaki miktarı verilen değere çeker ve hareketi yazar. Dönen: gerçek fark. */
-function miktarAyarla(productId, shelf, yeni, hareket) {
+function miktarAyarla(depo, productId, shelf, yeni, hareket) {
   const pid = String(productId);
-  const once = miktar(pid, shelf);
+  const once = miktar(depo, pid, shelf);
   const sonra = Math.max(0, yuvarla(yeni));
-  if (sonra <= EPS) db.run('DELETE FROM location WHERE product_id=? AND shelf=?', pid, shelf);
+  if (sonra <= EPS) db.run('DELETE FROM location WHERE depo=? AND product_id=? AND shelf=?', depo, pid, shelf);
   else
     db.run(
-      'INSERT INTO location(product_id, shelf, qty, updated_at) VALUES(?,?,?,?) ON CONFLICT(product_id, shelf) DO UPDATE SET qty=excluded.qty, updated_at=excluded.updated_at',
+      'INSERT INTO location(depo, product_id, shelf, qty, updated_at) VALUES(?,?,?,?,?) ON CONFLICT(depo, product_id, shelf) DO UPDATE SET qty=excluded.qty, updated_at=excluded.updated_at',
+      depo,
       pid,
       shelf,
       sonra,
@@ -153,8 +202,9 @@ function miktarAyarla(productId, shelf, yeni, hareket) {
   const delta = yuvarla(sonra - once);
   if (Math.abs(delta) > EPS || hareket.kind === 'COUNT') {
     db.run(
-      'INSERT INTO movement(ts, product_id, shelf, delta, after, kind, ref, user, device, op_id) VALUES(?,?,?,?,?,?,?,?,?,?)',
+      'INSERT INTO movement(ts, depo, product_id, shelf, delta, after, kind, ref, user, device, op_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
       hareket.ts || now(),
+      depo,
       pid,
       shelf,
       delta,
@@ -169,8 +219,8 @@ function miktarAyarla(productId, shelf, yeni, hareket) {
   return delta;
 }
 
-function miktarEkle(productId, shelf, delta, hareket) {
-  return miktarAyarla(productId, shelf, miktar(productId, shelf) + Number(delta), hareket);
+function miktarEkle(depo, productId, shelf, delta, hareket) {
+  return miktarAyarla(depo, productId, shelf, miktar(depo, productId, shelf) + Number(delta), hareket);
 }
 
 // ---- Terminal işlemleri ----------------------------------------------------------------------
@@ -201,12 +251,14 @@ function islemUygula(op, cihaz, kullanici) {
       const pid = String(p.productId || '');
       if (!pid) throw new Ret('Ürün yok');
       bilinen(pid);
-      // Mal fiziken rafa kondu; raf tanımı sonradan silinmiş olsa bile kayıt kaybolmasın.
       const shelf = rafKodu(p.shelf);
       if (!shelf) throw new Ret('Raf yok');
-      if (!rafVarMi(shelf)) rafEkle(shelf, { source: 'TERMINAL', note: 'Terminalden geldi' });
+      // Belge depo bazlı: mal belgenin deposunda rafa kalkar.
       const belge = p.receiptId ? receiptById(String(p.receiptId)) : null;
-      miktarEkle(pid, shelf, qty, { ...h, kind: 'PUTAWAY', ref: belge ? belge.docNo : p.receiptId || null });
+      const depo = belge ? belge.depo : depoCoz(p.depot);
+      // Mal fiziken rafa kondu; raf tanımı sonradan silinmiş olsa bile kayıt kaybolmasın.
+      if (!rafVarMi(depo, shelf)) rafEkle(depo, shelf, { source: 'TERMINAL', note: 'Terminalden geldi' });
+      miktarEkle(depo, pid, shelf, qty, { ...h, kind: 'PUTAWAY', ref: belge ? belge.docNo : p.receiptId || null });
       if (p.lineId) {
         db.run(
           `INSERT INTO receipt_shelved(line_id, receipt_id, product_id, shelved, updated_at) VALUES(?,?,?,?,?)
@@ -228,11 +280,12 @@ function islemUygula(op, cihaz, kullanici) {
       const to = rafKodu(p.to);
       if (!pid || !from || !to) throw new Ret('Eksik bilgi');
       bilinen(pid);
+      const depo = depoCoz(p.depot);
       if (from === to) throw new Ret('Kaynak ve hedef raf aynı');
-      if (!rafVarMi(to)) rafEkle(to, { source: 'TERMINAL', note: 'Terminalden geldi' });
+      if (!rafVarMi(depo, to)) rafEkle(depo, to, { source: 'TERMINAL', note: 'Terminalden geldi' });
       // Sunucudaki miktar terminalin gördüğünden azsa eksiye düşmez; fazlası hareket kaydında görünür.
-      miktarEkle(pid, from, -qty, { ...h, kind: 'TRANSFER_OUT', ref: to });
-      miktarEkle(pid, to, qty, { ...h, kind: 'TRANSFER_IN', ref: from });
+      miktarEkle(depo, pid, from, -qty, { ...h, kind: 'TRANSFER_OUT', ref: to });
+      miktarEkle(depo, pid, to, qty, { ...h, kind: 'TRANSFER_IN', ref: from });
       return;
     }
     case 'COUNT_SUBMIT':
@@ -244,15 +297,15 @@ function islemUygula(op, cihaz, kullanici) {
 }
 
 function sayimKaydet(op, p, h, olusturma) {
-  let sid = String(p.sessionId || '');
+  const sid = String(p.sessionId || '');
   if (!sid) throw new Ret('Sayım kimliği yok');
   let s = db.get('SELECT * FROM count_session WHERE id=?', sid);
   if (!s) {
     if (!sid.startsWith('LOCAL-')) throw new Ret('Sayım sunucuda bulunamadı');
     // Terminalde başlatılmış serbest sayım: yönetici incelesin diye kapalı olarak açılır.
     db.run(
-      `INSERT INTO count_session(id, no, title, blind, kind, status, source, note, created_at, closed_at)
-       VALUES(?,?,?,?, 'RAF', 'CLOSED', 'TERMINAL', ?, ?, ?)`,
+      `INSERT INTO count_session(id, no, title, blind, kind, status, source, note, created_at, closed_at, depo)
+       VALUES(?,?,?,?, 'RAF', 'CLOSED', 'TERMINAL', ?, ?, ?, ?)`,
       sid,
       String(p.no || sid),
       String(p.title || 'Serbest sayım'),
@@ -260,9 +313,11 @@ function sayimKaydet(op, p, h, olusturma) {
       `${h.device} · ${h.user}`,
       olusturma,
       now(),
+      depoCoz(p.depot),
     );
     s = db.get('SELECT * FROM count_session WHERE id=?', sid);
   }
+  const depo = s.depo;
   const ref = s.no;
   const raflar = [...new Set((p.shelves || []).map(rafKodu).filter(Boolean))];
   // Vega'da olmayan ürün satırı (demo verisi) yok sayılır; sayımın geri kalanı geçerli.
@@ -272,7 +327,7 @@ function sayimKaydet(op, p, h, olusturma) {
     if (raf && !raflar.includes(raf)) raflar.push(raf);
   }
   for (const raf of raflar) {
-    if (!rafVarMi(raf)) rafEkle(raf, { source: 'TERMINAL', note: 'Sayımdan geldi' });
+    if (!rafVarMi(depo, raf)) rafEkle(depo, raf, { source: 'TERMINAL', note: 'Sayımdan geldi' });
     const sayilan = new Map();
     for (const l of satirlar.filter((x) => rafKodu(x.shelf) === raf)) {
       const pid = String(l.productId);
@@ -280,12 +335,12 @@ function sayimKaydet(op, p, h, olusturma) {
     }
     // Rafta sunucuya göre olup terminalin bilmediği ürün: sayımdan önce yerleştiyse sayılmadı = 0 demektir;
     // sayımdan sonra yerleştiyse (başka terminal) dokunulmaz.
-    for (const loc of db.all('SELECT product_id, qty, updated_at FROM location WHERE shelf=?', raf)) {
+    for (const loc of db.all('SELECT product_id, qty, updated_at FROM location WHERE depo=? AND shelf=?', depo, raf)) {
       if (!sayilan.has(loc.product_id) && loc.updated_at <= olusturma) sayilan.set(loc.product_id, { counted: 0, system: 0 });
     }
     for (const [pid, x] of sayilan) {
-      const once = miktar(pid, raf);
-      miktarAyarla(pid, raf, x.counted, { ...h, kind: 'COUNT', ref });
+      const once = miktar(depo, pid, raf);
+      miktarAyarla(depo, pid, raf, x.counted, { ...h, kind: 'COUNT', ref });
       db.run(
         `INSERT INTO count_line(session_id, shelf, product_id, terminal_system, server_before, counted, user, device, submitted_at)
          VALUES(?,?,?,?,?,?,?,?,?)
@@ -311,7 +366,7 @@ function islemler(cihaz, kullanici, ops) {
   const sonuc = [];
   let degisiklik = false;
   for (const op of Array.isArray(ops) ? ops : []) {
-    const id = String(op && op.id || '');
+    const id = String((op && op.id) || '');
     if (!id) continue;
     const eski = db.get('SELECT ok, error FROM op WHERE id=?', id);
     if (eski) {
@@ -385,11 +440,11 @@ function receiptById(id) {
   return goruntu ? goruntu.receipts.find((r) => r.id === id) || null : null;
 }
 
-/** Açık belgelerde rafa kaldırılmayı bekleyen miktar, ürün başına. Vega stoku bunu içerir. */
-function bekleyenKabul() {
+/** Açık belgelerde rafa kaldırılmayı bekleyen miktar, ürün başına (depo verilirse o depoda). Vega stoku bunu içerir. */
+function bekleyenKabul(depo = null) {
   const out = new Map();
   for (const r of belgeler()) {
-    if (!r.acik) continue;
+    if (!r.acik || (depo !== null && r.depo !== depo)) continue;
     for (const l of r.lines) {
       const k = Math.max(0, l.accepted - l.shelved);
       if (k > EPS) out.set(l.productId, (out.get(l.productId) || 0) + k);
@@ -409,35 +464,47 @@ function master() {
   }
   const cfg = config.load();
   const acik = belgeler().filter((r) => r.acik);
-  const locations = db.all('SELECT product_id, shelf, qty FROM location WHERE qty > 0');
+  const locations = db.all('SELECT depo, product_id, shelf, qty FROM location WHERE qty > 0');
   const ref = new Set(locations.map((l) => l.product_id));
   for (const r of acik) for (const l of r.lines) ref.add(l.productId);
 
   const tum = cfg.urun.kapsam === 'tum';
   const products = [];
   for (const p of goruntu.products) {
-    const st = goruntu.stockMap.get(p.id);
-    if (!tum && !ref.has(p.id) && !st && !goruntu.movedSet.has(p.id)) continue;
-    products.push({ id: p.id, code: p.code, name: p.name, unit: p.unit, vegaStock: Number(st || 0), barcodes: goruntu.barcodes[p.id] || [] });
+    const toplam = goruntu.stokToplam.get(p.id);
+    if (!tum && !ref.has(p.id) && !toplam && !goruntu.movedSet.has(p.id)) continue;
+    const stocks = {};
+    for (const [d, m] of goruntu.stokDepo) {
+      const q = m.get(p.id);
+      if (q) stocks[d] = Number(q);
+    }
+    products.push({ id: p.id, code: p.code, name: p.name, unit: p.unit, vegaStock: Number(toplam || 0), stocks, barcodes: goruntu.barcodes[p.id] || [] });
   }
-  const shelves = db.all('SELECT code, zone FROM shelf ORDER BY code');
+  const depoListe = depolar();
+  const vars = varsayilanDepo();
   const counts = db
-    .all("SELECT id, no, title, blind FROM count_session WHERE status='OPEN' ORDER BY created_at")
-    .map((c) => ({ id: c.id, no: c.no, title: c.title, blind: Boolean(c.blind) }));
+    .all("SELECT id, no, title, blind, depo FROM count_session WHERE status='OPEN' ORDER BY created_at")
+    .map((c) => ({ id: c.id, no: c.no, title: c.title, blind: Boolean(c.blind), depot: c.depo }));
   const users = db
     .all('SELECT username, name, salt, pin_hash FROM app_user WHERE active=1 ORDER BY username')
     .map((u) => ({ username: u.username, name: u.name, salt: u.salt, pinHash: u.pin_hash }));
 
   const govde = {
-    warehouse: goruntu.depoAd,
+    warehouse: depoAdi(vars),
+    defaultDepot: vars,
+    depots: depoListe.map((d) => ({ id: d.ind, name: d.ad })),
     products,
-    shelves,
-    locations: locations.map((l) => ({ productId: l.product_id, shelf: l.shelf, qty: l.qty })),
+    shelves: db.all('SELECT depo, code, zone FROM shelf ORDER BY depo, code').map((s) => ({ depot: s.depo, code: s.code, zone: s.zone })),
+    locations: locations.map((l) => ({ depot: l.depo, productId: l.product_id, shelf: l.shelf, qty: l.qty })),
+    // Ürünün asıl rafı (Excel'den): rafta hiç yokken rafa kaldırmada önerilir.
+    homes: db.all('SELECT depo, product_id, shelf FROM product_home').map((h) => ({ depot: h.depo, productId: h.product_id, shelf: h.shelf })),
     receipts: acik.map((r) => ({
       id: r.id,
       docNo: r.docNo,
       supplier: r.supplier,
       date: r.date,
+      depot: r.depo,
+      depotName: r.depoAd,
       lines: r.lines.map((l) => ({ id: l.id, productId: l.productId, accepted: l.accepted, shelved: l.shelved })),
     })),
     counts,
@@ -452,17 +519,21 @@ function master() {
 
 // ---- Yönetici görünümleri -------------------------------------------------------------------
 
-function rafToplamlari() {
+function rafToplamlari(depo = null) {
   const m = new Map();
-  for (const r of db.all('SELECT product_id, SUM(qty) AS q, COUNT(*) AS n FROM location WHERE qty>0 GROUP BY product_id')) m.set(r.product_id, { q: r.q, n: r.n });
+  const rows =
+    depo === null
+      ? db.all('SELECT product_id, SUM(qty) AS q, COUNT(*) AS n FROM location WHERE qty>0 GROUP BY product_id')
+      : db.all('SELECT product_id, SUM(qty) AS q, COUNT(*) AS n FROM location WHERE qty>0 AND depo=? GROUP BY product_id', depo);
+  for (const r of rows) m.set(r.product_id, { q: r.q, n: r.n });
   return m;
 }
 
-/** Ürün listesi: Vega stoku, raflardaki toplam, bekleyen kabul ve yerleşmemiş fark. */
-function urunListesi({ q = '', filtre = 'hepsi', limit = 300 } = {}) {
+/** Ürün listesi: Vega stoku, raflardaki toplam, bekleyen kabul ve yerleşmemiş fark (depo verilirse o depoda). */
+function urunListesi({ q = '', filtre = 'hepsi', limit = 300, depo = null } = {}) {
   if (!goruntu) return { toplam: 0, liste: [] };
-  const raf = rafToplamlari();
-  const bek = bekleyenKabul();
+  const raf = rafToplamlari(depo);
+  const bek = bekleyenKabul(depo);
   const ara = String(q || '').trim();
   const qt = fuzzy.tokens(ara);
   const compact = qt.join('');
@@ -470,7 +541,7 @@ function urunListesi({ q = '', filtre = 'hepsi', limit = 300 } = {}) {
   const out = [];
   let toplam = 0;
   for (const p of goruntu.products) {
-    const vs = Number(goruntu.stockMap.get(p.id) || 0);
+    const vs = vegaStok(p.id, depo);
     const r = raf.get(p.id);
     const rq = r ? r.q : 0;
     const b = bek.get(p.id) || 0;
@@ -496,50 +567,70 @@ function urunListesi({ q = '', filtre = 'hepsi', limit = 300 } = {}) {
 function urunDetay(id) {
   const p = urun(id);
   const pid = String(id);
-  const konumlar = db.all('SELECT shelf, qty, updated_at FROM location WHERE product_id=? AND qty>0 ORDER BY qty DESC', pid);
-  const hareketler = db.all('SELECT * FROM movement WHERE product_id=? ORDER BY ts DESC, id DESC LIMIT 200', pid);
+  const konumlar = db
+    .all('SELECT depo, shelf, qty, updated_at FROM location WHERE product_id=? AND qty>0 ORDER BY depo, qty DESC', pid)
+    .map((k) => ({ ...k, depoAd: depoAdi(k.depo) }));
+  const hareketler = db
+    .all('SELECT * FROM movement WHERE product_id=? ORDER BY ts DESC, id DESC LIMIT 200', pid)
+    .map((h) => ({ ...h, depoAd: depoAdi(h.depo) }));
   const kabul = belgeler()
     .filter((r) => r.lines.some((l) => l.productId === pid))
     .slice(0, 30)
     .map((r) => {
       const l = r.lines.find((x) => x.productId === pid);
-      return { id: r.id, docNo: r.docNo, tur: r.tur, date: r.date, supplier: r.supplier, accepted: l.accepted, shelved: l.shelved, acik: r.acik };
+      return { id: r.id, docNo: r.docNo, tur: r.tur, date: r.date, supplier: r.supplier, depoAd: r.depoAd, accepted: l.accepted, shelved: l.shelved, acik: r.acik };
+    });
+  // Depo depo özet: Vega stoku, raflar, bekleyen, yerleşmemiş.
+  const depoSet = new Set(konumlar.map((k) => k.depo));
+  if (goruntu) for (const [d, m] of goruntu.stokDepo) if (m.get(pid)) depoSet.add(d);
+  for (const r of kabul) if (r.acik) depoSet.add(belgeler().find((x) => x.id === r.id)?.depo);
+  const depolarOzet = [...depoSet]
+    .filter((d) => d !== undefined)
+    .sort((a, b) => a - b)
+    .map((d) => {
+      const vs = vegaStok(pid, d);
+      const raf = konumlar.filter((k) => k.depo === d).reduce((t, k) => t + k.qty, 0);
+      const bek = bekleyenKabul(d).get(pid) || 0;
+      return { depo: d, depoAd: depoAdi(d), vegaStock: vs, raf: yuvarla(raf), bekleyen: yuvarla(bek), fark: yuvarla(vs - raf - bek) };
     });
   const vs = vegaStok(pid);
   const raf = konumlar.reduce((t, k) => t + k.qty, 0);
   const bek = bekleyenKabul().get(pid) || 0;
   return {
-    urun: p ? { ...p, barcodes: goruntu.barcodes[pid] || [] } : { id: pid, code: '?', name: 'Vega\'da bulunamayan kart', unit: '' },
+    urun: p ? { ...p, barcodes: goruntu.barcodes[pid] || [] } : { id: pid, code: '?', name: "Vega'da bulunamayan kart", unit: '' },
     vegaStock: vs,
     raf: yuvarla(raf),
     bekleyen: yuvarla(bek),
     fark: yuvarla(vs - raf - bek),
+    depolar: depolarOzet,
+    asilRaflar: db.all('SELECT depo, shelf FROM product_home WHERE product_id=?', pid).map((h) => ({ ...h, depoAd: depoAdi(h.depo) })),
     konumlar,
     hareketler,
     kabul,
   };
 }
 
-function raflar() {
+function raflar(depo = null) {
   const ozet = new Map(
-    db.all('SELECT shelf, COUNT(*) AS n, SUM(qty) AS q, MAX(updated_at) AS u FROM location WHERE qty>0 GROUP BY shelf').map((r) => [r.shelf, r]),
+    db.all('SELECT depo, shelf, COUNT(*) AS n, SUM(qty) AS q, MAX(updated_at) AS u FROM location WHERE qty>0 GROUP BY depo, shelf').map((r) => [`${r.depo}|${r.shelf}`, r]),
   );
-  return db.all('SELECT * FROM shelf ORDER BY code').map((s) => {
-    const o = ozet.get(s.code);
-    return { ...s, cesit: o ? o.n : 0, miktar: o ? yuvarla(o.q) : 0, sonHareket: o ? o.u : null };
+  const rows = depo === null ? db.all('SELECT * FROM shelf ORDER BY depo, code') : db.all('SELECT * FROM shelf WHERE depo=? ORDER BY code', depo);
+  return rows.map((s) => {
+    const o = ozet.get(`${s.depo}|${s.code}`);
+    return { ...s, depoAd: depoAdi(s.depo), cesit: o ? o.n : 0, miktar: o ? yuvarla(o.q) : 0, sonHareket: o ? o.u : null };
   });
 }
 
-function rafDetay(code) {
+function rafDetay(depo, code) {
   const c = rafKodu(code);
-  const s = db.get('SELECT * FROM shelf WHERE code=?', c);
-  const icerik = db.all('SELECT product_id, qty, updated_at FROM location WHERE shelf=? AND qty>0', c).map((l) => {
+  const s = db.get('SELECT * FROM shelf WHERE depo=? AND code=?', depo, c);
+  const icerik = db.all('SELECT product_id, qty, updated_at FROM location WHERE depo=? AND shelf=? AND qty>0', depo, c).map((l) => {
     const p = urun(l.product_id);
-    return { productId: l.product_id, code: p ? p.code : '?', name: p ? p.name : 'Vega\'da bulunamayan kart', unit: p ? p.unit : '', qty: l.qty, updated_at: l.updated_at };
+    return { productId: l.product_id, code: p ? p.code : '?', name: p ? p.name : "Vega'da bulunamayan kart", unit: p ? p.unit : '', qty: l.qty, updated_at: l.updated_at };
   });
   icerik.sort((a, b) => a.name.localeCompare(b.name, 'tr'));
-  const hareketler = db.all('SELECT * FROM movement WHERE shelf=? ORDER BY ts DESC, id DESC LIMIT 100', c);
-  return { raf: s, icerik, hareketler: hareketler.map((h) => ({ ...h, ...urunAdi(h.product_id) })) };
+  const hareketler = db.all('SELECT * FROM movement WHERE depo=? AND shelf=? ORDER BY ts DESC, id DESC LIMIT 100', depo, c);
+  return { raf: s ? { ...s, depoAd: depoAdi(s.depo) } : null, depo, depoAd: depoAdi(depo), icerik, hareketler: hareketler.map((h) => ({ ...h, ...urunAdi(h.product_id) })) };
 }
 
 function urunAdi(id) {
@@ -556,15 +647,16 @@ function sayimNo() {
 }
 
 /**
- * Sayım özeti, ürün başına. "Olması gereken" depo stoku = raflardaki güncel toplam + açık belgelerde
- * rafa kaldırılmayı bekleyen. Vega'ya yazılacak fark bunun Vega stokundan farkı.
+ * Sayım özeti, ürün başına, sayımın deposunda. "Olması gereken" depo stoku = o depodaki raflarda güncel
+ * toplam + açık belgelerde rafa kaldırılmayı bekleyen. Vega'ya yazılacak fark bunun Vega stokundan farkı.
  */
 function sayimOzet(id, { dahilSayilmayan = false } = {}) {
   const s = db.get('SELECT * FROM count_session WHERE id=?', id);
   if (!s) return null;
+  const depo = s.depo;
   const satirlar = db.all('SELECT * FROM count_line WHERE session_id=? ORDER BY shelf, product_id', id);
-  const raf = rafToplamlari();
-  const bek = bekleyenKabul();
+  const raf = rafToplamlari(depo);
+  const bek = bekleyenKabul(depo);
   const urunler = new Map();
   for (const l of satirlar) {
     if (!urunler.has(l.product_id)) urunler.set(l.product_id, { productId: l.product_id, sayilan: 0, onceki: 0, raflar: [] });
@@ -574,7 +666,7 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
     u.raflar.push(l.shelf);
   }
   if (dahilSayilmayan && goruntu) {
-    for (const [pid, st] of goruntu.stockMap) {
+    for (const [pid, st] of goruntu.stokDepo.get(depo) || []) {
       if (!urunler.has(pid) && Math.abs(Number(st)) > EPS) urunler.set(pid, { productId: pid, sayilan: 0, onceki: 0, raflar: [], sayilmadi: true });
     }
   }
@@ -583,17 +675,17 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
     const p = urun(u.productId);
     const rafToplam = raf.get(u.productId)?.q || 0;
     const b = bek.get(u.productId) || 0;
-    const vs = vegaStok(u.productId);
+    const vs = vegaStok(u.productId, depo);
     const hedef = yuvarla(rafToplam + b);
     return {
       ...u,
       sayilan: yuvarla(u.sayilan),
       onceki: yuvarla(u.onceki),
       code: p ? p.code : '?',
-      name: p ? p.name : 'Vega\'da bulunamayan kart',
+      name: p ? p.name : "Vega'da bulunamayan kart",
       unit: p ? p.unit : '',
       vegadaVar: Boolean(p),
-      digerRaflar: yuvarla(rafToplam - (u.sayilmadi ? 0 : satirlarRafToplam(id, u.productId))),
+      digerRaflar: yuvarla(rafToplam - (u.sayilmadi ? 0 : satirlarRafToplam(depo, id, u.productId))),
       bekleyen: yuvarla(b),
       hedef,
       vegaStock: vs,
@@ -603,7 +695,7 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
   liste.sort((a, b) => Math.abs(b.fark) - Math.abs(a.fark) || a.name.localeCompare(b.name, 'tr'));
   const satirDetay = satirlar.map((l) => ({ ...l, ...urunAdi(l.product_id), fark: yuvarla(l.counted - l.server_before) }));
   return {
-    oturum: { ...s, vega_docs: s.vega_docs ? JSON.parse(s.vega_docs) : null },
+    oturum: { ...s, depoAd: depoAdi(depo), vega_docs: s.vega_docs ? JSON.parse(s.vega_docs) : null },
     raflar: [...sayilanRaflar].sort(),
     satirlar: satirDetay,
     urunler: liste,
@@ -616,10 +708,11 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
   };
 }
 
-function satirlarRafToplam(sessionId, productId) {
+function satirlarRafToplam(depo, sessionId, productId) {
   // Sayılan raflardaki güncel miktar (sayım sonrası rafa kaldırma vb. olduysa onu da içerir).
   const r = db.get(
-    `SELECT SUM(l.qty) AS q FROM location l WHERE l.product_id=? AND l.shelf IN (SELECT shelf FROM count_line WHERE session_id=? AND product_id=?)`,
+    `SELECT SUM(l.qty) AS q FROM location l WHERE l.depo=? AND l.product_id=? AND l.shelf IN (SELECT shelf FROM count_line WHERE session_id=? AND product_id=?)`,
+    depo,
     productId,
     sessionId,
     productId,
@@ -640,8 +733,8 @@ async function sayimOnayla(id, { vegaYaz = false, stoknolar = null, dahilSayilma
       .filter((u) => u.vegadaVar && /^\d+$/.test(u.productId) && (!secili || secili.has(u.productId)))
       .map((u) => ({ stokno: Number(u.productId), hedef: u.hedef }));
     if (kalemler.length) {
-      sonuc = await vega.sayimYaz(config.load(), kalemler, { aciklama: `Sayım ${s.no}` });
-      log.bilgi(`Sayım ${s.no} Vega'ya yazıldı: ${sonuc.docs.map((d) => d.belgeNo).join(', ') || 'fark yok'}`);
+      sonuc = await vega.sayimYaz(config.load(), kalemler, { aciklama: `Sayım ${s.no}`, depo: s.depo });
+      log.bilgi(`Sayım ${s.no} (${s.depoAd}) Vega'ya yazıldı: ${sonuc.docs.map((d) => d.belgeNo).join(', ') || 'fark yok'}`);
     }
   }
   db.run(
@@ -680,6 +773,11 @@ module.exports = {
   goruntu: () => goruntu,
   urun,
   vegaStok,
+  depolar,
+  depoAdi,
+  varsayilanDepo,
+  depoCoz,
+  depoSuzgec,
   rafEkle,
   rafKodu,
   rafVarMi,

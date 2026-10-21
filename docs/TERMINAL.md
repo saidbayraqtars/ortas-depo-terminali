@@ -1,6 +1,6 @@
 # El terminali kurulumu
 
-Uygulama: `cikti/OrtasDepo-<sürüm>.apk`. Android 8.0 ve üstü.
+Uygulama: `cikti/OrtasDepo-<sürüm>.apk`. Android 7.1 ve üstü.
 
 ## Kurulum
 

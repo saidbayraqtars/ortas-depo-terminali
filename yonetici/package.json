@@ -1,6 +1,6 @@
 {
   "name": "ortas-depo-yonetici",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "private": true,
   "description": "Ortaş Depo Yönetici: el terminallerinin bağlandığı sunucu ve depo yönetim ekranı (Vega ERP ile).",
   "author": "ArcTeknik - Said Bayraktar",
@@ -75,6 +75,7 @@
     "bwip-js": "^4.11.4",
     "compression": "^1.8.2",
     "electron-updater": "^6.8.9",
+    "exceljs": "^4.4.0",
     "express": "^5.3.0",
     "mssql": "^12.7.10",
     "qrcode": "^1.5.4"

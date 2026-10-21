@@ -12,6 +12,9 @@ data class Product(
 
 data class Shelf(val code: String, val zone: String)
 
+/** Vega deposu (F{firma}TBLDEPOLAR.IND). */
+data class Depot(val id: Int, val name: String)
+
 data class Location(val product: Product, val shelf: String, val qty: Double)
 
 data class Receipt(
@@ -21,6 +24,9 @@ data class Receipt(
     val date: String,
     val lineCount: Int,
     val doneLines: Int,
+    /** Belge depo bazlı: rafa kaldırma bu depoda olur. */
+    val depot: Int = 0,
+    val depotName: String = "",
 )
 
 data class ReceiptLine(
@@ -40,6 +46,7 @@ data class CountSession(
     /** Kör sayımda sayan kişi sistem miktarını görmez. */
     val blind: Boolean,
     val status: String,
+    val depot: Int = 0,
 )
 
 data class CountLine(val shelf: String, val product: Product, val qty: Double)

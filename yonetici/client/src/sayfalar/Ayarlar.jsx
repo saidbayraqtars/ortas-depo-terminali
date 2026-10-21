@@ -77,7 +77,7 @@ function VegaAyari({ a, kaydet }) {
 
   const kaydetVega = async () => {
     setMesgul('kaydet');
-    await kaydet({ vega: { ...govde(), firma: v.firma ? Number(v.firma) : null, donem: v.donem ? Number(v.donem) : null, depo: v.depo ? Number(v.depo) : null } });
+    await kaydet({ vega: { ...govde(), firma: v.firma ? Number(v.firma) : null, donem: v.donem ? Number(v.donem) : null, depo: v.depo ? Number(v.depo) : null, depolar: (v.depolar || []).map(Number) } });
     setMesgul('');
   };
 
@@ -86,7 +86,7 @@ function VegaAyari({ a, kaydet }) {
       ikon="database"
       baslik="Vega bağlantısı"
       aciklama="Ürünler, stok ve mal kabul belgeleri buradan okunur. Onaylanan sayım fişleri buraya yazılır."
-      alt={<><Btn icon="refresh" busy={mesgul === 'dene'} onClick={dene}>Bağlantıyı dene</Btn><Btn kind="primary" busy={mesgul === 'kaydet'} onClick={kaydetVega} disabled={!v.firma || !v.depo}>Kaydet</Btn></>}
+      alt={<><Btn icon="refresh" busy={mesgul === 'dene'} onClick={dene}>Bağlantıyı dene</Btn><Btn kind="primary" busy={mesgul === 'kaydet'} onClick={kaydetVega} disabled={!v.firma}>Kaydet</Btn></>}
     >
       <div className="grid g3">
         <Alan etiket="SQL Server" ipucu="Örnek: SUNUCU\SQLEXPRESS ya da 192.168.1.10"><input className="inp mono" value={v.server || ''} onChange={d('server')} /></Alan>
@@ -108,13 +108,28 @@ function VegaAyari({ a, kaydet }) {
             {donemler.map((x) => <option key={x.ind} value={x.ind}>D{String(x.ind).padStart(4, '0')} · {x.yil}</option>)}
           </select>
         </Alan>
-        <Alan etiket="Depo" ipucu="Terminallerin çalıştığı Vega deposu">
+        <Alan etiket="Varsayılan depo" ipucu="Terminal ilk açılışta bu depoda başlar; terminalden değiştirilebilir">
           <select className="inp" value={v.depo || ''} onChange={(e) => setV((x) => ({ ...x, depo: Number(e.target.value) || null }))}>
-            <option value="">Seçin</option>
+            <option value="">İlk depo</option>
             {(depolar.length ? depolar : v.depo ? [{ ind: v.depo, ad: String(v.depo) }] : []).map((x) => <option key={x.ind} value={x.ind}>{x.ad} ({x.ind})</option>)}
           </select>
         </Alan>
       </div>
+      {depolar.length > 1 && (
+        <Alan etiket="Kullanılan depolar" ipucu="Hiçbiri seçilmezse firmanın bütün depoları. Mal kabul belgeleri, stok ve raflar yalnız seçili depolardan gelir.">
+          <div className="chip-list" style={{ maxHeight: 140, overflow: 'auto', gap: 10 }}>
+            {depolar.map((x) => {
+              const secili = (v.depolar || []).map(Number).includes(x.ind);
+              return (
+                <label key={x.ind} className="check" style={{ minWidth: 180 }}>
+                  <input type="checkbox" checked={secili} onChange={() => setV((y) => ({ ...y, depolar: secili ? (y.depolar || []).filter((d) => Number(d) !== x.ind) : [...(y.depolar || []), x.ind] }))} />
+                  <span>{x.ad} <span className="muted small">({x.ind})</span></span>
+                </label>
+              );
+            })}
+          </div>
+        </Alan>
+      )}
     </Bolum>
   );
 }

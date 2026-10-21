@@ -114,6 +114,7 @@ class Sync(private val context: Context, private val repo: Repo) {
                     if (master != null && (backend !is DemoBackend || db.isEmpty())) {
                         db.replaceMaster(master.json)
                         repo.prefs.applyMaster(master.json)
+                        repo.ensureDepot(master.json.optInt("defaultDepot", 0))
                         repo.prefs.masterEtag = master.etag ?: ""
                     }
                     repo.prefs.lastSync = System.currentTimeMillis()

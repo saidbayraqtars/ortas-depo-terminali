@@ -17,7 +17,8 @@ const DEFAULTS = {
     password: '',
     firma: null, // 101 gibi (TBLFIRMA.IND)
     donem: null, // null = yıla göre kendisi seçer
-    depo: null, // F{firma}TBLDEPOLAR.IND
+    depo: null, // varsayılan depo (F{firma}TBLDEPOLAR.IND): terminal ilk açılışta ve depo bilgisi gelmeyen işlemde
+    depolar: [], // kullanılan depolar; boş = firmanın bütün depoları
   },
   // Mal kabul: hangi stok girişleri rafa kaldırılacak belge sayılır.
   kabul: {

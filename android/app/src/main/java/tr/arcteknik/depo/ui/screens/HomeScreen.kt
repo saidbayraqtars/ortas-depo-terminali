@@ -31,7 +31,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
 import tr.arcteknik.depo.BuildConfig
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import tr.arcteknik.depo.ui.AppVm
+import tr.arcteknik.depo.ui.DepotDialog
 import tr.arcteknik.depo.ui.openUrl
 import tr.arcteknik.depo.ui.Badge
 import tr.arcteknik.depo.ui.C
@@ -61,9 +65,15 @@ fun HomeScreen(vm: AppVm, online: Boolean, version: Int) {
             Box(Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).background(C.Accent), contentAlignment = Alignment.Center) {
                 Text(vm.user?.name?.take(1)?.uppercase() ?: "?", color = C.Bar, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             }
-            Column(Modifier.weight(1f)) {
+            val depots = remember(version) { vm.repo.db.depots() }
+            var pickDepot by remember { mutableStateOf(false) }
+            Column(Modifier.weight(1f).clickable(enabled = depots.size > 1) { pickDepot = true }) {
                 Text(vm.user?.name ?: "", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-                Text(vm.repo.prefs.warehouse, color = C.BarSub, fontSize = 12.sp)
+                // Çalışılan depo: transfer, sayım ve sorgu bu depoda. Dokununca değişir.
+                Text(remember(version) { vm.repo.depotName() } + if (depots.size > 1) "  ▾" else "", color = C.BarSub, fontSize = 12.sp)
+            }
+            if (pickDepot) {
+                DepotDialog(depots, vm.repo.db.depot, { vm.repo.selectDepot(it); pickDepot = false; vm.ok("Çalışılan depo: ${vm.repo.depotName()}") }, { pickDepot = false })
             }
             NetPill(online)
             IconButton(onClick = { vm.logout() }, modifier = Modifier.size(48.dp)) {

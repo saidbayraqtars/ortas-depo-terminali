@@ -7,9 +7,11 @@ const { DatabaseSync } = require('node:sqlite');
 let db = null;
 let dosya = null;
 
-const SURUM = 1;
+let secenek = {};
 
-function open(file) {
+/** `varsayilanDepo`: çok depoya geçerken (sürüm 2) eski kayıtların bağlanacağı Vega deposu. */
+function open(file, ayar = {}) {
+  secenek = ayar;
   dosya = file;
   fs.mkdirSync(path.dirname(file), { recursive: true });
   db = new DatabaseSync(file);
@@ -130,8 +132,47 @@ function migrate() {
     `);
     set('surum', '1');
   }
-  if (SURUM !== Number(get("SELECT value FROM meta WHERE key='surum'")?.value)) {
-    // Yeni sürümlerin göçleri buraya: if (v < 2) { ... set('surum','2') }
+  if (Number(get("SELECT value FROM meta WHERE key='surum'")?.value) < 2) {
+    // 2: çok depo. Raf, raf stoku, hareket ve sayım depoya bağlı; eski kayıtlar önceki tek depoya yazılır.
+    const d = Number(secenek.varsayilanDepo) || 0;
+    db.exec(`
+      CREATE TABLE shelf2(
+        depo INTEGER NOT NULL,
+        code TEXT NOT NULL,
+        zone TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'ADMIN',
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(depo, code)
+      );
+      INSERT INTO shelf2 SELECT ${d}, code, zone, note, source, created_at FROM shelf;
+      DROP TABLE shelf;
+      ALTER TABLE shelf2 RENAME TO shelf;
+      CREATE TABLE location2(
+        depo INTEGER NOT NULL,
+        product_id TEXT NOT NULL,
+        shelf TEXT NOT NULL,
+        qty REAL NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(depo, product_id, shelf)
+      );
+      INSERT INTO location2 SELECT ${d}, product_id, shelf, qty, updated_at FROM location;
+      DROP TABLE location;
+      ALTER TABLE location2 RENAME TO location;
+      CREATE INDEX ix_location_shelf ON location(depo, shelf);
+      CREATE INDEX ix_location_product ON location(product_id);
+      ALTER TABLE movement ADD COLUMN depo INTEGER NOT NULL DEFAULT ${d};
+      ALTER TABLE count_session ADD COLUMN depo INTEGER NOT NULL DEFAULT ${d};
+      -- Ürünün asıl rafı (Excel'den, B2B'deki raf bilgisi): rafa kaldırırken öneri; miktar tutmaz.
+      CREATE TABLE product_home(
+        depo INTEGER NOT NULL,
+        product_id TEXT NOT NULL,
+        shelf TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(depo, product_id)
+      );
+    `);
+    set('surum', '2');
   }
 }
 

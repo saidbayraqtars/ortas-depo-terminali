@@ -4,7 +4,7 @@ Sistem iki parçadır:
 
 - **Ortaş Depo Yönetici** (Windows): depodaki bir bilgisayara kurulur. Hem yönetim ekranı hem de el terminallerinin
   bağlandığı sunucudur. Vega'yı (SQL Server) okur; yalnız onaylanan sayımı Vega'ya yazar.
-- **Ortaş Depo Terminali** (Android 8+): el terminali ya da telefon. Yönetici programındaki sunucuya bağlanır,
+- **Ortaş Depo Terminali** (Android 7.1 ve üstü): el terminali ya da telefon. Yönetici programındaki sunucuya bağlanır,
   internetsizken de çalışır.
 
 ## 1. Yönetici programı
@@ -12,11 +12,13 @@ Sistem iki parçadır:
 1. `OrtasDepoYonetici-Kurulum-<sürüm>.exe` ile kurun (yönetici izni ister: Windows Güvenlik Duvarı'na programın
    kuralını ekler).
 2. Program açılınca **Ayarlar › Vega bağlantısı**: SQL sunucu adı, kullanıcı, parola → **Bağlantıyı dene** →
-   firma, dönem (Otomatik önerilir; yıl değişince yeni dönemi kendisi seçer) ve **depo** → **Kaydet**.
+   firma, dönem (Otomatik önerilir; yıl değişince yeni dönemi kendisi seçer), **varsayılan depo** ve istenirse
+   **kullanılan depolar** (boş = firmanın bütün depoları) → **Kaydet**.
 3. **Ayarlar › Mal kabul**: hangi Vega belgeleri rafa kaldırılacak iş sayılsın (alış faturası 20, alış irsaliyesi 26,
    stok giriş fişi 32) ve başlangıç tarihi (bundan eski belgeler gelmez; kurulum günü önerilir).
-4. **Raflar › Toplu raf oluştur** (ör. A-C bölge, 1-10 koridor, 1-4 kat) → **Etiket yazdır** (PDF; A4 etiket
-   kâğıdı ya da etiket yazıcısı boyutları). Yazdırırken ölçek **%100 / gerçek boyut**.
+4. Raflar: B2B'deki depo/raf listesi varsa **Raflar › Excel'den içe aktar** (aşağıda), yoksa **Toplu raf oluştur**
+   (ör. A-C bölge, 1-10 koridor, 1-4 kat) → **Etiket yazdır** (PDF ya da etiket yazıcısı).
+   Yazdırırken ölçek **%100 / gerçek boyut**.
 5. **Kullanıcılar › Yeni kullanıcı**: depo personeli, 4-8 haneli şifre.
 6. **Cihazlar › Yeni cihaz** (TRM-01…): açılan pencerede iki QR var (aşağıda).
 
@@ -40,7 +42,33 @@ Okuyucu ayarı (klavye modu / yayın modu, marka marka): [TERMINAL.md](TERMINAL.
 Yeni terminal sürümü yönetici programıyla birlikte gelir; terminal ana menüde "Yeni sürüm hazır" gösterir,
 dokununca iner.
 
-## 3. Günlük kullanım
+## 3. Depolar
+
+Raflar, raf stoku, sayım ve hareketler depo bazlıdır (Vega'nın depoları). Kesin bir sınır yoktur:
+
+- **Mal kabul belgesi kendi deposunu taşır.** Alış faturası Vega'da MERKEZ depoya girdiyse terminal hangi depoyu
+  seçmiş olursa olsun mal MERKEZ'deki rafa kaldırılır; raf okutulurken MERKEZ rafları geçerlidir.
+- Terminalde ana menünün üstündeki depo adına dokunarak **çalışılan depo** seçilir. Raf transferi, sayım, ürün/raf
+  sorgu ve etiket bu depoda yapılır. Mal kabul listesi bütün depoların belgelerini gösterir (çalışılan depo önce).
+- Yönetim ekranında sol üstteki seçiciyle tek depo ya da bütün depolar görüntülenir.
+- Aynı raf kodu iki depoda olabilir (ör. A-01-01 hem MERKEZ hem FABRİKA'da).
+
+## 4. Excel'den raf içe aktarma
+
+**Raflar › Excel'den içe aktar.** `.xlsx` ya da `.csv`, ilk satır başlık. Bir satır bir raf:
+
+| Sütun | Zorunlu | Not |
+|---|---|---|
+| Depo | evet* | Vega depo adı ya da numarası. Büyük-küçük harf, Türkçe harf farkı önemsiz ("merkez" = MERKEZ). Eşleşmeyen adlar pencerede elle seçilir. *Sütun yoksa hepsi seçilen tek depoya. |
+| Raf | evet | Raf kodu (A-01-02) |
+| Bölge, Not | hayır | |
+| Ürün | hayır | Vega stok kodu ya da barkod |
+| Miktar | hayır | Ürün + miktar: rafa o miktar yazılır (ilk yerleşim). Ürün, miktarsız: ürünün **asıl rafı** olur, terminal rafa kaldırırken o rafı önerir. |
+
+Sütun adları farklı olabilir (Ambar, Raf Kodu, Lokasyon, Stok Kodu, Adet…); program tahmin eder, pencereden
+düzeltilir. Önizlemede atlanacak satırlar nedeniyle listelenir. Boş şablon: pencerede **Şablon indir**.
+
+## 5. Günlük kullanım
 
 | İş | Terminalde | Yönetici programında |
 |---|---|---|
@@ -56,8 +84,9 @@ yerine ad yazılırsa da aynı liste açılır. Ürün kodu da okutulabilir ya d
 **İnternet/Wi-Fi yoksa:** işlemler terminalde kuyruğa alınır, bağlantı gelince kendiliğinden gönderilir
 (Kuyruk ekranı). Giriş internetsiz de yapılır.
 
-## 4. Sayım ve Vega
+## 6. Sayım ve Vega
 
+- Sayım bir depoda açılır; terminalde yalnız o depoyu seçen cihazlarda görünür.
 - **Raf sayımı:** yalnız raf miktarları düzelir; Vega değişmez. İlk yerleşim (kurulumdan sonra bütün rafların bir kez
   sayılması) ve bölüm sayımları için.
 - **Genel sayım:** onaylarken "Vega'ya sayım fişi yaz" seçilir. Ürün başına olması gereken = raflardaki toplam +
@@ -67,7 +96,7 @@ yerine ad yazılırsa da aynı liste açılır. Ürün kodu da okutulabilir ya d
 - Yanlış onay **Onayı geri al** ile Vega'dan silinir.
 - Terminalde başlatılan serbest sayım, gönderilince "Onay bekliyor" olarak gelir.
 
-## 5. Şubeler (VPN)
+## 7. Şubeler (VPN)
 
 Her şube kendi Vega deposuyla çalışır. Önerilen kurulum: **her şubede o şubenin bir bilgisayarına Ortaş Depo
 Yönetici kurulur** ve Ayarlar'da o şubenin Vega deposu seçilir. Şube terminalleri şubedeki bu bilgisayara bağlanır

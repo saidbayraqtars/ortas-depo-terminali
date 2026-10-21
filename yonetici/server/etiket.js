@@ -50,7 +50,7 @@ function rafEtiketi(r, b) {
   return `<div class="e">
     <div class="k" style="font-size:${yazi.toFixed(1)}mm">${kac(r.code)}</div>
     <div class="b" style="height:${(b.h * 0.36).toFixed(1)}mm">${svgYerlestir(barkod(r.code))}</div>
-    ${r.zone ? `<div class="z" style="font-size:${Math.max(2.4, b.h * 0.07).toFixed(1)}mm">${kac(r.zone)} bölgesi</div>` : ''}
+    ${r.zone || r.depoAd ? `<div class="z" style="font-size:${Math.max(2.4, b.h * 0.07).toFixed(1)}mm">${kac([r.zone ? `${r.zone} bölgesi` : '', r.depoAd].filter(Boolean).join(' · '))}</div>` : ''}
   </div>`;
 }
 

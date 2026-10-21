@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Alan, api, Ara, Btn, Durum, HAREKET, Icon, indir, miktar, Modal, Rozet, SayfaBaslik, Secim, tarihSaat, useApp, useVeri } from '../lib.jsx';
+import { Alan, api, Ara, Btn, Durum, HAREKET, Icon, indir, miktar, Modal, Rozet, SayfaBaslik, Secim, tarihSaat, useApp, useDepo, useVeri } from '../lib.jsx';
 import EtiketPenceresi from './Etiket.jsx';
 
 function useGecikmeli(deger, ms = 300) {
@@ -23,7 +23,8 @@ export default function Urunler() {
   const [q, setQ] = useState('');
   const [filtre, setFiltre] = useState('hepsi');
   const ara = useGecikmeli(q);
-  const yol = `/urunler?filtre=${filtre}&q=${encodeURIComponent(ara)}`;
+  const { qs, depo, ad } = useDepo();
+  const yol = `/urunler?filtre=${filtre}&q=${encodeURIComponent(ara)}${qs}`;
   const { veri, hata, yukleniyor } = useVeri(yol, [yol]);
   const { toast } = useApp();
   const [secili, setSecili] = useState(() => new Set());
@@ -38,9 +39,9 @@ export default function Urunler() {
   const hepsi = gorunen.length > 0 && gorunen.every((u) => secili.has(u.id));
   return (
     <>
-      <SayfaBaslik baslik="Ürün ve stok" alt="Vega stoku ile raflardaki miktarın karşılaştırması">
+      <SayfaBaslik baslik="Ürün ve stok" alt={`Vega stoku ile raflardaki miktarın karşılaştırması · ${depo ? `${ad(depo)} deposu` : 'bütün depolar'}`}>
         <Btn icon="barcode" disabled={!secili.size} onClick={() => setEtiket(true)}>Barkod etiketi{secili.size ? ` (${secili.size})` : ''}</Btn>
-        <Btn icon="export" onClick={() => indir(`/urunler.csv?filtre=${filtre}&q=${encodeURIComponent(ara)}`, 'urunler.csv').catch((e) => toast(e.message, true))}>Excel (CSV)</Btn>
+        <Btn icon="export" onClick={() => indir(`/urunler.csv?filtre=${filtre}&q=${encodeURIComponent(ara)}${qs}`, 'urunler.csv').catch((e) => toast(e.message, true))}>Excel (CSV)</Btn>
       </SayfaBaslik>
       <div className="notice info" style={{ marginBottom: 14 }}>
         <Icon name="info" />
@@ -84,6 +85,8 @@ export default function Urunler() {
 
 function Duzelt({ urun, konum, kapat, tamam }) {
   const { toast } = useApp();
+  const { depolar, cok, depo: secili, varsayilan } = useDepo();
+  const [depo, setDepo] = useState(String(konum?.depo ?? (secili || varsayilan || depolar[0]?.ind || '')));
   const [raf, setRaf] = useState(konum?.shelf || '');
   const [qty, setQty] = useState(konum ? String(konum.qty) : '');
   const [not, setNot] = useState('');
@@ -91,7 +94,7 @@ function Duzelt({ urun, konum, kapat, tamam }) {
   const kaydet = async () => {
     setMesgul(true);
     try {
-      await api('/konum', { method: 'POST', body: { productId: urun.id, shelf: raf, qty: Number(String(qty).replace(',', '.')), not } });
+      await api('/konum', { method: 'POST', body: { productId: urun.id, shelf: raf, qty: Number(String(qty).replace(',', '.')), not, depo } });
       toast('Raf miktarı kaydedildi');
       tamam();
     } catch (e) {
@@ -103,6 +106,13 @@ function Duzelt({ urun, konum, kapat, tamam }) {
   return (
     <Modal baslik="Raf miktarını düzelt" kapat={kapat} alt={<><Btn onClick={kapat}>Vazgeç</Btn><Btn kind="primary" busy={mesgul} onClick={kaydet}>Kaydet</Btn></>}>
       <div><b>{urun.name}</b> <span className="mono muted">{urun.code}</span></div>
+      {cok && (
+        <Alan etiket="Depo">
+          <select className="inp" value={depo} onChange={(e) => setDepo(e.target.value)} disabled={Boolean(konum)}>
+            {depolar.map((d) => <option key={d.ind} value={d.ind}>{d.ad}</option>)}
+          </select>
+        </Alan>
+      )}
       <Alan etiket="Raf" ipucu="Tanımlı bir raf kodu"><input className="inp mono" value={raf} onChange={(e) => setRaf(e.target.value.toUpperCase())} autoFocus={!konum} disabled={Boolean(konum)} /></Alan>
       <Alan etiket={`Raftaki miktar (${urun.unit})`} ipucu="0 yazılırsa ürün raftan kalkar"><input className="inp mono" inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value)} autoFocus={Boolean(konum)} /></Alan>
       <Alan etiket="Not"><input className="inp" value={not} onChange={(e) => setNot(e.target.value)} placeholder="Neden düzeltildi" /></Alan>
@@ -129,6 +139,25 @@ export function UrunDetay({ id }) {
             <div className="card stat"><span className="k">Rafa kaldırılacak</span><span className="v">{miktar(d.bekleyen)}</span></div>
             <div className={`card stat ${Math.abs(d.fark) > 1e-9 ? 'warn' : ''}`}><span className="k">Yerleşmemiş</span><span className="v">{miktar(d.fark, true)}</span></div>
           </div>
+          {d.depolar.length > 1 && (
+            <div className="card" style={{ marginBottom: 14 }}>
+              <div className="card-head"><Icon name="layers" /><h2>Depolar</h2></div>
+              <table className="tbl">
+                <thead><tr><th>Depo</th><th className="num">Vega stok</th><th className="num">Raflarda</th><th className="num">Rafa kaldırılacak</th><th className="num">Yerleşmemiş</th></tr></thead>
+                <tbody>
+                  {d.depolar.map((x) => (
+                    <tr key={x.depo}>
+                      <td><b>{x.depoAd}</b></td>
+                      <td className="num">{miktar(x.vegaStock)}</td>
+                      <td className="num">{miktar(x.raf)}</td>
+                      <td className="num">{x.bekleyen ? miktar(x.bekleyen) : ''}</td>
+                      <td className={`num ${x.fark > 0 ? 'neg' : x.fark < 0 ? 'pos' : 'muted'}`}>{miktar(x.fark, true)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
           <div className="grid g2" style={{ marginBottom: 14 }}>
             <div className="card">
               <div className="card-head"><Icon name="mapPoint" /><h2>Raflar</h2></div>
@@ -136,11 +165,12 @@ export function UrunDetay({ id }) {
                 <div className="empty">Bu ürün hiçbir rafta değil.</div>
               ) : (
                 <table className="tbl">
-                  <thead><tr><th>Raf</th><th className="num">Miktar</th><th>Son değişiklik</th><th /></tr></thead>
+                  <thead><tr><th>Raf</th><th>Depo</th><th className="num">Miktar</th><th>Son değişiklik</th><th /></tr></thead>
                   <tbody>
                     {d.konumlar.map((k) => (
-                      <tr key={k.shelf}>
-                        <td className="mono"><a href={`#/raf/${encodeURIComponent(k.shelf)}`}>{k.shelf}</a></td>
+                      <tr key={`${k.depo}|${k.shelf}`}>
+                        <td className="mono"><a href={`#/raf/${k.depo}/${encodeURIComponent(k.shelf)}`}>{k.shelf}</a></td>
+                        <td className="muted">{k.depoAd}</td>
                         <td className="num">{miktar(k.qty)}</td>
                         <td className="muted">{tarihSaat(k.updated_at)}</td>
                         <td style={{ width: 40 }}><Btn kind="ghost" size="sm" icon="edit" onClick={() => setDuzelt(k)} title="Düzelt" /></td>
@@ -157,6 +187,7 @@ export function UrunDetay({ id }) {
                   <dt>Vega kart no</dt><dd className="mono">{d.urun.id}</dd>
                   <dt>Barkod</dt>
                   <dd>{d.urun.barcodes?.length ? <div className="chip-list">{d.urun.barcodes.map((b) => <span className="chip" key={b}>{b}</span>)}</div> : <span className="muted">yok (terminalde ürün kodu okutulur)</span>}</dd>
+                  {d.asilRaflar?.length > 0 && <><dt>Asıl raf</dt><dd>{d.asilRaflar.map((h) => <span key={h.depo} className="chip" style={{ marginRight: 6 }}>{h.shelf} · {h.depoAd}</span>)}</dd></>}
                 </dl>
                 {d.kabul.length > 0 && (
                   <>
@@ -165,7 +196,7 @@ export function UrunDetay({ id }) {
                     {d.kabul.map((k) => (
                       <div key={k.id} className="row small" style={{ padding: '3px 0' }}>
                         <a className="mono" href={`#/kabul/${encodeURIComponent(k.id)}`}>{k.docNo}</a>
-                        <span className="muted">{k.date}</span>
+                        <span className="muted">{k.date} · {k.depoAd}</span>
                         <span className="grow" style={{ flex: 1 }} />
                         <span className="num">{miktar(k.shelved)}/{miktar(k.accepted)}</span>
                         {k.acik ? <Rozet tur="b-warn">açık</Rozet> : <Rozet tur="b-ok">tamam</Rozet>}
@@ -189,7 +220,7 @@ export function UrunDetay({ id }) {
                       <tr key={h.id}>
                         <td className="muted">{tarihSaat(h.ts)}</td>
                         <td><Rozet tur={(HAREKET[h.kind] || [])[1]}>{(HAREKET[h.kind] || [h.kind])[0]}</Rozet></td>
-                        <td className="mono">{h.shelf}</td>
+                        <td className="mono">{h.shelf}<div className="code">{h.depoAd}</div></td>
                         <td className={`num ${h.delta > 0 ? 'pos' : h.delta < 0 ? 'neg' : ''}`}>{miktar(h.delta, true)}</td>
                         <td className="num">{miktar(h.after)}</td>
                         <td className="muted">{h.ref || ''}</td>
