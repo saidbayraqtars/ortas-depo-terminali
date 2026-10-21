@@ -38,6 +38,9 @@ import tr.arcteknik.depo.ui.Hint
 import tr.arcteknik.depo.ui.MessageBar
 import tr.arcteknik.depo.ui.MonoText
 import tr.arcteknik.depo.ui.Route
+import tr.arcteknik.depo.ui.Ic
+import tr.arcteknik.depo.ui.LabelDialog
+import tr.arcteknik.depo.ui.ProductScanField
 import tr.arcteknik.depo.ui.ScanField
 import tr.arcteknik.depo.ui.Screen
 import tr.arcteknik.depo.ui.SecondaryButton
@@ -54,24 +57,26 @@ fun ProductQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String
     val locs = remember(version, productId) { productId?.let { db.locationsOf(it) }.orEmpty() }
     val moves = remember(version, productId) { productId?.let { db.movements(it) }.orEmpty() }
 
+    var label by remember { mutableStateOf(false) }
     Screen("Ürün Sorgu", online = online, onBack = { vm.back() }, footer = product?.let { p ->
         {
-            SecondaryButton("Bu üründe raf transferi yap", {
-                vm.go(Route.Transfer(p.id, locs.firstOrNull()?.shelf))
-            })
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SecondaryButton("Etiket bas", { label = true }, Modifier.weight(1f), icon = Ic.Barcode)
+                SecondaryButton("Transfer", { vm.go(Route.Transfer(p.id, locs.firstOrNull()?.shelf)) }, Modifier.weight(1f), icon = Ic.Transfer)
+            }
         }
     }) {
-        ScanField("Ürün okutun", product?.let { "Son okunan: ${it.code}" } ?: "Barkod ya da ürün kodu", true, vm.repo.prefs.cameraButton, { code ->
-            val p = db.findProduct(code)
-            if (p == null) {
-                if (db.shelfExists(code)) vm.replace(Route.ShelfQuery(code.uppercase())) else vm.error("\"$code\" ürün olarak bulunamadı")
-            } else {
-                productId = p.id; vm.feedback.ok()
-            }
-        })
+        if (label && product != null) {
+            LabelDialog("Ürün etiketi", product.name, { n -> label = false; vm.printLabel("PRODUCT", product.id, n) }, { label = false })
+        }
+        ProductScanField(
+            vm, "Ürün okutun", product?.let { "Son okunan: ${it.code}" } ?: "Barkod ya da ürün kodu",
+            onProduct = { productId = it.id; vm.feedback.ok() },
+            onOther = { code -> db.shelfExists(code).also { if (it) vm.replace(Route.ShelfQuery(code.uppercase())) } },
+        )
         MessageBar(vm.message?.first, vm.message?.second == true)
         if (product == null) {
-            Hint("Ürünün barkodunu okutun. Hangi rafta kaç adet olduğu ve son hareketleri görünür.")
+            Hint("Ürünün barkodunu okutun ya da isimle arayın. Hangi rafta kaç adet olduğu ve son hareketleri görünür.")
             return@Screen
         }
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -135,6 +140,7 @@ fun ProductCard(p: Product, onShelves: Double, pending: Double) {
 fun ShelfQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String?) {
     val db = vm.repo.db
     var shelf by remember { mutableStateOf(initial) }
+    var shelfLabel by remember { mutableStateOf(false) }
     val items = remember(version, shelf) { shelf?.let { db.shelfContents(it) }.orEmpty() }
 
     Screen("Raf Sorgu", sub = shelf, online = online, onBack = { vm.back() }) {
@@ -170,9 +176,12 @@ fun ShelfQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String?)
                 }
             }
         }
-        Text(
-            "Transfer başlat", Modifier.fillMaxWidth().clickable { vm.go(Route.Transfer(from = shelf)) }.padding(8.dp),
-            color = C.Info, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center,
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SecondaryButton("Raf etiketi bas", { shelfLabel = true }, Modifier.weight(1f), icon = Ic.Barcode)
+            SecondaryButton("Transfer başlat", { vm.go(Route.Transfer(from = shelf)) }, Modifier.weight(1f), icon = Ic.Transfer)
+        }
+        if (shelfLabel) {
+            LabelDialog("Raf etiketi", shelf!!, { n -> shelfLabel = false; vm.printLabel("SHELF", shelf!!, n) }, { shelfLabel = false })
+        }
     }
 }

@@ -29,6 +29,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import tr.arcteknik.depo.data.Product
 import tr.arcteknik.depo.data.ReceiptLine
 import tr.arcteknik.depo.data.Repo.Companion.fmt
 import tr.arcteknik.depo.ui.AppVm
@@ -44,6 +45,7 @@ import tr.arcteknik.depo.ui.Num
 import tr.arcteknik.depo.ui.PrimaryButton
 import tr.arcteknik.depo.ui.QtyStepper
 import tr.arcteknik.depo.ui.Route
+import tr.arcteknik.depo.ui.ProductScanField
 import tr.arcteknik.depo.ui.ScanField
 import tr.arcteknik.depo.ui.Screen
 import tr.arcteknik.depo.ui.SecondaryButton
@@ -125,8 +127,7 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
         vm.ok(l.product.name)
     }
 
-    fun onProduct(code: String) {
-        val p = db.findProduct(code) ?: return vm.error("\"$code\" ürün olarak bulunamadı")
+    fun onProduct(p: Product) {
         val l = lines.filter { it.product.id == p.id }.maxByOrNull { it.remaining }
             ?: return vm.error("${p.name} bu belgede yok")
         pick(l)
@@ -166,7 +167,7 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
         }
 
         if (line == null) {
-            ScanField("Ürün okutun", "Belgedeki ürünün barkodu", true, vm.repo.prefs.cameraButton, ::onProduct)
+            ProductScanField(vm, "Ürün okutun", "Belgedeki ürünün barkodu ya da listeden seçin", ::onProduct)
             MessageBar(vm.message?.first, vm.message?.second == true)
         } else {
             Card {

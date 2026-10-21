@@ -17,7 +17,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import androidx.compose.ui.platform.LocalContext
+import tr.arcteknik.depo.BuildConfig
 import tr.arcteknik.depo.ui.AppVm
+import tr.arcteknik.depo.ui.Notice
+import tr.arcteknik.depo.ui.ScanField
+import tr.arcteknik.depo.ui.Tone
+import tr.arcteknik.depo.ui.openUrl
 import tr.arcteknik.depo.ui.Card
 import tr.arcteknik.depo.ui.Caption
 import tr.arcteknik.depo.ui.Hint
@@ -40,6 +46,7 @@ fun SettingsScreen(vm: AppVm, online: Boolean) {
     var camera by remember { mutableStateOf(p.cameraButton) }
     var confirmReset by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     fun save(): Boolean {
         if (!demo && !url.startsWith("http")) {
@@ -66,6 +73,23 @@ fun SettingsScreen(vm: AppVm, online: Boolean) {
     }) {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Card {
+                Caption("QR ile kur")
+                // Yönetici programı › Cihazlar › Kurulum QR: "ORTASDEPO|http://ip:port|ANAHTAR|TRM-01"
+                ScanField("Kurulum QR kodunu okutun", "Yönetici programı › Cihazlar › Kurulum QR", true, true, { code ->
+                    val parts = code.trim().split("|")
+                    if (parts.size >= 3 && parts[0] == "ORTASDEPO" && parts[1].startsWith("http")) {
+                        demo = false; url = parts[1].trimEnd('/'); key = parts[2]
+                        if (parts.size >= 4 && parts[3].isNotBlank()) device = parts[3]
+                        if (save()) scope.launch {
+                            val err = vm.sync.run()
+                            if (err == null) vm.ok("Kuruldu ve eşitlendi") else vm.error("Kaydedildi ama eşitlenemedi: $err")
+                        }
+                    } else {
+                        vm.error("Bu bir kurulum QR kodu değil")
+                    }
+                })
+            }
+            Card {
                 Toggle("Demo modu", "Sunucu olmadan örnek veriyle çalışır", demo) { demo = it }
             }
             if (!demo) {
@@ -86,6 +110,10 @@ fun SettingsScreen(vm: AppVm, online: Boolean) {
                 (if (lastSync > 0) "Son eşitleme: " + java.text.SimpleDateFormat("dd.MM.yyyy HH:mm", java.util.Locale("tr")).format(lastSync) else "Henüz eşitleme yapılmadı") +
                     (p.lastSyncError.takeIf { it.isNotBlank() }?.let { "\nSon hata: $it" } ?: ""),
             )
+            p.updateUrl(BuildConfig.VERSION_CODE)?.let { link ->
+                Notice("Sunucuda yeni uygulama sürümü var: ${p.updateName} (bu cihaz ${BuildConfig.VERSION_NAME}).", Tone.Info)
+                PrimaryButton("Yeni sürümü indir", { openUrl(context, link) })
+            }
             SecondaryButton("Cihaz verisini sıfırla", { confirmReset = true }, icon = Ic.Refresh)
         }
     }

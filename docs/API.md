@@ -9,6 +9,7 @@ Her istekte iki başlık gelir:
 |---|---|
 | `X-Device-Key` | Yönetici programında bu cihaz için üretilen anahtar. Tanınmayan anahtara `401` döner. |
 | `X-Device-Name` | Terminalde ayarlanan cihaz adı (`TRM-01`). Kayıt ve günlük için. |
+| `X-App-Version` | Terminal uygulamasının sürümü (`1.0.0`). Yönetici programı Cihazlar ekranında gösterir. |
 
 Hata gövdesi: `{"error": "açıklama"}`. Terminal `401/403` gelince "Cihaz yetkili değil" gösterir.
 
@@ -33,6 +34,13 @@ Bu yüzden sunucu, kabul ettiği her işlemi `master` cevabına hemen yansıtmal
   "users":     [{"username": "ismail", "name": "İsmail", "salt": "…", "pinHash": "…"}]
 }
 ```
+
+Cevapta `ETag` başlığı gelir. Terminal sonraki istekte `If-None-Match` ile gönderir; değişiklik yoksa sunucu
+`304` döner ve liste yeniden inmez. Terminal o turda işlem gönderdiyse etiketi göndermez (reddedilen işlem cihazdaki
+hali sunucudan farklı bırakmış olabilir). Gövde gzip'lidir.
+
+Ek alanlar: `warehouse` (Vega depo adı, terminalde gösterilir) ve `app` (`{"versionName","versionCode","path"}`;
+sunucudaki APK cihazdakinden yeniyse terminal "Yeni sürüm" gösterir, indirme `sunucu + path`).
 
 - `products`: Vega stok kartları. `vegaStock` Vega'daki toplam stok; kabul edilip rafa kaldırılmamış malı da içerir.
 - `shelves`: yönetici programında tanımlı raflar. Terminal tanımsız rafa işlem yaptırmaz.
@@ -79,3 +87,16 @@ Cevap: her işlem için bir satır.
 yeni kayıt açılır.
 
 Miktarlar ondalıklı olabilir (litre, metre); sayı olarak gelir.
+
+### Sunucunun kuralları
+
+- Vega'da olmayan ürün kimliği (demo verisi, başka kurulum) `PUTAWAY`/`TRANSFER`'de kalıcı ret alır; sayımda o satır yok sayılır.
+- Tanımsız rafa gelen mal reddedilmez (mal fiziken oradadır); raf "terminalde açıldı" notuyla tanımlanır.
+- `TRANSFER` kaynak rafı eksiye düşürmez.
+- `COUNT_SUBMIT`: sayılan raflarda, sunucuda olup terminalin saymadığı ürün sayımdan **önce** yerleştiyse 0 kabul edilir,
+  sonra yerleştiyse (başka terminal) dokunulmaz.
+
+## Diğer uçlar
+
+- `GET /apk` — terminal APK'sı. `GET /kur` — terminal tarayıcısı için indirme sayfası.
+- Kurulum QR'ı: `ORTASDEPO|http://ip:port|ANAHTAR|TRM-01` (terminal Ayarlar › QR ile kur).

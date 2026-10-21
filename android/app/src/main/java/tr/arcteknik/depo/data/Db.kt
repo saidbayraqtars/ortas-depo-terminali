@@ -11,12 +11,13 @@ import org.json.JSONObject
  * Cihazdaki yerel veri. Sunucudan gelen ana veri (ürün, raf, stok, belge, kullanıcı) burada durur;
  * terminal internetsizken de buradan çalışır. Yapılan işlemler `op` tablosunda gönderilmeyi bekler.
  */
-class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 1) {
+class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 2) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE product(id TEXT PRIMARY KEY, code TEXT NOT NULL, name TEXT NOT NULL, unit TEXT NOT NULL, vega_stock REAL NOT NULL DEFAULT 0)")
         db.execSQL("CREATE INDEX ix_product_code ON product(code)")
         db.execSQL("CREATE TABLE barcode(code TEXT PRIMARY KEY, product_id TEXT NOT NULL)")
+        db.execSQL("CREATE INDEX ix_barcode_product ON barcode(product_id)")
         db.execSQL("CREATE TABLE shelf(code TEXT PRIMARY KEY, zone TEXT NOT NULL DEFAULT '')")
         db.execSQL("CREATE TABLE location(product_id TEXT NOT NULL, shelf TEXT NOT NULL, qty REAL NOT NULL, PRIMARY KEY(product_id, shelf))")
         db.execSQL("CREATE INDEX ix_location_shelf ON location(shelf)")
@@ -31,7 +32,10 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 1) {
         db.execSQL("CREATE TABLE app_user(username TEXT PRIMARY KEY, name TEXT NOT NULL, pin_hash TEXT NOT NULL, salt TEXT NOT NULL)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        // 2: ürün kartında barkod araması ürün kimliğiyle yapılıyor (isimle arama sonuçları).
+        if (oldVersion < 2) db.execSQL("CREATE INDEX IF NOT EXISTS ix_barcode_product ON barcode(product_id)")
+    }
 
     // ---- Ana veri ------------------------------------------------------------------------
 
@@ -40,6 +44,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 1) {
      * aksi halde cihazdaki değişiklikler sunucunun eski haliyle ezilirdi (bkz. Sync).
      */
     fun replaceMaster(json: JSONObject) {
+        searchIndex = null
         val db = writableDatabase
         db.beginTransaction()
         try {
@@ -159,6 +164,23 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 1) {
         val s = scan.trim()
         return query("SELECT $productCols FROM barcode b JOIN product p ON p.id=b.product_id WHERE b.code=?", s) { it.product() }.firstOrNull()
             ?: query("SELECT $productCols FROM product p WHERE p.code=? COLLATE NOCASE", s) { it.product() }.firstOrNull()
+    }
+
+    // İsimle arama dizini: ürün listesi yalnız ana veri gelince değişir; o zaman sıfırlanır.
+    @Volatile
+    private var searchIndex: List<Fuzzy.Entry>? = null
+
+    /** Ad ya da kodla, yazım hatasına dayanıklı arama. En iyi [limit] sonuç. */
+    fun searchProducts(q: String, limit: Int = 40): List<Product> {
+        val tokens = Fuzzy.tokens(q)
+        if (tokens.isEmpty()) return emptyList()
+        val index = searchIndex ?: query("SELECT id, code, name FROM product") { Fuzzy.Entry(it.getString(0), it.getString(1), it.getString(2)) }
+            .also { searchIndex = it }
+        val compact = tokens.joinToString("")
+        val hits = index.mapNotNull { e -> Fuzzy.score(tokens, compact, e).takeIf { it > 0 }?.let { e to it } }
+            .sortedWith(compareByDescending<Pair<Fuzzy.Entry, Double>> { it.second }.thenBy { it.first.name })
+            .take(limit)
+        return hits.mapNotNull { productById(it.first.id) }
     }
 
     fun shelfExists(code: String): Boolean =
@@ -285,6 +307,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 1) {
     }
 
     fun clearAll() {
+        searchIndex = null
         val db = writableDatabase
         for (t in listOf("product", "barcode", "shelf", "location", "receipt", "receipt_line", "count_session", "count_line", "op", "movement", "app_user")) {
             db.delete(t, null, null)

@@ -17,3 +17,11 @@ android/keystore.properties
 cikti/
 
 .claude/
+
+# Yönetici programı: bağımlılıklar, derleme ve yerel veri
+yonetici/node_modules/
+yonetici/dist/
+yonetici/release/
+yonetici/client/dist/
+yonetici/apk/
+yonetici/veri/

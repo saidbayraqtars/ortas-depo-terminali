@@ -29,7 +29,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
+import tr.arcteknik.depo.BuildConfig
 import tr.arcteknik.depo.ui.AppVm
+import tr.arcteknik.depo.ui.openUrl
 import tr.arcteknik.depo.ui.Badge
 import tr.arcteknik.depo.ui.C
 import tr.arcteknik.depo.ui.Hint
@@ -37,7 +40,7 @@ import tr.arcteknik.depo.ui.Ic
 import tr.arcteknik.depo.ui.MessageBar
 import tr.arcteknik.depo.ui.NetPill
 import tr.arcteknik.depo.ui.Route
-import tr.arcteknik.depo.ui.ScanField
+import tr.arcteknik.depo.ui.ProductScanField
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -69,20 +72,21 @@ fun HomeScreen(vm: AppVm, online: Boolean, version: Int) {
         }
 
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            ScanField(
+            ProductScanField(
+                vm,
                 title = "Barkod okutun",
                 hint = "Ürün ya da raf, ne okutursanız açılır",
-                active = true,
-                cameraButton = vm.repo.prefs.cameraButton,
-                onScan = { code ->
-                    when {
-                        db.findProduct(code) != null -> vm.go(Route.ProductQuery(code))
-                        db.shelfExists(code) -> vm.go(Route.ShelfQuery(code.uppercase()))
-                        else -> vm.error("\"$code\" ürün ya da raf olarak bulunamadı")
-                    }
-                },
+                onProduct = { vm.go(Route.ProductQuery(it.code)) },
+                onOther = { code -> db.shelfExists(code).also { if (it) vm.go(Route.ShelfQuery(code.uppercase())) } },
             )
             MessageBar(vm.message?.first, vm.message?.second == true)
+            vm.repo.prefs.updateUrl(BuildConfig.VERSION_CODE)?.let { link ->
+                val context = LocalContext.current
+                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(C.InfoBg).border(1.dp, C.Info, RoundedCornerShape(10.dp))
+                    .clickable { openUrl(context, link) }.padding(14.dp)) {
+                    Text("Yeni sürüm ${vm.repo.prefs.updateName} hazır · indirmek için dokunun", color = C.InfoText, fontWeight = FontWeight.SemiBold)
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Tile("Rafa Kaldır", "Kabul edilen mal", Ic.Inbox, openReceipts, Modifier.weight(1f)) { vm.go(Route.Receipts) }
                 Tile("Raf Transferi", "Raftan rafa taşı", Ic.Transfer, 0, Modifier.weight(1f)) { vm.go(Route.Transfer()) }

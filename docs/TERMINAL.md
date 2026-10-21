@@ -4,11 +4,15 @@ Uygulama: `cikti/OrtasDepo-<sürüm>.apk`. Android 8.0 ve üstü.
 
 ## Kurulum
 
-1. APK'yı terminale kopyalayın (USB, e-posta ya da paylaşılan klasör) ve açın.
-   "Bilinmeyen kaynaklar" izni istenirse verin.
-2. Uygulamayı açın, sağ üstteki ayar düğmesine basın.
-3. **Demo modu**nu kapatın, **Sunucu adresi** ve **Cihaz anahtarı**nı yönetici programından girin.
-4. **Kaydet ve eşitle**. Ürün, raf ve kullanıcı listesi gelir; sonra kullanıcı adı ve şifreyle giriş yapılır.
+1. Yönetici programı › Cihazlar › Yeni cihaz. Açılan pencerede **1. QR** terminalin tarayıcısında
+   `http://<sunucu>:5480/kur` sayfasını açar; APK'yı indirip kurun ("bilinmeyen kaynak" izni).
+2. Uygulamada sağ üstteki ayar → **QR ile kur** alanına **2. QR**'ı okutun. Sunucu adresi, cihaz anahtarı ve adı
+   dolar, eşitleme başlar. (Elle: Demo modunu kapatıp adres ve anahtarı yazın, **Kaydet ve eşitle**.)
+3. Kullanıcı adı ve şifreyle giriş.
+
+Barkodu okunmayan ürün için her okutma alanının altında **İsimle ara** var; adın bir kısmı yazılır, yazım hatası
+olsa da yakın adlar listelenir. Ürün Sorgu ve Raf Sorgu ekranlarındaki **Etiket bas** düğmesi etiketi yönetici
+programının bilgisayarındaki etiket yazıcısından çıkarır.
 
 ## Okuyucu ayarı
 

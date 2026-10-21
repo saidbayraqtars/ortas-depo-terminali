@@ -18,6 +18,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,6 +44,7 @@ import tr.arcteknik.depo.ui.Notice
 import tr.arcteknik.depo.ui.PrimaryButton
 import tr.arcteknik.depo.ui.QtyStepper
 import tr.arcteknik.depo.ui.Route
+import tr.arcteknik.depo.ui.ProductScanField
 import tr.arcteknik.depo.ui.ScanField
 import tr.arcteknik.depo.ui.Screen
 import tr.arcteknik.depo.ui.SecondaryButton
@@ -81,6 +83,7 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
     val lines = remember(version, shelf) { shelf?.let { db.countLines(sessionId, it) }.orEmpty() }
     val shelves = remember(version) { db.countedShelves(sessionId) }
     val scans = remember(version) { db.countLines(sessionId).sumOf { it.qty } }
+    DisposableEffect(sessionId) { onDispose { vm.repo.discardEmptyLocal(sessionId) } }
 
     if (session == null) {
         Screen("Sayım", online = online, onBack = { vm.back() }) { Hint("Sayım bulunamadı.") }
@@ -116,14 +119,11 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
                 }
                 Text("Raf değiştir", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.clickable { shelf = null }.padding(8.dp))
             }
-            ScanField("Ürün okutun", "Her okutma 1 adet ekler", true, vm.repo.prefs.cameraButton, { code ->
-                val p = db.findProduct(code)
-                when {
-                    p != null -> { vm.repo.addCount(sessionId, shelf!!, p, 1.0); vm.feedback.ok() }
-                    db.shelfExists(code.uppercase()) -> { shelf = code.uppercase(); vm.ok("Raf ${code.uppercase()}") }
-                    else -> vm.error("\"$code\" ürün olarak bulunamadı")
-                }
-            })
+            ProductScanField(
+                vm, "Ürün okutun", "Her okutma 1 adet ekler; miktar aşağıdan da yazılır",
+                onProduct = { p -> vm.repo.addCount(sessionId, shelf!!, p, 1.0); vm.feedback.ok() },
+                onOther = { code -> db.shelfExists(code.uppercase()).also { if (it) { shelf = code.uppercase(); vm.ok("Raf ${code.uppercase()}") } } },
+            )
             Card(padding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp)) {
                 Caption("Bu rafta sayılan")
                 if (lines.isEmpty()) Hint("Henüz ürün okutulmadı.", Modifier.padding(bottom = 10.dp))

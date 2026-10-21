@@ -23,6 +23,8 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import tr.arcteknik.depo.App
 import tr.arcteknik.depo.data.User
 import tr.arcteknik.depo.ui.screens.CountDiffScreen
@@ -119,6 +121,14 @@ class AppVm(app: Application) : AndroidViewModel(app) {
     }
 
     val userName: String get() = user?.username ?: ""
+
+    /** Etiket sunucu bilgisayarındaki yazıcıdan çıkar; bağlantı yoksa kuyruğa alınmaz (sonradan basılması kafa karıştırır). */
+    fun printLabel(type: String, id: String, copies: Int) {
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) { runCatching { sync.backend().printLabel(type, id, copies, userName) } }
+            r.onSuccess { ok(it) }.onFailure { error(it.message ?: "Etiket basılamadı") }
+        }
+    }
 }
 
 @Composable

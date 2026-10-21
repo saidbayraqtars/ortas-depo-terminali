@@ -97,6 +97,18 @@ class Repo(val db: Db, val prefs: Prefs) {
         return db.countSession(id)!!
     }
 
+    /** Hiçbir şey sayılmadan bırakılan serbest sayım listede birikmesin. */
+    fun discardEmptyLocal(sessionId: String) {
+        if (!sessionId.startsWith("LOCAL-")) return
+        val w = db.writableDatabase
+        val n = db.scalar("SELECT COUNT(*) FROM count_line WHERE session_id=?", sessionId)?.toIntOrNull() ?: 0
+        val st = db.scalar("SELECT status FROM count_session WHERE id=?", sessionId)
+        if (n == 0 && st == "OPEN") {
+            w.execSQL("DELETE FROM count_session WHERE id=?", arrayOf<Any>(sessionId))
+            changed()
+        }
+    }
+
     fun addCount(sessionId: String, shelf: String, product: Product, delta: Double) {
         val s = shelf.uppercase()
         val cur = db.scalar("SELECT qty FROM count_line WHERE session_id=? AND shelf=? AND product_id=?", sessionId, s, product.id)?.toDoubleOrNull()

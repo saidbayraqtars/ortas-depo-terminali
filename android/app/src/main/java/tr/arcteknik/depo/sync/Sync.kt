@@ -94,6 +94,9 @@ class Sync(private val context: Context, private val repo: Repo) {
                 val backend = backend()
                 val pending = db.ops().filter { it.status == OpStatus.PENDING }
                 if (pending.isNotEmpty()) {
+                    // Gönderilen işlem reddedilirse cihazdaki hali sunucudan farklı kalır; sunucunun ana verisi
+                    // değişmemiş olsa bile bu tur tam liste alınsın.
+                    repo.prefs.masterEtag = ""
                     for (chunk in pending.chunked(50)) {
                         val results = backend.pushOps(chunk, repo.prefs.lastUser).associateBy { it.id }
                         for (op in chunk) {
@@ -106,8 +109,13 @@ class Sync(private val context: Context, private val repo: Repo) {
                 if (db.ops().none { it.status == OpStatus.PENDING }) {
                     // Demo "sunucusu" işlemleri saklamaz; örnek veri yalnız cihaz boşken yüklenir,
                     // yoksa her eşitleme yapılan işleri silerdi.
-                    val master = backend.master()
-                    if (backend !is DemoBackend || db.isEmpty()) db.replaceMaster(master)
+                    val etag = repo.prefs.masterEtag.takeIf { it.isNotBlank() && !db.isEmpty() }
+                    val master = backend.master(etag)
+                    if (master != null && (backend !is DemoBackend || db.isEmpty())) {
+                        db.replaceMaster(master.json)
+                        repo.prefs.applyMaster(master.json)
+                        repo.prefs.masterEtag = master.etag ?: ""
+                    }
                     repo.prefs.lastSync = System.currentTimeMillis()
                 }
                 repo.prefs.lastSyncError = ""

@@ -1,6 +1,7 @@
 package tr.arcteknik.depo.data
 
 import android.content.Context
+import org.json.JSONObject
 
 /** Cihaz ayarları. Sunucu adresi ve cihaz anahtarı yönetici programından alınır. */
 class Prefs(context: Context) {
@@ -39,6 +40,41 @@ class Prefs(context: Context) {
     var lastSyncError: String
         get() = sp.getString("lastSyncError", "") ?: ""
         set(v) = sp.edit().putString("lastSyncError", v).apply()
+
+    /** Son alınan ana verinin sürüm etiketi; değişmediyse sunucu 304 döner. */
+    var masterEtag: String
+        get() = sp.getString("masterEtag", "") ?: ""
+        set(v) = sp.edit().putString("masterEtag", v).apply()
+
+    /** Sunucudaki terminal uygulamasının sürümü (yönetici programıyla gelir). */
+    var updateCode: Int
+        get() = sp.getInt("updateCode", 0)
+        set(v) = sp.edit().putInt("updateCode", v).apply()
+
+    var updateName: String
+        get() = sp.getString("updateName", "") ?: ""
+        set(v) = sp.edit().putString("updateName", v).apply()
+
+    var updatePath: String
+        get() = sp.getString("updatePath", "/apk") ?: "/apk"
+        set(v) = sp.edit().putString("updatePath", v).apply()
+
+    /** Ana veriyle gelen depo adı ve uygulama sürümü bilgisini saklar. */
+    fun applyMaster(json: JSONObject) {
+        json.optString("warehouse").takeIf { it.isNotBlank() }?.let { warehouse = it }
+        val app = json.optJSONObject("app")
+        if (app != null) {
+            updateCode = app.optInt("versionCode", 0)
+            updateName = app.optString("versionName", "")
+            updatePath = app.optString("path", "/apk")
+        } else {
+            updateCode = 0
+        }
+    }
+
+    /** Sunucuda bu cihazdakinden yeni uygulama varsa indirme adresi. */
+    fun updateUrl(currentCode: Int): String? =
+        if (!demo && serverUrl.isNotBlank() && updateCode > currentCode) serverUrl + updatePath else null
 
     /** Telefonlarda kamera düğmesini gösterir; el terminalinde kapalı tutulabilir. */
     var cameraButton: Boolean

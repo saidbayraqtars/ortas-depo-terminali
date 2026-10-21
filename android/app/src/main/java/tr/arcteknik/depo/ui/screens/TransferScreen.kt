@@ -30,6 +30,7 @@ import tr.arcteknik.depo.ui.MessageBar
 import tr.arcteknik.depo.ui.MonoText
 import tr.arcteknik.depo.ui.PrimaryButton
 import tr.arcteknik.depo.ui.QtyStepper
+import tr.arcteknik.depo.ui.ProductScanField
 import tr.arcteknik.depo.ui.ScanField
 import tr.arcteknik.depo.ui.Screen
 
@@ -94,13 +95,9 @@ fun TransferScreen(vm: AppVm, online: Boolean, version: Int, initialProduct: Str
                 val s = code.uppercase()
                 if (!db.shelfExists(s)) vm.error("\"$s\" tanımlı bir raf değil") else { from = s; vm.feedback.ok() }
             })
-            2 -> ScanField("Ürünü okutun", "$from rafındaki ürün", true, vm.repo.prefs.cameraButton, { code ->
-                val p = db.findProduct(code)
-                when {
-                    p == null -> vm.error("\"$code\" ürün olarak bulunamadı")
-                    db.qtyAt(p.id, from!!) <= 0 -> vm.error("${p.name} $from rafında görünmüyor")
-                    else -> { productId = p.id; qty = db.qtyAt(p.id, from!!); vm.feedback.ok() }
-                }
+            2 -> ProductScanField(vm, "Ürünü okutun", "$from rafındaki ürün", { p ->
+                if (db.qtyAt(p.id, from!!) <= 0) vm.error("${p.name} $from rafında görünmüyor")
+                else { productId = p.id; qty = db.qtyAt(p.id, from!!); vm.feedback.ok() }
             })
             4 -> if (to == null) ScanField("Hedef rafı okutun", "Raf etiketindeki barkodu okutun ya da yazın", true, vm.repo.prefs.cameraButton, { code ->
                 val s = code.uppercase()

@@ -1,0 +1,100 @@
+{
+  "name": "ortas-depo-yonetici",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ortaş Depo Yönetici: el terminallerinin bağlandığı sunucu ve depo yönetim ekranı (Vega ERP ile).",
+  "author": "ArcTeknik - Said Bayraktar",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "concurrently -n api,ui -c blue,green \"node --watch server/index.js\" \"vite\"",
+    "build": "vite build",
+    "start": "node server/index.js",
+    "desktop": "vite build && node scripts/electron-calistir.js",
+    "test": "node --test",
+    "apk": "node scripts/apk-hazirla.js",
+    "dist": "node scripts/apk-hazirla.js && vite build && electron-builder --win --x64",
+    "release": "node scripts/apk-hazirla.js && vite build && electron-builder --win --x64 --publish always"
+  },
+  "build": {
+    "appId": "tr.arcteknik.depo.yonetici",
+    "productName": "Ortaş Depo Yönetici",
+    "executableName": "OrtasDepoYonetici",
+    "artifactName": "OrtasDepoYonetici-Kurulum-${version}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "package.json",
+      "electron/**",
+      "server/**",
+      "client/dist/**"
+    ],
+    "extraResources": [
+      {
+        "from": "apk",
+        "to": "apk"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "electron/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Ortaş Depo Yönetici",
+      "installerIcon": "electron/icon.ico",
+      "uninstallerIcon": "electron/icon.ico",
+      "uninstallDisplayName": "Ortaş Depo Yönetici",
+      "installerLanguages": [
+        "tr_TR"
+      ],
+      "language": "1055",
+      "include": "electron/installer.nsh"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "saidbayraqtars",
+        "repo": "ortas-depo-terminali",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "dependencies": {
+    "bwip-js": "^4.11.4",
+    "compression": "^1.8.2",
+    "electron-updater": "^6.8.9",
+    "express": "^5.3.0",
+    "mssql": "^12.7.10",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^10.0.6",
+    "electron": "^44.9.3",
+    "electron-builder": "^26.15.3",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "vite": "^8.3.5"
+  },
+  "allowScripts": {
+    "electron@44.9.3": true,
+    "electron-winstaller@5.4.0": true,
+    "esbuild@0.28.2": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/saidbayraqtars/ortas-depo-terminali.git"
+  }
+}
