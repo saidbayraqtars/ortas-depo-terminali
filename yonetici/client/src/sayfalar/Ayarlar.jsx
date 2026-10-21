@@ -252,7 +252,14 @@ export default function Ayarlar() {
               <input type="date" className="inp" style={{ width: 180 }} value={t.kabul.baslangic || ''} onChange={(e) => setT('kabul.baslangic', e.target.value)} />
             </Alan>
           </Bolum>
+          <EtiketAyari a={a} kaydet={kaydet} />
+        </div>
 
+        {/* Kurulumda bir kez bakılır; varsayılanlar çoğu firmada doğru. */}
+        <details className="card gelismis">
+          <summary className="card-head" style={{ cursor: 'pointer' }}><Icon name="settings" /><h2>Gelişmiş ayarlar</h2><span className="muted small">— genelde değiştirmeye gerek yok</span></summary>
+          <div className="card-pad stack">
+        <div className="grid g2">
           <Bolum ikon="mobile" baslik="Terminaldeki ürün listesi" aciklama="Terminal internetsiz çalışmak için ürün listesini saklar. Liste küçük olursa eşitleme hızlı olur."
             alt={<Btn kind="primary" onClick={() => kaydet({ urun: t.urun })}>Kaydet</Btn>}>
             <label className="check"><input type="radio" name="kapsam" checked={t.urun.kapsam === 'aktif'} onChange={() => setT('urun.kapsam', 'aktif')} />
@@ -266,13 +273,13 @@ export default function Ayarlar() {
         </div>
 
         <div className="grid g2">
-          <Bolum ikon="count" baslik="Vega'ya yazılan sayım fişi" aciklama="Sayım giriş (93) ve çıkış (94) fişlerinin alanları. Boş bırakılan alan Vega'daki mevcut belgelerden okunur."
+          <Bolum ikon="count" baslik="Vega'ya yazılan sayım fişi" aciklama="Onaylanan sayım Vega'ya sayım fişi olarak yazılırken fişin üst bilgisi. Boş bırakılan alan Vega'daki mevcut belgelerden kendiliğinden okunur; çoğu firmada boş bırakılır."
             alt={<Btn kind="primary" onClick={() => kaydet({ sayim: t.sayim })}>Kaydet</Btn>}>
             <div className="grid g2">
               <Alan etiket="Belge no öneki" ipucu={`Vega'nın kendi serisiyle çakışmasın: ${t.sayim.onek || 'T'}0000001`}><input className="inp mono" value={t.sayim.onek || ''} onChange={(e) => setT('sayim.onek', e.target.value.toUpperCase().slice(0, 3))} /></Alan>
-              <Alan etiket="Vega kullanıcı no (USERNO)"><input className="inp mono" value={t.sayim.userno ?? ''} placeholder={fis ? String(fis.userno) : ''} onChange={(e) => setT('sayim.userno', e.target.value.replace(/\D/g, '') || null)} /></Alan>
-              <Alan etiket="Şube (OZELKOD1)"><input className="inp" value={t.sayim.ozelkod1 ?? ''} placeholder={fis?.ozelkod1 || ''} onChange={(e) => setT('sayim.ozelkod1', e.target.value || null)} /></Alan>
-              <Alan etiket="Kasa (OZELKOD2)"><input className="inp" value={t.sayim.ozelkod2 ?? ''} placeholder={fis?.ozelkod2 || ''} onChange={(e) => setT('sayim.ozelkod2', e.target.value || null)} /></Alan>
+              <Alan etiket="Vega kullanıcı no (USERNO)" ipucu="Fiş Vega'da hangi kullanıcı kesmiş gibi görünsün"><input className="inp mono" value={t.sayim.userno ?? ''} placeholder={fis ? String(fis.userno) : ''} onChange={(e) => setT('sayim.userno', e.target.value.replace(/\D/g, '') || null)} /></Alan>
+              <Alan etiket="Şube (OZELKOD1)" ipucu="Vega belgesindeki Şube alanı; şube raporları buna göre süzer"><input className="inp" value={t.sayim.ozelkod1 ?? ''} placeholder={fis?.ozelkod1 || ''} onChange={(e) => setT('sayim.ozelkod1', e.target.value || null)} /></Alan>
+              <Alan etiket="Kasa (OZELKOD2)" ipucu="Vega belgesindeki Kasa alanı; stok fişinde para hareketi yok, yalnız rapor süzgeci"><input className="inp" value={t.sayim.ozelkod2 ?? ''} placeholder={fis?.ozelkod2 || ''} onChange={(e) => setT('sayim.ozelkod2', e.target.value || null)} /></Alan>
             </div>
           </Bolum>
 
@@ -289,8 +296,8 @@ export default function Ayarlar() {
             )}
           </Bolum>
         </div>
-
-        <EtiketAyari a={a} kaydet={kaydet} />
+          </div>
+        </details>
 
         <div className="grid g2">
           <Bolum ikon="lock" baslik="Güvenlik" aciklama="Parola belirlenirse program açılırken sorulur ve yönetim ekranına ağdaki başka bilgisayardan da girilebilir (http://sunucu-adresi:port).">
