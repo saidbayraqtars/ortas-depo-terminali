@@ -42,7 +42,6 @@ fun SettingsScreen(vm: AppVm, online: Boolean) {
     var url by remember { mutableStateOf(p.serverUrl) }
     var key by remember { mutableStateOf(p.deviceKey) }
     var device by remember { mutableStateOf(p.deviceName) }
-    var warehouse by remember { mutableStateOf(p.warehouse) }
     var camera by remember { mutableStateOf(p.cameraButton) }
     var confirmReset by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -55,7 +54,7 @@ fun SettingsScreen(vm: AppVm, online: Boolean) {
         }
         val modeChanged = p.demo != demo || p.serverUrl != url.trimEnd('/')
         p.demo = demo; p.serverUrl = url; p.deviceKey = key; p.deviceName = device.ifBlank { "TRM-01" }
-        p.warehouse = warehouse; p.cameraButton = camera
+        p.cameraButton = camera
         // Kaynak değişince eski kaynağın verisi kalmasın; gönderilmemiş işlem varsa silinmez.
         if (modeChanged && vm.repo.db.pendingOpCount() == 0) vm.repo.db.clearAll()
         vm.repo.changed()
@@ -102,7 +101,8 @@ fun SettingsScreen(vm: AppVm, online: Boolean) {
             Card {
                 Caption("Cihaz")
                 LabeledField("Cihaz adı", device, { device = it })
-                LabeledField("Depo", warehouse, { warehouse = it })
+                // Depo burada yazılmaz: ana menünün üst çubuğundan seçilir (çok depo, 1.1.0).
+                Hint("Çalışılan depo: ${vm.repo.depotName()} · ana menüdeki depo düğmesinden değiştirilir")
                 Toggle("Kamera düğmesi", "Telefonlarda kamerayla okutmak için", camera) { camera = it }
             }
             val lastSync = p.lastSync

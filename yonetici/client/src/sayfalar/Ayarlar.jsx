@@ -29,6 +29,8 @@ function VegaAyari({ a, kaydet }) {
   const [mesgul, setMesgul] = useState('');
   const d = (k) => (e) => setV((x) => ({ ...x, [k]: e.target.value }));
   const govde = () => ({ ...v, ...(v.password ? {} : { password: undefined }) });
+  // Varsayılan depo yalnız kullanılan depolardan seçilir (hiçbiri seçili değilse hepsi).
+  const kullanilan = (v.depolar || []).length ? depolar.filter((x) => v.depolar.map(Number).includes(x.ind)) : depolar;
 
   const yukleFirma = async (firma, sessiz) => {
     if (!firma) return;
@@ -111,7 +113,7 @@ function VegaAyari({ a, kaydet }) {
         <Alan etiket="Varsayılan depo" ipucu="Terminal ilk açılışta bu depoda başlar; terminalden değiştirilebilir">
           <select className="inp" value={v.depo || ''} onChange={(e) => setV((x) => ({ ...x, depo: Number(e.target.value) || null }))}>
             <option value="">İlk depo</option>
-            {(depolar.length ? depolar : v.depo ? [{ ind: v.depo, ad: String(v.depo) }] : []).map((x) => <option key={x.ind} value={x.ind}>{x.ad} ({x.ind})</option>)}
+            {(depolar.length ? kullanilan : v.depo ? [{ ind: v.depo, ad: String(v.depo) }] : []).map((x) => <option key={x.ind} value={x.ind}>{x.ad} ({x.ind})</option>)}
           </select>
         </Alan>
       </div>
@@ -122,7 +124,12 @@ function VegaAyari({ a, kaydet }) {
               const secili = (v.depolar || []).map(Number).includes(x.ind);
               return (
                 <label key={x.ind} className="check" style={{ minWidth: 180 }}>
-                  <input type="checkbox" checked={secili} onChange={() => setV((y) => ({ ...y, depolar: secili ? (y.depolar || []).filter((d) => Number(d) !== x.ind) : [...(y.depolar || []), x.ind] }))} />
+                  <input type="checkbox" checked={secili} onChange={() => setV((y) => {
+                    const yeni = secili ? (y.depolar || []).filter((d) => Number(d) !== x.ind) : [...(y.depolar || []), x.ind];
+                    // Varsayılan depo kullanılanlardan çıkarsa sunucu sessizce ilk depoyu alırdı; seçimi boşalt.
+                    const depo = !yeni.length || yeni.map(Number).includes(Number(y.depo)) ? y.depo : null;
+                    return { ...y, depolar: yeni, depo };
+                  })} />
                   <span>{x.ad} <span className="muted small">({x.ind})</span></span>
                 </label>
               );
