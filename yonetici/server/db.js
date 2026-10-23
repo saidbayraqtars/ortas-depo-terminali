@@ -174,6 +174,38 @@ function migrate() {
     `);
     set('surum', '2');
   }
+  if (Number(get("SELECT value FROM meta WHERE key='surum'")?.value) < 3) {
+    // 3: ürün bir depoda birden çok rafa zimmetlenebilir; kaynak (IMPORT, VEGA, ADMIN) tutulur.
+    db.exec(`
+      CREATE TABLE product_home2(
+        depo INTEGER NOT NULL,
+        product_id TEXT NOT NULL,
+        shelf TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'ADMIN',
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(depo, product_id, shelf)
+      );
+      INSERT INTO product_home2 SELECT depo, product_id, shelf, 'IMPORT', updated_at FROM product_home;
+      DROP TABLE product_home;
+      ALTER TABLE product_home2 RENAME TO product_home;
+      CREATE INDEX ix_home_shelf ON product_home(depo, shelf);
+    `);
+    set('surum', '3');
+  }
+  if (Number(get("SELECT value FROM meta WHERE key='surum'")?.value) < 4) {
+    // 4: program raf adresini Vega kartına yazınca alanın yazılmadan önceki değeri (eski) ve son yazılan değer.
+    db.exec(`
+      CREATE TABLE vega_alan(
+        alan TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        eski TEXT NOT NULL,
+        yazilan TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(alan, product_id)
+      );
+    `);
+    set('surum', '4');
+  }
 }
 
 function get(sql, ...args) {

@@ -5,3 +5,4 @@ android/gradlew text eol=lf
 *.jar binary
 *.ttf binary
 *.ico binary
+*.cmd text eol=crlf

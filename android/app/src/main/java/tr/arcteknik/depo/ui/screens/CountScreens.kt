@@ -81,6 +81,12 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
     val session = remember(version) { db.countSession(sessionId) }
     var shelf by remember { mutableStateOf<String?>(null) }
     val lines = remember(version, shelf) { shelf?.let { db.countLines(sessionId, it) }.orEmpty() }
+    // Rafta olması gereken (raf stoku ya da zimmet) ama bu sayımda henüz okutulmayan ürünler.
+    val waiting = remember(version, shelf, session?.depot) {
+        val s = shelf ?: return@remember emptyList()
+        val counted = lines.map { it.product.id }.toSet()
+        db.shelfContents(s, session?.depot ?: db.depot).filter { it.product.id !in counted }
+    }
     val shelves = remember(version) { db.countedShelves(sessionId) }
     val scans = remember(version) { db.countLines(sessionId).sumOf { it.qty } }
     DisposableEffect(sessionId) { onDispose { vm.repo.discardEmptyLocal(sessionId) } }
@@ -136,6 +142,22 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
                                 MonoText(l.product.code, size = 12, weight = FontWeight.Medium, color = C.Muted)
                             }
                             QtyStepper(l.qty, { vm.repo.setCount(sessionId, shelf!!, l.product, it) }, small = true)
+                        }
+                    }
+                    if (waiting.isNotEmpty()) {
+                        item(key = "bekleyen") {
+                            Divider()
+                            Caption("Bu rafta beklenen, okutulmadı (${waiting.size})", Modifier.padding(top = 10.dp))
+                        }
+                        items(waiting, key = { "w" + it.product.id }) { w ->
+                            Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(w.product.name, color = C.Text2, maxLines = 1)
+                                    MonoText(w.product.code + if (w.qty <= 0) " · zimmetli" else "", size = 12, weight = FontWeight.Medium, color = C.Muted)
+                                }
+                                // Kör sayımda sistem miktarı gösterilmez; yalnız ürünün beklendiği.
+                                if (!session.blind && w.qty > 0) MonoText(fmt(w.qty), size = 14, color = C.Muted)
+                            }
                         }
                     }
                 }

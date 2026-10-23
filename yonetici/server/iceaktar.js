@@ -136,7 +136,7 @@ function coz({ satirlar, eslesme, depoEslesme = {}, sabitDepo = null }) {
     const satirNo = i + 2;
     const raf = depo.rafKodu(al(r, 'raf'));
     if (!raf) return hatalar.push({ satir: satirNo, hata: 'Raf boş' });
-    if (!/^[A-Z0-9ÇĞİÖŞÜ][A-Z0-9ÇĞİÖŞÜ\-./ ]{0,23}$/.test(raf)) return hatalar.push({ satir: satirNo, hata: `Raf kodu uygun değil: ${raf}` });
+    if (!depo.rafKoduGecerli(raf)) return hatalar.push({ satir: satirNo, hata: `Raf kodu uygun değil: ${raf}` });
     let d = sabitDepo !== null && sabitDepo !== '' ? Number(sabitDepo) : null;
     const dosyaDepo = al(r, 'depo');
     if (eslesme.depo !== undefined && eslesme.depo !== null && eslesme.depo !== '') {
@@ -197,13 +197,8 @@ function uygula(c, { miktarModu = 'ayarla' } = {}) {
         depo.miktarAyarla(s.depo, s.productId, s.raf, yeni, { ...h, ts: Date.now() });
         miktar++;
       } else if (s.productId) {
-        db.run(
-          'INSERT INTO product_home(depo, product_id, shelf, updated_at) VALUES(?,?,?,?) ON CONFLICT(depo, product_id) DO UPDATE SET shelf=excluded.shelf, updated_at=excluded.updated_at',
-          s.depo,
-          s.productId,
-          s.raf,
-          Date.now(),
-        );
+        // Ürün birden çok rafa zimmetlenebilir; Excel'deki her satır bir zimmet ekler.
+        depo.zimmetEkle(s.depo, s.productId, s.raf, 'IMPORT');
         asil++;
       }
     }

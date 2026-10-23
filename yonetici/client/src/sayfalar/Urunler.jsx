@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Alan, api, Ara, Btn, Durum, HAREKET, Icon, indir, miktar, Modal, Rozet, SayfaBaslik, Secim, tarihSaat, useApp, useDepo, useVeri } from '../lib.jsx';
+import { Alan, api, Ara, Btn, Durum, HAREKET, Icon, indir, miktar, Modal, Rozet, SayfaBaslik, Secim, tarihSaat, useApp, useDepo, useOnay, useVeri } from '../lib.jsx';
 import EtiketPenceresi from './Etiket.jsx';
 
 function useGecikmeli(deger, ms = 300) {
@@ -17,7 +17,10 @@ const FILTRE = [
   ['yerlesmemis', 'Yerleşmemiş'],
   ['bekleyen', 'Rafa kaldırılacak'],
   ['fazla', 'Raf fazlası'],
+  ['adressiz', 'Raf adresi yok'],
 ];
+
+const ZIMMET = { VEGA: ['Vega kartı', 'b-info'], IMPORT: ['Excel', 'b-mute'], ADMIN: ['Elle', 'b-mute'] };
 
 export default function Urunler() {
   const [q, setQ] = useState('');
@@ -121,16 +124,115 @@ function Duzelt({ urun, konum, kapat, tamam }) {
   );
 }
 
+function DepoSec({ depo, setDepo, kilitli }) {
+  const { depolar, cok } = useDepo();
+  if (!cok) return null;
+  return (
+    <Alan etiket="Depo">
+      <select className="inp" value={depo} onChange={(e) => setDepo(e.target.value)} disabled={kilitli}>
+        {depolar.map((d) => <option key={d.ind} value={d.ind}>{d.ad}</option>)}
+      </select>
+    </Alan>
+  );
+}
+
+/** Ürünü başka rafa taşı; miktar boşsa raftakinin hepsi. Zimmetliyse zimmet de taşınabilir. */
+export function Tasi({ urun, kaynak, kapat, tamam }) {
+  const { toast } = useApp();
+  const [hedef, setHedef] = useState('');
+  const [qty, setQty] = useState(kaynak.qty ? String(kaynak.qty) : '');
+  const [zimmet, setZimmet] = useState(Boolean(kaynak.zimmet && kaynak.zimmet !== 'VEGA'));
+  const [mesgul, setMesgul] = useState(false);
+  const kaydet = async () => {
+    setMesgul(true);
+    try {
+      const q = String(qty).trim() === '' ? null : Number(String(qty).replace(',', '.'));
+      const r = await api('/tasi', { method: 'POST', body: { depo: kaynak.depo, productId: urun.id, from: kaynak.shelf, to: hedef, qty: q, zimmetTasi: zimmet } });
+      toast(`${miktar(r.tasinan)} ${urun.unit} ${hedef} rafına taşındı`);
+      tamam();
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      setMesgul(false);
+    }
+  };
+  return (
+    <Modal baslik="Başka rafa taşı" kapat={kapat} alt={<><Btn onClick={kapat}>Vazgeç</Btn><Btn kind="primary" busy={mesgul} disabled={!hedef.trim()} onClick={kaydet}>Taşı</Btn></>}>
+      <div><b>{urun.name}</b> <span className="mono muted">{urun.code}</span></div>
+      <div className="muted small">Kaynak: <span className="mono">{kaynak.shelf}</span>{kaynak.depoAd ? ` · ${kaynak.depoAd}` : ''} · rafta {miktar(kaynak.qty || 0)}</div>
+      <Alan etiket="Hedef raf" ipucu="Tanımlı değilse açılır"><input className="inp mono" value={hedef} onChange={(e) => setHedef(e.target.value.toUpperCase())} autoFocus /></Alan>
+      {kaynak.qty > 0 && <Alan etiket={`Miktar (${urun.unit})`} ipucu="Boş bırakılırsa raftakinin hepsi"><input className="inp mono" inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value)} /></Alan>}
+      {kaynak.zimmet && (
+        <label className="check">
+          <input type="checkbox" checked={zimmet} onChange={() => setZimmet(!zimmet)} />
+          <span>Zimmeti de taşı{kaynak.zimmet === 'VEGA' ? " (Vega kartındaki adres kalır; yeni raf elle zimmetlenir)" : ''}</span>
+        </label>
+      )}
+    </Modal>
+  );
+}
+
+function Zimmetle({ urun, kapat, tamam }) {
+  const { toast } = useApp();
+  const { depolar, depo: secili, varsayilan } = useDepo();
+  const [depo, setDepo] = useState(String(secili || varsayilan || depolar[0]?.ind || ''));
+  const [raf, setRaf] = useState('');
+  const [mesgul, setMesgul] = useState(false);
+  const kaydet = async () => {
+    setMesgul(true);
+    try {
+      await api('/zimmet', { method: 'POST', body: { productId: urun.id, shelf: raf, depo } });
+      toast(`${raf} rafına zimmetlendi`);
+      tamam();
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      setMesgul(false);
+    }
+  };
+  return (
+    <Modal baslik="Rafa zimmetle" kapat={kapat} alt={<><Btn onClick={kapat}>Vazgeç</Btn><Btn kind="primary" busy={mesgul} disabled={!raf.trim()} onClick={kaydet}>Zimmetle</Btn></>}>
+      <div><b>{urun.name}</b> <span className="mono muted">{urun.code}</span></div>
+      <DepoSec depo={depo} setDepo={setDepo} />
+      <Alan etiket="Raf" ipucu="Tanımlı değilse açılır"><input className="inp mono" value={raf} onChange={(e) => setRaf(e.target.value.toUpperCase())} autoFocus /></Alan>
+      <div className="notice info"><Icon name="info" /><p>Zimmetli ürün rafta hiç yokken de o rafta "sayılmayı bekliyor" olarak görünür. Ürün birden çok rafa zimmetlenebilir.</p></div>
+    </Modal>
+  );
+}
+
 export function UrunDetay({ id }) {
   const { veri: d, hata, yukleniyor, yukle } = useVeri(`/urun/${encodeURIComponent(id)}`);
+  const { toast } = useApp();
+  const [sor, onayPenceresi] = useOnay();
   const [duzelt, setDuzelt] = useState(null);
+  const [tasi, setTasi] = useState(null);
+  const [zimmetle, setZimmetle] = useState(false);
   const [etiket, setEtiket] = useState(false);
+  // Raflar: miktarı olanlar + zimmetli olup rafta olmayanlar, tek listede.
+  const raflar = [];
+  if (d) {
+    const zim = new Map((d.asilRaflar || []).map((h) => [`${h.depo}|${h.shelf}`, h]));
+    for (const k of d.konumlar) raflar.push({ ...k, zimmet: zim.get(`${k.depo}|${k.shelf}`)?.source || null });
+    const var_ = new Set(d.konumlar.map((k) => `${k.depo}|${k.shelf}`));
+    for (const h of d.asilRaflar || []) if (!var_.has(`${h.depo}|${h.shelf}`)) raflar.push({ depo: h.depo, depoAd: h.depoAd, shelf: h.shelf, qty: 0, updated_at: null, zimmet: h.source });
+  }
+  const zimmetKaldir = async (k) => {
+    if (!(await sor('Zimmet kaldırılsın mı?', `${d.urun.name} artık ${k.shelf} rafına zimmetli olmayacak. Raftaki miktar değişmez.`, { tamam: 'Kaldır' }))) return;
+    try {
+      await api('/zimmet', { method: 'DELETE', body: { productId: d.urun.id, shelf: k.shelf, depo: k.depo } });
+      toast('Zimmet kaldırıldı');
+      yukle();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
   return (
     <Durum yukleniyor={yukleniyor && !d} hata={hata}>
       {d && (
         <>
           <SayfaBaslik baslik={d.urun.name} alt={<span className="mono">{d.urun.code} · {d.urun.unit}</span>} geri={['/urunler', 'Ürün ve stok']}>
             <Btn icon="barcode" onClick={() => setEtiket(true)}>Barkod etiketi</Btn>
+            <Btn icon="mapPoint" onClick={() => setZimmetle(true)}>Rafa zimmetle</Btn>
             <Btn icon="plus" onClick={() => setDuzelt({})}>Rafa ekle / düzelt</Btn>
           </SayfaBaslik>
           <div className="grid g4" style={{ marginBottom: 14 }}>
@@ -161,19 +263,24 @@ export function UrunDetay({ id }) {
           <div className="grid g2" style={{ marginBottom: 14 }}>
             <div className="card">
               <div className="card-head"><Icon name="mapPoint" /><h2>Raflar</h2></div>
-              {d.konumlar.length === 0 ? (
-                <div className="empty">Bu ürün hiçbir rafta değil.</div>
+              {raflar.length === 0 ? (
+                <div className="empty">Bu ürün hiçbir rafta değil ve hiçbir rafa zimmetli değil.</div>
               ) : (
                 <table className="tbl">
-                  <thead><tr><th>Raf</th><th>Depo</th><th className="num">Miktar</th><th>Son değişiklik</th><th /></tr></thead>
+                  <thead><tr><th>Raf</th><th>Depo</th><th className="num">Miktar</th><th>Zimmet</th><th>Son değişiklik</th><th /></tr></thead>
                   <tbody>
-                    {d.konumlar.map((k) => (
+                    {raflar.map((k) => (
                       <tr key={`${k.depo}|${k.shelf}`}>
                         <td className="mono"><a href={`#/raf/${k.depo}/${encodeURIComponent(k.shelf)}`}>{k.shelf}</a></td>
                         <td className="muted">{k.depoAd}</td>
-                        <td className="num">{miktar(k.qty)}</td>
-                        <td className="muted">{tarihSaat(k.updated_at)}</td>
-                        <td style={{ width: 40 }}><Btn kind="ghost" size="sm" icon="edit" onClick={() => setDuzelt(k)} title="Düzelt" /></td>
+                        <td className="num">{k.qty > 0 ? miktar(k.qty) : <Rozet tur="b-warn">sayılmadı</Rozet>}</td>
+                        <td>{k.zimmet ? <Rozet tur={(ZIMMET[k.zimmet] || [])[1]}>{(ZIMMET[k.zimmet] || [k.zimmet])[0]}</Rozet> : ''}</td>
+                        <td className="muted">{k.updated_at ? tarihSaat(k.updated_at) : ''}</td>
+                        <td style={{ whiteSpace: 'nowrap', width: 1 }}>
+                          {k.qty > 0 && <Btn kind="ghost" size="sm" icon="edit" onClick={() => setDuzelt(k)} title="Miktarı düzelt" />}
+                          <Btn kind="ghost" size="sm" icon="transfer" onClick={() => setTasi(k)} title="Başka rafa taşı" />
+                          {k.zimmet && k.zimmet !== 'VEGA' && <Btn kind="ghost" size="sm" icon="x" onClick={() => zimmetKaldir(k)} title="Zimmeti kaldır" />}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -187,7 +294,7 @@ export function UrunDetay({ id }) {
                   <dt>Vega kart no</dt><dd className="mono">{d.urun.id}</dd>
                   <dt>Barkod</dt>
                   <dd>{d.urun.barcodes?.length ? <div className="chip-list">{d.urun.barcodes.map((b) => <span className="chip" key={b}>{b}</span>)}</div> : <span className="muted">yok (terminalde ürün kodu okutulur)</span>}</dd>
-                  {d.asilRaflar?.length > 0 && <><dt>Asıl raf</dt><dd>{d.asilRaflar.map((h) => <span key={h.depo} className="chip" style={{ marginRight: 6 }}>{h.shelf} · {h.depoAd}</span>)}</dd></>}
+                  {d.rafAdresi && <><dt>Vega raf adresi</dt><dd className="mono">{d.rafAdresi}</dd></>}
                 </dl>
                 {d.kabul.length > 0 && (
                   <>
@@ -234,6 +341,9 @@ export function UrunDetay({ id }) {
           </div>
           {etiket && <EtiketPenceresi tur="urun" urunler={[d.urun.id]} kapat={() => setEtiket(false)} />}
           {duzelt && <Duzelt urun={d.urun} konum={duzelt.shelf ? duzelt : null} kapat={() => setDuzelt(null)} tamam={() => { setDuzelt(null); yukle(); }} />}
+          {tasi && <Tasi urun={d.urun} kaynak={tasi} kapat={() => setTasi(null)} tamam={() => { setTasi(null); yukle(); }} />}
+          {zimmetle && <Zimmetle urun={d.urun} kapat={() => setZimmetle(false)} tamam={() => { setZimmetle(false); yukle(); }} />}
+          {onayPenceresi}
         </>
       )}
     </Durum>

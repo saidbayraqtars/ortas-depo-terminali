@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Alan, api, Ara, Btn, Durum, HAREKET, Icon, indir, miktar, Modal, Rozet, SayfaBaslik, Secim, tarihSaat, useApp, useDepo, useOnay, useVeri } from '../lib.jsx';
 import EtiketPenceresi from './Etiket.jsx';
+import { Tasi } from './Urunler.jsx';
 
 function aralik(metin) {
   // "A-C" → A,B,C · "A,B,D" → A,B,D · "1-12" → 1..12
@@ -285,7 +286,7 @@ export default function Raflar() {
   const bolgeler = useMemo(() => [...new Set((veri || []).map((r) => r.zone))].sort(), [veri]);
   const liste = useMemo(() => {
     const a = q.trim().toUpperCase();
-    return (veri || []).filter((r) => (!a || r.code.includes(a) || r.note.toUpperCase().includes(a)) && (!bolge || r.zone === bolge) && (dolu === 'hepsi' || (dolu === 'dolu' ? r.cesit > 0 : r.cesit === 0)));
+    return (veri || []).filter((r) => (!a || r.code.includes(a) || r.note.toUpperCase().includes(a)) && (!bolge || r.zone === bolge) && (dolu === 'hepsi' || (dolu === 'dolu' ? r.cesit > 0 : dolu === 'bekleyen' ? r.bekleyen > 0 : r.cesit === 0)));
   }, [veri, q, bolge, dolu]);
   const hepsiSecili = liste.length > 0 && liste.every((r) => secili.has(anahtar(r)));
   const tumunuSec = () => setSecili(hepsiSecili ? new Set() : new Set(liste.map(anahtar)));
@@ -311,7 +312,7 @@ export default function Raflar() {
             <option value="">Tüm bölgeler</option>
             {bolgeler.map((b) => <option key={b} value={b}>{b} bölgesi</option>)}
           </select>
-          <Secim deger={dolu} degis={setDolu} secenekler={[['hepsi', 'Hepsi'], ['dolu', 'Dolu'], ['bos', 'Boş']]} />
+          <Secim deger={dolu} degis={setDolu} secenekler={[['hepsi', 'Hepsi'], ['dolu', 'Dolu'], ['bos', 'Boş'], ['bekleyen', 'Sayılmayı bekleyen']]} />
           <div className="grow" />
           <Btn icon="printer" disabled={!secili.size} onClick={() => setPencere('etiket')}>Etiket yazdır{secili.size ? ` (${secili.size})` : ''}</Btn>
         </div>
@@ -322,7 +323,7 @@ export default function Raflar() {
                 <tr>
                   <th style={{ width: 36 }}><input type="checkbox" checked={hepsiSecili} onChange={tumunuSec} aria-label="Hepsini seç" /></th>
                   {depoSutun && <th>Depo</th>}
-                  <th>Raf</th><th>Bölge</th><th className="num">Ürün çeşidi</th><th className="num">Toplam miktar</th><th>Son hareket</th><th>Not</th>
+                  <th>Raf</th><th>Bölge</th><th className="num">Ürün çeşidi</th><th className="num">Toplam miktar</th><th className="num" title="Rafa zimmetli ürün; parantez içi rafta hiç olmayan">Zimmetli</th><th>Son hareket</th><th>Not</th>
                 </tr>
               </thead>
               <tbody>
@@ -334,8 +335,9 @@ export default function Raflar() {
                     <td className="muted">{r.zone}</td>
                     <td className="num">{r.cesit || ''}</td>
                     <td className="num">{r.miktar ? miktar(r.miktar) : ''}</td>
+                    <td className="num">{r.zimmet ? <>{r.zimmet}{r.bekleyen ? <span className="neg"> ({r.bekleyen})</span> : ''}</> : ''}</td>
                     <td className="muted">{r.sonHareket ? tarihSaat(r.sonHareket) : ''}</td>
-                    <td className="muted">{r.note}{r.source === 'TERMINAL' && <Rozet tur="b-info">terminalde açıldı</Rozet>}{r.source === 'IMPORT' && <Rozet tur="b-mute">Excel</Rozet>}</td>
+                    <td className="muted">{r.note}{r.source === 'TERMINAL' && <Rozet tur="b-info">terminalde açıldı</Rozet>}{r.source === 'IMPORT' && <Rozet tur="b-mute">Excel</Rozet>}{r.source === 'VEGA' && <Rozet tur="b-info">Vega kartı</Rozet>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -353,13 +355,25 @@ export default function Raflar() {
 
 export function RafDetay({ depo, kod }) {
   const { toast } = useApp();
-  const { veri: d, hata, yukleniyor } = useVeri(`/raf/${depo}/${encodeURIComponent(kod)}`);
+  const { veri: d, hata, yukleniyor, yukle } = useVeri(`/raf/${depo}/${encodeURIComponent(kod)}`);
   const [sor, onay] = useOnay();
   const [etiket, setEtiket] = useState(false);
   const [not, setNot] = useState(null);
+  const [tasi, setTasi] = useState(null);
+  const [aktar, setAktar] = useState(null);
+  const aktarKaydet = async () => {
+    try {
+      const r = await api(`${yol}/bosalt`, { method: 'POST', body: { hedef: aktar } });
+      toast(`${r.urun} ürün ve ${r.zimmet} zimmet ${aktar} rafına aktarıldı`);
+      setAktar(null);
+      yukle();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
   const yol = `/raf/${depo}/${encodeURIComponent(kod)}`;
   const sil = async () => {
-    if (!(await sor('Raf silinsin mi?', `${kod} rafı tanımlardan kalkar. Terminaller bir sonraki eşitlemede bu rafı tanımaz.`, { tamam: 'Sil', tehlike: true }))) return;
+    if (!(await sor('Raf silinsin mi?', `${kod} rafı tanımlardan kalkar, bu rafa verilmiş zimmetler de silinir. Terminaller bir sonraki eşitlemede bu rafı tanımaz.`, { tamam: 'Sil', tehlike: true }))) return;
     try {
       await api(yol, { method: 'DELETE' });
       toast('Raf silindi');
@@ -384,21 +398,24 @@ export function RafDetay({ depo, kod }) {
           <SayfaBaslik baslik={<span className="mono">{kod}</span>} alt={d.raf ? `${d.depoAd} deposu · ${d.raf.zone} bölgesi${d.raf.note ? ' · ' + d.raf.note : ''}` : `${d.depoAd} deposunda tanımlı değil`} geri={['/raflar', 'Raflar']}>
             {d.raf && <Btn icon="edit" onClick={() => setNot(d.raf.note || '')}>Not</Btn>}
             {d.raf && <Btn icon="printer" onClick={() => setEtiket(true)}>Etiket</Btn>}
+            {d.icerik.length > 0 && <Btn icon="transfer" onClick={() => setAktar('')}>Başka rafa aktar</Btn>}
             {d.raf && <Btn kind="danger" icon="trash" onClick={sil}>Sil</Btn>}
           </SayfaBaslik>
           <div className="card" style={{ marginBottom: 14 }}>
-            <div className="card-head"><Icon name="box" /><h2>Raftaki ürünler</h2><div className="grow" /><span className="muted">{d.icerik.length} çeşit</span></div>
+            <div className="card-head"><Icon name="box" /><h2>Raftaki ürünler</h2><div className="grow" /><span className="muted">{d.icerik.filter((u) => u.qty > 0).length} çeşit{d.icerik.some((u) => !u.qty) ? ` · ${d.icerik.filter((u) => !u.qty).length} sayılmayı bekliyor` : ''}</span></div>
             {d.icerik.length === 0 ? (
               <div className="empty">Raf boş.</div>
             ) : (
               <table className="tbl">
-                <thead><tr><th>Ürün</th><th className="num">Miktar</th><th>Son değişiklik</th></tr></thead>
+                <thead><tr><th>Ürün</th><th className="num">Miktar</th><th>Zimmet</th><th>Son değişiklik</th><th /></tr></thead>
                 <tbody>
                   {d.icerik.map((u) => (
                     <tr key={u.productId} className="click" onClick={() => (window.location.hash = `/urun/${u.productId}`)}>
                       <td><div className="name">{u.name}</div><div className="code">{u.code}</div></td>
-                      <td className="num">{miktar(u.qty)} <span className="muted small">{u.unit}</span></td>
-                      <td className="muted">{tarihSaat(u.updated_at)}</td>
+                      <td className="num">{u.qty > 0 ? <>{miktar(u.qty)} <span className="muted small">{u.unit}</span></> : <Rozet tur="b-warn">sayılmadı</Rozet>}</td>
+                      <td>{u.zimmet === 'VEGA' ? <Rozet tur="b-info">Vega kartı</Rozet> : u.zimmet === 'IMPORT' ? <Rozet tur="b-mute">Excel</Rozet> : u.zimmet ? <Rozet tur="b-mute">Elle</Rozet> : ''}</td>
+                      <td className="muted">{u.updated_at ? tarihSaat(u.updated_at) : ''}</td>
+                      <td style={{ width: 1 }} onClick={(e) => e.stopPropagation()}><Btn kind="ghost" size="sm" icon="transfer" title="Başka rafa taşı" onClick={() => setTasi(u)} /></td>
                     </tr>
                   ))}
                 </tbody>
@@ -427,6 +444,20 @@ export function RafDetay({ depo, kod }) {
             )}
           </div>
           {etiket && <EtiketPenceresi tur="raf" kodlar={[`${depo}|${kod}`]} kapat={() => setEtiket(false)} />}
+          {tasi && (
+            <Tasi
+              urun={{ id: tasi.productId, name: tasi.name, code: tasi.code, unit: tasi.unit }}
+              kaynak={{ depo: Number(depo), depoAd: d.depoAd, shelf: kod, qty: tasi.qty, zimmet: tasi.zimmet }}
+              kapat={() => setTasi(null)}
+              tamam={() => { setTasi(null); yukle(); }}
+            />
+          )}
+          {aktar !== null && (
+            <Modal baslik="Raftakileri başka rafa aktar" kapat={() => setAktar(null)} alt={<><Btn onClick={() => setAktar(null)}>Vazgeç</Btn><Btn kind="primary" disabled={!aktar.trim()} onClick={aktarKaydet}>Aktar</Btn></>}>
+              <p className="muted" style={{ margin: 0 }}>{kod} rafındaki bütün ürünler ve elle ya da Excel'le verilmiş zimmetler hedef rafa geçer. Vega kartından gelen raf adresleri Vega'da değiştirilmelidir.</p>
+              <Alan etiket="Hedef raf" ipucu="Tanımlı değilse açılır"><input className="inp mono" value={aktar} onChange={(e) => setAktar(e.target.value.toUpperCase())} autoFocus /></Alan>
+            </Modal>
+          )}
           {not !== null && (
             <Modal baslik="Raf notu" kapat={() => setNot(null)} alt={<><Btn onClick={() => setNot(null)}>Vazgeç</Btn><Btn kind="primary" onClick={notKaydet}>Kaydet</Btn></>}>
               <input className="inp" value={not} onChange={(e) => setNot(e.target.value)} autoFocus />

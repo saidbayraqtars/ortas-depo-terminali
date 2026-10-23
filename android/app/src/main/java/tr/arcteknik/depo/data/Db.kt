@@ -14,7 +14,7 @@ import org.json.JSONObject
  * Çok depo: raf, raf stoku, Vega stoku ve asıl raf depoya bağlıdır. [depot] terminalin çalıştığı depodur
  * (transfer, sayım, sorgu); mal kabul belgesi kendi deposunu taşır ve rafa kaldırma orada olur.
  */
-class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 3) {
+class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
 
     /** Çalışılan depo (Vega depo numarası). Repo ayardan yükler. */
     @Volatile
@@ -41,7 +41,8 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 3) {
         db.execSQL("CREATE TABLE shelf(depot INTEGER NOT NULL, code TEXT NOT NULL, zone TEXT NOT NULL DEFAULT '', PRIMARY KEY(depot, code))")
         db.execSQL("CREATE TABLE location(depot INTEGER NOT NULL, product_id TEXT NOT NULL, shelf TEXT NOT NULL, qty REAL NOT NULL, PRIMARY KEY(depot, product_id, shelf))")
         db.execSQL("CREATE INDEX ix_location_shelf ON location(depot, shelf)")
-        db.execSQL("CREATE TABLE home(depot INTEGER NOT NULL, product_id TEXT NOT NULL, shelf TEXT NOT NULL, PRIMARY KEY(depot, product_id))")
+        db.execSQL("CREATE TABLE home(depot INTEGER NOT NULL, product_id TEXT NOT NULL, shelf TEXT NOT NULL, PRIMARY KEY(depot, product_id, shelf))")
+        db.execSQL("CREATE INDEX ix_home_shelf ON home(depot, shelf)")
         db.execSQL("CREATE TABLE receipt(id TEXT PRIMARY KEY, doc_no TEXT NOT NULL, supplier TEXT NOT NULL, date TEXT NOT NULL, depot INTEGER NOT NULL DEFAULT 0, depot_name TEXT NOT NULL DEFAULT '')")
         db.execSQL("CREATE TABLE receipt_line(id TEXT PRIMARY KEY, receipt_id TEXT NOT NULL, product_id TEXT NOT NULL, accepted REAL NOT NULL, shelved REAL NOT NULL)")
         db.execSQL("CREATE INDEX ix_receipt_line ON receipt_line(receipt_id)")
@@ -50,11 +51,13 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 3) {
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         // 2: ürün kartında barkod araması ürün kimliğiyle yapılıyor (isimle arama sonuçları).
         if (oldVersion < 2) db.execSQL("CREATE INDEX IF NOT EXISTS ix_barcode_product ON barcode(product_id)")
-        // 3: çok depo. Ana veri tabloları sunucudan yeniden gelir; kuyruk ve süren sayım korunur.
-        if (oldVersion < 3) {
-            for (t in listOf("product", "barcode", "shelf", "location", "receipt", "receipt_line")) db.execSQL("DROP TABLE IF EXISTS $t")
+        // 3: çok depo.
+        if (oldVersion < 3) db.execSQL("ALTER TABLE count_session ADD COLUMN depot INTEGER NOT NULL DEFAULT 0")
+        // 3 çok depo, 4 ürün birden çok rafa zimmetli. Ana veri tabloları boşalır, sunucudan yeniden gelir
+        // (boş ürün tablosu tam liste ister); kuyruk ve süren sayım korunur.
+        if (oldVersion < 4) {
+            for (t in listOf("product", "product_stock", "barcode", "depot", "shelf", "location", "home", "receipt", "receipt_line")) db.execSQL("DROP TABLE IF EXISTS $t")
             createMaster(db)
-            db.execSQL("ALTER TABLE count_session ADD COLUMN depot INTEGER NOT NULL DEFAULT 0")
         }
     }
 
@@ -258,14 +261,26 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 3) {
         }
     }
 
-    /** Ürünün asıl rafı (Excel'den); rafta hiç yokken rafa kaldırmada önerilir. */
-    fun homeShelf(productId: String, d: Int = depot): String? =
-        scalar("SELECT shelf FROM home WHERE depot=? AND product_id=?", d.toString(), productId)
+    /** Ürünün zimmetli rafları (Excel, Vega kartı, yönetici); rafta hiç yokken rafa kaldırmada ilki önerilir. */
+    fun homeShelves(productId: String, d: Int = depot): List<String> =
+        query("SELECT shelf FROM home WHERE depot=? AND product_id=? ORDER BY shelf", d.toString(), productId) { it.getString(0) }
 
-    fun shelfContents(shelf: String, d: Int = depot): List<Location> =
-        query("SELECT ${productCols(d)}, l.shelf, l.qty FROM location l JOIN product p ON p.id=l.product_id WHERE l.depot=? AND l.shelf=? AND l.qty>0 ORDER BY p.name", d.toString(), shelf.uppercase()) {
-            Location(it.product(), it.getString(6), it.getDouble(7))
+    fun homeShelf(productId: String, d: Int = depot): String? = homeShelves(productId, d).firstOrNull()
+
+    /** Raftakiler + rafa zimmetli olup rafta olmayanlar (qty 0, sayılmayı bekliyor). */
+    fun shelfContents(shelf: String, d: Int = depot): List<Location> {
+        val s = shelf.uppercase()
+        val homed = query("SELECT product_id FROM home WHERE depot=? AND shelf=?", d.toString(), s) { it.getString(0) }.toSet()
+        val here = query("SELECT ${productCols(d)}, l.shelf, l.qty FROM location l JOIN product p ON p.id=l.product_id WHERE l.depot=? AND l.shelf=? AND l.qty>0 ORDER BY p.name", d.toString(), s) {
+            val p = it.product()
+            Location(p, it.getString(6), it.getDouble(7), p.id in homed)
         }
+        val present = here.map { it.product.id }.toSet()
+        val expected = query("SELECT ${productCols(d)} FROM home h JOIN product p ON p.id=h.product_id WHERE h.depot=? AND h.shelf=? ORDER BY p.name", d.toString(), s) { it.product() }
+            .filter { it.id !in present }
+            .map { Location(it, s, 0.0, true) }
+        return here + expected
+    }
 
     fun qtyAt(productId: String, shelf: String, d: Int = depot): Double =
         scalar("SELECT qty FROM location WHERE depot=? AND product_id=? AND shelf=?", d.toString(), productId, shelf.uppercase())?.toDoubleOrNull() ?: 0.0

@@ -15,7 +15,8 @@ data class Shelf(val code: String, val zone: String)
 /** Vega deposu (F{firma}TBLDEPOLAR.IND). */
 data class Depot(val id: Int, val name: String)
 
-data class Location(val product: Product, val shelf: String, val qty: Double)
+/** [assigned]: ürün bu rafa zimmetli; qty 0 ise rafta hiç sayılmamış (beklenen). */
+data class Location(val product: Product, val shelf: String, val qty: Double, val assigned: Boolean = false)
 
 data class Receipt(
     val id: String,

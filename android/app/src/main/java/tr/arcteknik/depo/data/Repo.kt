@@ -163,7 +163,8 @@ class Repo(val db: Db, val prefs: Prefs) {
         val out = mutableListOf<CountDiff>()
         for (shelf in db.countedShelves(sessionId)) {
             val counted = db.countLines(sessionId, shelf).associateBy { it.product.id }
-            val system = db.shelfContents(shelf, dep).associateBy { it.product.id }
+            // Zimmetli ama rafta hiç olmayan (0) ve okutulmayan ürün fark değildir; listeye girmez.
+            val system = db.shelfContents(shelf, dep).filter { it.qty > 0 }.associateBy { it.product.id }
             for (pid in counted.keys + system.keys) {
                 val product = counted[pid]?.product ?: system[pid]!!.product
                 out += CountDiff(shelf, product, system[pid]?.qty ?: 0.0, counted[pid]?.qty ?: 0.0)

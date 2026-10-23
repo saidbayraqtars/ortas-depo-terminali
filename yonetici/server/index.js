@@ -326,8 +326,19 @@ function yoneticiApi() {
         if (typeof b.vega.password === 'string' && b.vega.password) yeni.vega.password = b.vega.password;
       }
       if (b.kabul) {
-        if (Array.isArray(b.kabul.izahat)) yeni.kabul.izahat = b.kabul.izahat.map(String).filter((x) => /^\d+$/.test(x));
+        // Sayı: stok hareketi IZAHAT'ı; D + sayı: depo hareket fişi türü (D37 transfer, D129 gönderim kabulü).
+        if (Array.isArray(b.kabul.izahat)) yeni.kabul.izahat = b.kabul.izahat.map(String).filter((x) => /^D?\d+$/.test(x));
         if (b.kabul.baslangic && /^\d{4}-\d{2}-\d{2}$/.test(b.kabul.baslangic)) yeni.kabul.baslangic = b.kabul.baslangic;
+      }
+      if (b.rafAdresi) {
+        if ('alan' in b.rafAdresi) {
+          const a = String(b.rafAdresi.alan || '').trim().toUpperCase();
+          if (a && !/^[A-Z][A-Z0-9_]{0,30}$/.test(a)) throw Object.assign(new Error('Geçersiz alan adı'), { status: 400 });
+          yeni.rafAdresi.alan = a;
+        }
+        if ('yeniRafAc' in b.rafAdresi) yeni.rafAdresi.yeniRafAc = Boolean(b.rafAdresi.yeniRafAc);
+        if ('yaz' in b.rafAdresi) yeni.rafAdresi.yaz = Boolean(b.rafAdresi.yaz);
+        if ('depo' in b.rafAdresi) yeni.rafAdresi.depo = b.rafAdresi.depo === '' || b.rafAdresi.depo === null ? null : Number(b.rafAdresi.depo);
       }
       if (b.urun) {
         if (['aktif', 'tum'].includes(b.urun.kapsam)) yeni.urun.kapsam = b.urun.kapsam;
@@ -355,7 +366,7 @@ function yoneticiApi() {
       config.save(yeni);
       log.bilgi('Ayarlar kaydedildi');
       depo.vegaZamanla();
-      const vegaDegisti = JSON.stringify(cfg.vega) !== JSON.stringify(yeni.vega) || JSON.stringify(cfg.kabul) !== JSON.stringify(yeni.kabul);
+      const vegaDegisti = ['vega', 'kabul', 'rafAdresi'].some((k) => JSON.stringify(cfg[k]) !== JSON.stringify(yeni[k]));
       if (vegaDegisti) await depo.vegaYenile();
       else depo.degisti();
       return { ...config.publicView(), portDegisti: yeni.port !== cfg.port };
@@ -409,7 +420,7 @@ function yoneticiApi() {
     if (!kodlar.length) throw Object.assign(new Error('Raf kodu girin'), { status: 400 });
     if (kodlar.length > 5000) throw Object.assign(new Error('Bir seferde en çok 5000 raf'), { status: 400 });
     const d = depo.depoCoz(req.body.depo);
-    const bad = kodlar.find((k) => !/^[A-Z0-9ÇĞİÖŞÜ][A-Z0-9ÇĞİÖŞÜ\-./ ]{0,23}$/.test(k));
+    const bad = kodlar.find((k) => !depo.rafKoduGecerli(k));
     if (bad) throw Object.assign(new Error(`Geçersiz raf kodu: ${bad}`), { status: 400 });
     let yeni = 0;
     db.tx(() => {
@@ -424,7 +435,7 @@ function yoneticiApi() {
   r.put('/raf/:depo/:code', sar((req) => {
     const c = depo.rafKodu(req.params.code);
     const d = Number(req.params.depo);
-    db.run('UPDATE shelf SET zone=COALESCE(?, zone), note=COALESCE(?, note) WHERE code=?', req.body.zone ?? null, req.body.note ?? null, c);
+    db.run('UPDATE shelf SET zone=COALESCE(?, zone), note=COALESCE(?, note) WHERE depo=? AND code=?', req.body.zone ?? null, req.body.note ?? null, d, c);
     depo.degisti();
     return { ok: true };
   }));
@@ -432,10 +443,51 @@ function yoneticiApi() {
     const c = depo.rafKodu(req.params.code);
     const d = Number(req.params.depo);
     const dolu = db.get('SELECT COUNT(*) AS n FROM location WHERE depo=? AND shelf=? AND qty>0', d, c).n;
-    if (dolu) throw Object.assign(new Error(`${c} rafında ${dolu} ürün var; önce boşaltın ya da transfer edin`), { status: 400 });
-    db.run('DELETE FROM shelf WHERE depo=? AND code=?', d, c);
+    if (dolu) throw Object.assign(new Error(`${c} rafında ${dolu} ürün var; önce başka rafa aktarın`), { status: 400 });
+    const vegadan = db.get("SELECT COUNT(*) AS n FROM product_home WHERE depo=? AND shelf=? AND source='VEGA'", d, c).n;
+    if (vegadan) throw Object.assign(new Error(`${vegadan} ürünün Vega kartında raf adresi ${c}; önce Vega'da kartlardan silin`), { status: 400 });
+    db.tx(() => {
+      db.run('DELETE FROM product_home WHERE depo=? AND shelf=?', d, c);
+      db.run('DELETE FROM shelf WHERE depo=? AND code=?', d, c);
+    });
+    depo.rafYazTetikle();
     depo.degisti();
     return { ok: true };
+  }));
+  // Raftaki her şeyi (ürünler ve zimmetler) başka rafa aktarır; ardından raf silinebilir.
+  r.post('/raf/:depo/:code/bosalt', sar((req) => {
+    const s = depo.rafBosalt(Number(req.params.depo), req.params.code, (req.body || {}).hedef);
+    depo.degisti();
+    return s;
+  }));
+
+  // Zimmet: ürünün asıl rafları
+  r.post('/zimmet', sar((req) => {
+    const b = req.body || {};
+    const d = depo.depoCoz(b.depo);
+    const shelf = depo.rafKodu(b.shelf);
+    if (!b.productId || !shelf) throw Object.assign(new Error('Ürün ve raf gerekli'), { status: 400 });
+    if (!depo.rafKoduGecerli(shelf)) throw Object.assign(new Error(`Geçersiz raf kodu: ${shelf}`), { status: 400 });
+    db.tx(() => {
+      if (!depo.rafVarMi(d, shelf)) depo.rafEkle(d, shelf);
+      depo.zimmetEkle(d, String(b.productId), shelf, 'ADMIN');
+    });
+    depo.degisti();
+    return { ok: true };
+  }));
+  r.delete('/zimmet', sar((req) => {
+    const b = req.body || {};
+    const ok = depo.zimmetSil(depo.depoCoz(b.depo), String(b.productId || ''), b.shelf);
+    depo.degisti();
+    return { ok };
+  }));
+  // Yönetici: ürünü raftan rafa taşı (miktar boşsa hepsi).
+  r.post('/tasi', sar((req) => {
+    const b = req.body || {};
+    if (!b.productId) throw Object.assign(new Error('Ürün gerekli'), { status: 400 });
+    const s = depo.tasi(depo.depoCoz(b.depo), String(b.productId), b.from, b.to, b.qty ?? null, { zimmetTasi: Boolean(b.zimmetTasi) });
+    depo.degisti();
+    return s;
   }));
 
   // Mal kabul

@@ -56,6 +56,7 @@ fun ProductQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String
     val product = remember(version, productId) { productId?.let { db.productById(it) } }
     val locs = remember(version, productId) { productId?.let { db.locationsOf(it) }.orEmpty() }
     val moves = remember(version, productId) { productId?.let { db.movements(it) }.orEmpty() }
+    val homes = remember(version, productId) { productId?.let { db.homeShelves(it) }.orEmpty() }
 
     var label by remember { mutableStateOf(false) }
     Screen("Ürün Sorgu", online = online, onBack = { vm.back() }, footer = product?.let { p ->
@@ -84,6 +85,7 @@ fun ProductQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String
             Card(padding = CardPad) {
                 Caption("Raf dağılımı")
                 if (locs.isEmpty()) Hint("Bu ürün hiçbir rafta görünmüyor.", Modifier.padding(bottom = 10.dp))
+                if (homes.isNotEmpty()) Hint("Zimmetli raflar: " + homes.joinToString(", "), Modifier.padding(bottom = 8.dp))
                 val max = locs.maxOfOrNull { it.qty } ?: 1.0
                 locs.forEach { l ->
                     Divider()
@@ -155,8 +157,9 @@ fun ShelfQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String?)
         MessageBar(vm.message?.first, vm.message?.second == true)
         if (shelf == null) return@Screen
         Card(padding = CardPad) {
+            val waiting = items.count { it.qty <= 0 }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Caption("$shelf rafında ${items.size} ürün")
+                Caption("$shelf rafında ${items.size - waiting} ürün" + if (waiting > 0) " · $waiting sayılmadı" else "")
                 Caption("Miktar")
             }
             if (items.isEmpty()) Hint("Raf boş.", Modifier.padding(bottom = 10.dp))
@@ -169,9 +172,11 @@ fun ShelfQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String?)
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text(l.product.name, fontWeight = FontWeight.SemiBold)
-                            MonoText(l.product.code, size = 12, weight = FontWeight.Medium, color = C.Muted)
+                            MonoText(l.product.code + if (l.assigned) " · zimmetli" else "", size = 12, weight = FontWeight.Medium, color = C.Muted)
                         }
-                        MonoText(fmt(l.qty), size = 17, modifier = Modifier.width(56.dp))
+                        // Zimmetli olup rafta hiç sayılmamış ürün.
+                        if (l.qty > 0) MonoText(fmt(l.qty), size = 17, modifier = Modifier.width(56.dp))
+                        else Text("sayılmadı", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = C.WarnText, modifier = Modifier.width(72.dp), textAlign = TextAlign.End)
                     }
                 }
             }

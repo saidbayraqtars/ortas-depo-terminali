@@ -44,6 +44,7 @@ fun SettingsScreen(vm: AppVm, online: Boolean) {
     var device by remember { mutableStateOf(p.deviceName) }
     var camera by remember { mutableStateOf(p.cameraButton) }
     var confirmReset by remember { mutableStateOf(false) }
+    var qrText by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
@@ -61,9 +62,24 @@ fun SettingsScreen(vm: AppVm, online: Boolean) {
         return true
     }
 
+    /** Yönetici programı › Cihazlar › Kurulum QR: "ORTASDEPO|http://ip:port|ANAHTAR|TRM-01". Kurulum metni değilse false. */
+    fun applyQr(code: String): Boolean {
+        val parts = code.trim().split("|")
+        if (parts.size < 3 || parts[0] != "ORTASDEPO" || !parts[1].startsWith("http")) return false
+        demo = false; url = parts[1].trimEnd('/'); key = parts[2].trim()
+        if (parts.size >= 4 && parts[3].isNotBlank()) device = parts[3].trim()
+        if (save()) scope.launch {
+            val err = vm.sync.run()
+            if (err == null) vm.ok("Kuruldu ve eşitlendi") else vm.error("Kaydedildi ama eşitlenemedi: $err")
+        }
+        return true
+    }
+
     Screen("Ayarlar", online = online, onBack = { vm.back() }, footer = {
         MessageBar(vm.message?.first, vm.message?.second == true)
         PrimaryButton("Kaydet ve eşitle", {
+            // QR alanına elle yazılıp Enter'a basılmamış metin varsa (ekran klavyesi Enter'ı yutabiliyor) önce o uygulanır.
+            if (qrText.isNotBlank() && applyQr(qrText)) return@PrimaryButton
             if (save()) scope.launch {
                 val err = vm.sync.run()
                 if (err == null) vm.ok("Eşitleme tamam") else vm.error("Eşitlenemedi: $err")
@@ -73,20 +89,11 @@ fun SettingsScreen(vm: AppVm, online: Boolean) {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Card {
                 Caption("QR ile kur")
-                // Yönetici programı › Cihazlar › Kurulum QR: "ORTASDEPO|http://ip:port|ANAHTAR|TRM-01"
-                ScanField("Kurulum QR kodunu okutun", "Yönetici programı › Cihazlar › Kurulum QR", true, true, { code ->
-                    val parts = code.trim().split("|")
-                    if (parts.size >= 3 && parts[0] == "ORTASDEPO" && parts[1].startsWith("http")) {
-                        demo = false; url = parts[1].trimEnd('/'); key = parts[2]
-                        if (parts.size >= 4 && parts[3].isNotBlank()) device = parts[3]
-                        if (save()) scope.launch {
-                            val err = vm.sync.run()
-                            if (err == null) vm.ok("Kuruldu ve eşitlendi") else vm.error("Kaydedildi ama eşitlenemedi: $err")
-                        }
-                    } else {
-                        vm.error("Bu bir kurulum QR kodu değil")
-                    }
-                })
+                ScanField(
+                    "Kurulum QR kodunu okutun", "Yönetici programı › Cihazlar › Kurulum QR", true, true,
+                    { code -> qrText = ""; if (!applyQr(code)) vm.error("Bu bir kurulum QR kodu değil") },
+                    onTextChange = { qrText = it },
+                )
             }
             Card {
                 Toggle("Demo modu", "Sunucu olmadan örnek veriyle çalışır", demo) { demo = it }

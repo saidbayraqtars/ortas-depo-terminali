@@ -86,6 +86,9 @@ async function vegaYenile() {
   try {
     const g = await vega.goruntu(cfg);
     goruntuKur(g);
+    // yaz açıksa program alanın sahibi: karttan okunmaz, zimmetler karta yazılır (Vega okumasını bekletmeden).
+    if (cfg.rafAdresi?.yaz) rafYazTetikle(0);
+    else vegaDurum.rafAdresi = vegaZimmetEsitle(cfg);
     db.run(
       "INSERT INTO vega_cache(key, json, updated_at) VALUES('goruntu', ?, ?) ON CONFLICT(key) DO UPDATE SET json=excluded.json, updated_at=excluded.updated_at",
       JSON.stringify(g),
@@ -161,6 +164,11 @@ function rafKodu(code) {
   return String(code || '').trim().toUpperCase();
 }
 
+const RAF_DESEN = /^[A-Z0-9ÇĞİÖŞÜ][A-Z0-9ÇĞİÖŞÜ\-./ ]{0,23}$/;
+function rafKoduGecerli(code) {
+  return RAF_DESEN.test(rafKodu(code));
+}
+
 function rafVarMi(depo, code) {
   return Boolean(db.get('SELECT 1 FROM shelf WHERE depo=? AND code=?', depo, rafKodu(code)));
 }
@@ -231,6 +239,277 @@ function sayi(x, ad) {
   const n = Number(x);
   if (!Number.isFinite(n)) throw new Ret(`${ad} geçersiz`);
   return n;
+}
+
+// ---- Zimmet (ürünün asıl rafları) ------------------------------------------------------------
+// Ürün bir depoda birden çok rafa zimmetli olabilir; rafta hiç yokken de o rafta "beklenen" görünür.
+// Kaynak: IMPORT (Excel), VEGA (stok kartındaki raf adresi alanı), ADMIN (yönetici ekranı).
+// VEGA kaynaklı zimmet her Vega okumasında karttan yeniden kurulur; programdan silinmez.
+
+function zimmetler(depo, productId) {
+  return db.all('SELECT shelf, source FROM product_home WHERE depo=? AND product_id=? ORDER BY shelf', depo, String(productId));
+}
+
+function zimmetEkle(depo, productId, shelf, source = 'ADMIN') {
+  const c = rafKodu(shelf);
+  db.run(
+    'INSERT INTO product_home(depo, product_id, shelf, source, updated_at) VALUES(?,?,?,?,?) ON CONFLICT(depo, product_id, shelf) DO UPDATE SET updated_at=excluded.updated_at',
+    depo,
+    String(productId),
+    c,
+    source,
+    now(),
+  );
+  rafYazTetikle();
+  return c;
+}
+
+function zimmetSil(depo, productId, shelf) {
+  const c = rafKodu(shelf);
+  const z = db.get('SELECT source FROM product_home WHERE depo=? AND product_id=? AND shelf=?', depo, String(productId), c);
+  if (!z) return false;
+  if (z.source === 'VEGA') throw new Ret(`${c} adresi Vega stok kartından geliyor; Vega'da karttaki raf adresinden silin`);
+  db.run('DELETE FROM product_home WHERE depo=? AND product_id=? AND shelf=?', depo, String(productId), c);
+  rafYazTetikle();
+  return true;
+}
+
+/** Karttaki raf adresi metni → raf kodları. Virgül, noktalı virgül, | ya da satır sonu ayırır. */
+function adresleriAyir(metin) {
+  return [...new Set(String(metin || '').split(/[,;|\r\n]+/).map(rafKodu).filter(Boolean))];
+}
+
+let sonZimmetUyari = '';
+
+/** Vega kartlarındaki raf adreslerini VEGA kaynaklı zimmetlere çevirir; kartta olmayan VEGA zimmeti silinir. */
+function vegaZimmetEsitle(cfg = config.load()) {
+  const alan = goruntu && goruntu.rafAlan;
+  const d = Number(cfg.rafAdresi?.depo) || varsayilanDepo();
+  // Alan başka bilgi için de kullanılmış olabilir (Ortaş KOD14: 4.131 kartta araç modeli). Varsayılan olarak yalnız
+  // programda tanımlı raf kodları zimmet olur; yeniRafAc açıksa karttaki her uygun kod raf olarak açılır.
+  const yeniRafAc = Boolean(cfg.rafAdresi?.yeniRafAc);
+  const istenen = new Map();
+  const gecersiz = [];
+  const tanimsiz = new Map();
+  if (alan) {
+    for (const p of goruntu.products) {
+      if (!p.raf) continue;
+      for (const c of adresleriAyir(p.raf)) {
+        if (!RAF_DESEN.test(c)) {
+          if (gecersiz.length < 50) gecersiz.push({ code: p.code, adres: c });
+          continue;
+        }
+        if (!yeniRafAc && !rafVarMi(d, c)) {
+          tanimsiz.set(c, (tanimsiz.get(c) || 0) + 1);
+          continue;
+        }
+        istenen.set(`${d}|${p.id}|${c}`, { depo: d, pid: p.id, shelf: c });
+      }
+    }
+  }
+  let eklenen = 0;
+  let silinen = 0;
+  let yeniRaf = 0;
+  db.tx(() => {
+    for (const z of db.all("SELECT depo, product_id, shelf FROM product_home WHERE source='VEGA'")) {
+      if (istenen.delete(`${z.depo}|${z.product_id}|${z.shelf}`)) continue;
+      db.run('DELETE FROM product_home WHERE depo=? AND product_id=? AND shelf=?', z.depo, z.product_id, z.shelf);
+      silinen++;
+    }
+    for (const z of istenen.values()) {
+      if (!rafVarMi(z.depo, z.shelf)) {
+        rafEkle(z.depo, z.shelf, { source: 'VEGA', note: 'Vega stok kartından' });
+        yeniRaf++;
+      }
+      // Excel ya da elle verilmiş aynı zimmet varsa kaynağı VEGA olur; artık kart yönetir.
+      db.run(
+        `INSERT INTO product_home(depo, product_id, shelf, source, updated_at) VALUES(?,?,?, 'VEGA', ?)
+         ON CONFLICT(depo, product_id, shelf) DO UPDATE SET source='VEGA', updated_at=excluded.updated_at`,
+        z.depo,
+        z.pid,
+        z.shelf,
+        now(),
+      );
+      eklenen++;
+    }
+  });
+  const toplam = db.get("SELECT COUNT(*) AS n, COUNT(DISTINCT product_id) AS u FROM product_home WHERE source='VEGA'");
+  if (eklenen || silinen) log.bilgi(`Vega raf adresleri: ${eklenen} eklendi, ${silinen} silindi, ${yeniRaf} yeni raf`);
+  // Uyarı her Vega okumasında değil, sayı değişince yazılır.
+  const uyari = `${gecersiz.length}|${tanimsiz.size}`;
+  if ((gecersiz.length || tanimsiz.size) && uyari !== sonZimmetUyari) {
+    log.uyari(`Vega raf adresi: ${tanimsiz.size} tanımsız değer, ${gecersiz.length >= 50 ? '50+' : gecersiz.length} uygun olmayan (ör. ${gecersiz.slice(0, 3).map((g) => `${g.code}=${g.adres}`).join(', ')})`);
+  }
+  sonZimmetUyari = uyari;
+  // Raf deposu "Kullanılan depolar"da değilse zimmetler terminale gitmez.
+  const kullanilmiyor = Boolean(alan) && !depolar().some((x) => x.ind === d);
+  if (kullanilmiyor) log.uyari(`Raf adresi deposu (${d}) kullanılan depolar arasında değil`);
+  // Tanımsız adresler en sık geçenden: "PASSAT 61 kart" gibi raf olmayan bilgi buradan görülür.
+  const tanimsizListe = [...tanimsiz.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([adres, kart]) => ({ adres, kart }));
+  return { alan: alan || null, depo: d, adres: toplam.n, urun: toplam.u, yeniRaf, gecersiz, tanimsiz: tanimsiz.size, tanimsizListe, kullanilmiyor };
+}
+
+// ---- Zimmetleri Vega kartına yazma (rafAdresi.yaz) ------------------------------------------
+// Ortaş kararı (2026-10-23): raf adresi KOD10'da; alandaki eski bilgi (MENŞEİ: ASYA, AVRUPA…) silinir, yalnız
+// programın raf adresleri yazılır. Kartın ilk değeri vega_alan.eski'de kalır. Vega'da alan elle değiştirilirse
+// sonraki yazmada programdaki zimmet geçerli olur (sayısı "elle" olarak bildirilir).
+
+let rafYazZaman = null;
+let rafYaziyor = null;
+let rafYazTekrar = false;
+
+/** Zimmet değişince kısa bir gecikmeyle karta yazar; art arda değişiklikler tek yazmada toplanır. */
+function rafYazTetikle(ms = 3000) {
+  if (!goruntu || !config.load().rafAdresi?.yaz) return;
+  clearTimeout(rafYazZaman);
+  rafYazZaman = setTimeout(() => {
+    vegaRafYaz().catch((e) => {
+      vegaDurum.rafAdresi = { ...vegaDurum.rafAdresi, yaz: true, hata: e.message };
+      log.hata("Raf adresleri Vega'ya yazılamadı", e);
+    });
+  }, ms);
+  rafYazZaman.unref?.();
+}
+
+/** Raf deposundaki zimmetleri kartların raf adresi alanına yazar; yalnız Vega'daki değeri farklı olan kartlar. */
+async function vegaRafYaz(cfg = config.load()) {
+  if (rafYaziyor) {
+    rafYazTekrar = true;
+    return rafYaziyor;
+  }
+  rafYaziyor = rafYazCalistir(cfg).finally(() => {
+    rafYaziyor = null;
+    if (rafYazTekrar) {
+      rafYazTekrar = false;
+      rafYazTetikle(0);
+    }
+  });
+  return rafYaziyor;
+}
+
+async function rafYazCalistir(cfg) {
+  const alan = goruntu && goruntu.rafAlan;
+  if (!cfg.rafAdresi?.yaz || !alan) return null;
+  const d = Number(cfg.rafAdresi?.depo) || varsayilanDepo();
+  const bas = now();
+  // Alanın sahibi artık program: önceden karttan okunmuş zimmetler programdan yönetilir.
+  db.run("UPDATE product_home SET source='ADMIN' WHERE source='VEGA'");
+  const uz = (await vega.kartAlanUzunluk(cfg, alan)) || 50;
+  const raflar = new Map();
+  for (const z of db.all('SELECT product_id, shelf FROM product_home WHERE depo=? ORDER BY shelf', d)) {
+    if (!raflar.has(z.product_id)) raflar.set(z.product_id, []);
+    raflar.get(z.product_id).push(z.shelf);
+  }
+  const kayit = new Map(db.all('SELECT product_id, yazilan FROM vega_alan WHERE alan=?', alan).map((r) => [r.product_id, r.yazilan]));
+  const yazilacak = [];
+  const sigmayan = [];
+  let elle = 0;
+  for (const p of goruntu.products) {
+    let deger = '';
+    for (const r of raflar.get(p.id) || []) {
+      const s = deger ? `${deger}, ${r}` : r;
+      if (s.length > uz) {
+        sigmayan.push(p.code);
+        break;
+      }
+      deger = s;
+    }
+    const mevcut = p.raf || '';
+    if (mevcut === deger) continue;
+    // Program yazdıktan sonra Vega'da değiştirilmiş.
+    if (kayit.has(p.id) && kayit.get(p.id) !== null && kayit.get(p.id) !== mevcut) elle++;
+    yazilacak.push({ id: p.id, deger, mevcut });
+  }
+  // Önce ilk değer saklanır; yazma yarıda kalsa da eski bilgi kaybolmaz.
+  db.tx(() => {
+    for (const s of yazilacak) {
+      db.run('INSERT INTO vega_alan(alan, product_id, eski, yazilan, updated_at) VALUES(?,?,?,NULL,?) ON CONFLICT(alan, product_id) DO NOTHING', alan, s.id, s.mevcut, now());
+    }
+  });
+  await vega.kartAlanYaz(cfg, alan, yazilacak, (parca) => {
+    db.tx(() => {
+      for (const s of parca) {
+        db.run('UPDATE vega_alan SET yazilan=?, updated_at=? WHERE alan=? AND product_id=?', s.deger, now(), alan, s.id);
+        const p = urunIndex.get(s.id);
+        if (p) {
+          if (s.deger) p.raf = s.deger;
+          else delete p.raf;
+        }
+      }
+    });
+  });
+  const toplam = db.get('SELECT COUNT(*) AS n, COUNT(DISTINCT product_id) AS u FROM product_home WHERE depo=?', d);
+  if (yazilacak.length) log.bilgi(`Raf adresleri Vega'ya yazıldı (${alan}): ${yazilacak.length} kart${elle ? `, ${elle} kartta Vega'daki elle değişiklik ezildi` : ''}`);
+  if (sigmayan.length) log.uyari(`${alan} alanına sığmayan raf adresi: ${sigmayan.length} kart (ör. ${sigmayan.slice(0, 3).join(', ')}); ilk raflar yazıldı`);
+  const kullanilmiyor = !depolar().some((x) => x.ind === d);
+  vegaDurum.rafAdresi = {
+    alan,
+    depo: d,
+    yaz: true,
+    adres: toplam.n,
+    urun: toplam.u,
+    yazilan: yazilacak.length,
+    elle,
+    sigmayan: sigmayan.length,
+    sigmayanListe: sigmayan.slice(0, 20),
+    uzunluk: uz,
+    at: now(),
+    sureMs: now() - bas,
+    kullanilmiyor,
+  };
+  degisti();
+  return vegaDurum.rafAdresi;
+}
+
+/** Yönetici: ürünü bir raftan diğerine taşır (qty boşsa raftakinin hepsi); istenirse zimmet de taşınır. */
+function tasi(depo, productId, from, to, qty = null, { zimmetTasi = false, kim = 'yönetici' } = {}) {
+  const pid = String(productId);
+  const a = rafKodu(from);
+  const b = rafKodu(to);
+  if (!a || !b) throw new Ret('Kaynak ve hedef raf gerekli');
+  if (a === b) throw new Ret('Kaynak ve hedef raf aynı');
+  if (!RAF_DESEN.test(b)) throw new Ret(`Raf kodu uygun değil: ${b}`);
+  const mevcut = miktar(depo, pid, a);
+  const q = qty === null || qty === undefined || qty === '' ? mevcut : Number(qty);
+  if (!Number.isFinite(q) || q < 0) throw new Ret('Miktar geçersiz');
+  if (q - mevcut > EPS) throw new Ret(`${a} rafında ${mevcut} var; ${q} taşınamaz`);
+  const zimmet = db.get('SELECT source FROM product_home WHERE depo=? AND product_id=? AND shelf=?', depo, pid, a);
+  if (q <= EPS && !(zimmetTasi && zimmet)) throw new Ret(`${a} rafında bu ürün yok`);
+  const h = { ts: now(), user: kim, device: 'PC' };
+  db.tx(() => {
+    if (!rafVarMi(depo, b)) rafEkle(depo, b);
+    if (q > EPS) {
+      miktarEkle(depo, pid, a, -q, { ...h, kind: 'TRANSFER_OUT', ref: b });
+      miktarEkle(depo, pid, b, q, { ...h, kind: 'TRANSFER_IN', ref: a });
+    }
+    // Vega'dan gelen zimmet kartta durduğu sürece kalır; yeni raf elle zimmetlenir.
+    if (zimmetTasi && zimmet) {
+      zimmetEkle(depo, pid, b, zimmet.source === 'VEGA' ? 'ADMIN' : zimmet.source);
+      if (zimmet.source !== 'VEGA') zimmetSil(depo, pid, a);
+    }
+  });
+  return { tasinan: yuvarla(q) };
+}
+
+/** Raftaki bütün ürünleri ve programdan verilmiş zimmetleri hedef rafa aktarır (raf silinmeden önce). */
+function rafBosalt(depo, code, hedef) {
+  const a = rafKodu(code);
+  const b = rafKodu(hedef);
+  if (!b) throw new Ret('Hedef raf gerekli');
+  if (a === b) throw new Ret('Kaynak ve hedef raf aynı');
+  let urun = 0;
+  let zimmet = 0;
+  db.tx(() => {
+    const pids = new Set(db.all('SELECT product_id FROM location WHERE depo=? AND shelf=? AND qty>0', depo, a).map((r) => r.product_id));
+    for (const r of db.all("SELECT product_id FROM product_home WHERE depo=? AND shelf=? AND source<>'VEGA'", depo, a)) pids.add(r.product_id);
+    for (const pid of pids) {
+      const z = Boolean(db.get("SELECT 1 FROM product_home WHERE depo=? AND product_id=? AND shelf=? AND source<>'VEGA'", depo, pid, a));
+      if (miktar(depo, pid, a) > EPS) urun++;
+      if (z) zimmet++;
+      tasi(depo, pid, a, b, null, { zimmetTasi: z });
+    }
+  });
+  return { urun, zimmet };
 }
 
 function islemUygula(op, cihaz, kullanici) {
@@ -466,6 +745,7 @@ function master() {
   const acik = belgeler().filter((r) => r.acik);
   const locations = db.all('SELECT depo, product_id, shelf, qty FROM location WHERE qty > 0');
   const ref = new Set(locations.map((l) => l.product_id));
+  for (const h of db.all('SELECT DISTINCT product_id FROM product_home')) ref.add(h.product_id);
   for (const r of acik) for (const l of r.lines) ref.add(l.productId);
 
   const tum = cfg.urun.kapsam === 'tum';
@@ -496,8 +776,8 @@ function master() {
     products,
     shelves: db.all('SELECT depo, code, zone FROM shelf ORDER BY depo, code').map((s) => ({ depot: s.depo, code: s.code, zone: s.zone })),
     locations: locations.map((l) => ({ depot: l.depo, productId: l.product_id, shelf: l.shelf, qty: l.qty })),
-    // Ürünün asıl rafı (Excel'den): rafta hiç yokken rafa kaldırmada önerilir.
-    homes: db.all('SELECT depo, product_id, shelf FROM product_home').map((h) => ({ depot: h.depo, productId: h.product_id, shelf: h.shelf })),
+    // Ürünün zimmetli rafları (Excel, Vega kartı, yönetici): rafa kaldırmada önerilir, sayımda rafta beklenir.
+    homes: db.all('SELECT depo, product_id, shelf FROM product_home ORDER BY depo, product_id, shelf').map((h) => ({ depot: h.depo, productId: h.product_id, shelf: h.shelf })),
     receipts: acik.map((r) => ({
       id: r.id,
       docNo: r.docNo,
@@ -534,6 +814,9 @@ function urunListesi({ q = '', filtre = 'hepsi', limit = 300, depo = null } = {}
   if (!goruntu) return { toplam: 0, liste: [] };
   const raf = rafToplamlari(depo);
   const bek = bekleyenKabul(depo);
+  const zimmetli = new Set(
+    (depo === null ? db.all('SELECT DISTINCT product_id FROM product_home') : db.all('SELECT DISTINCT product_id FROM product_home WHERE depo=?', depo)).map((r) => r.product_id),
+  );
   const ara = String(q || '').trim();
   const qt = fuzzy.tokens(ara);
   const compact = qt.join('');
@@ -550,6 +833,7 @@ function urunListesi({ q = '', filtre = 'hepsi', limit = 300, depo = null } = {}
     if (filtre === 'yerlesmemis' && !(fark > EPS)) continue;
     if (filtre === 'fazla' && !(fark < -EPS)) continue;
     if (filtre === 'bekleyen' && !(b > EPS)) continue;
+    if (filtre === 'adressiz' && !(vs > EPS && !r && !zimmetli.has(p.id))) continue;
     // Ararken stoksuz kartlar da bulunur (isimle aranan ürün henüz depoda olmayabilir).
     if (filtre === 'hepsi' && !ara && !vs && !r && !b) continue;
     let skor = 0;
@@ -603,7 +887,10 @@ function urunDetay(id) {
     bekleyen: yuvarla(bek),
     fark: yuvarla(vs - raf - bek),
     depolar: depolarOzet,
-    asilRaflar: db.all('SELECT depo, shelf FROM product_home WHERE product_id=?', pid).map((h) => ({ ...h, depoAd: depoAdi(h.depo) })),
+    asilRaflar: db
+      .all('SELECT depo, shelf, source FROM product_home WHERE product_id=? ORDER BY depo, shelf', pid)
+      .map((h) => ({ ...h, depoAd: depoAdi(h.depo), qty: yuvarla(miktar(h.depo, pid, h.shelf)) })),
+    rafAdresi: p && p.raf ? p.raf : '',
     konumlar,
     hareketler,
     kabul,
@@ -614,20 +901,36 @@ function raflar(depo = null) {
   const ozet = new Map(
     db.all('SELECT depo, shelf, COUNT(*) AS n, SUM(qty) AS q, MAX(updated_at) AS u FROM location WHERE qty>0 GROUP BY depo, shelf').map((r) => [`${r.depo}|${r.shelf}`, r]),
   );
+  // Zimmetli ürün sayısı ve bunlardan rafta hiç olmayanlar (sayılmayı bekleyen).
+  const zim = new Map(
+    db
+      .all(
+        `SELECT h.depo, h.shelf, COUNT(*) AS n, SUM(CASE WHEN l.qty IS NULL OR l.qty<=0 THEN 1 ELSE 0 END) AS bos
+         FROM product_home h LEFT JOIN location l ON l.depo=h.depo AND l.product_id=h.product_id AND l.shelf=h.shelf
+         GROUP BY h.depo, h.shelf`,
+      )
+      .map((r) => [`${r.depo}|${r.shelf}`, r]),
+  );
   const rows = depo === null ? db.all('SELECT * FROM shelf ORDER BY depo, code') : db.all('SELECT * FROM shelf WHERE depo=? ORDER BY code', depo);
   return rows.map((s) => {
     const o = ozet.get(`${s.depo}|${s.code}`);
-    return { ...s, depoAd: depoAdi(s.depo), cesit: o ? o.n : 0, miktar: o ? yuvarla(o.q) : 0, sonHareket: o ? o.u : null };
+    const z = zim.get(`${s.depo}|${s.code}`);
+    return { ...s, depoAd: depoAdi(s.depo), cesit: o ? o.n : 0, miktar: o ? yuvarla(o.q) : 0, sonHareket: o ? o.u : null, zimmet: z ? z.n : 0, bekleyen: z ? z.bos : 0 };
   });
 }
 
 function rafDetay(depo, code) {
   const c = rafKodu(code);
   const s = db.get('SELECT * FROM shelf WHERE depo=? AND code=?', depo, c);
-  const icerik = db.all('SELECT product_id, qty, updated_at FROM location WHERE depo=? AND shelf=? AND qty>0', depo, c).map((l) => {
-    const p = urun(l.product_id);
-    return { productId: l.product_id, code: p ? p.code : '?', name: p ? p.name : "Vega'da bulunamayan kart", unit: p ? p.unit : '', qty: l.qty, updated_at: l.updated_at };
-  });
+  // Raftakiler + rafa zimmetli olup rafta olmayanlar (qty 0, sayılmayı bekliyor).
+  const zim = new Map(db.all('SELECT product_id, source FROM product_home WHERE depo=? AND shelf=?', depo, c).map((z) => [z.product_id, z.source]));
+  const satir = (pid, qty, updated_at) => {
+    const p = urun(pid);
+    return { productId: pid, code: p ? p.code : '?', name: p ? p.name : "Vega'da bulunamayan kart", unit: p ? p.unit : '', qty, updated_at, zimmet: zim.get(pid) || null };
+  };
+  const icerik = db.all('SELECT product_id, qty, updated_at FROM location WHERE depo=? AND shelf=? AND qty>0', depo, c).map((l) => satir(l.product_id, l.qty, l.updated_at));
+  const rafta = new Set(icerik.map((x) => x.productId));
+  for (const pid of zim.keys()) if (!rafta.has(pid)) icerik.push(satir(pid, 0, null));
   icerik.sort((a, b) => a.name.localeCompare(b.name, 'tr'));
   const hareketler = db.all('SELECT * FROM movement WHERE depo=? AND shelf=? ORDER BY ts DESC, id DESC LIMIT 100', depo, c);
   return { raf: s ? { ...s, depoAd: depoAdi(s.depo) } : null, depo, depoAd: depoAdi(depo), icerik, hareketler: hareketler.map((h) => ({ ...h, ...urunAdi(h.product_id) })) };
@@ -780,6 +1083,16 @@ module.exports = {
   depoSuzgec,
   rafEkle,
   rafKodu,
+  rafKoduGecerli,
+  zimmetler,
+  zimmetEkle,
+  zimmetSil,
+  adresleriAyir,
+  vegaZimmetEsitle,
+  vegaRafYaz,
+  rafYazTetikle,
+  tasi,
+  rafBosalt,
   rafVarMi,
   miktar,
   miktarAyarla,

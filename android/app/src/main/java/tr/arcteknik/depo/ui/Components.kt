@@ -257,8 +257,11 @@ fun ScanField(
     cameraButton: Boolean,
     onScan: (String) -> Unit,
     modifier: Modifier = Modifier,
+    /** Alana yazılıp henüz gönderilmemiş metin (Ayarlar'da "Kaydet" bunu da uygular). */
+    onTextChange: ((String) -> Unit)? = null,
 ) {
     var text by remember { mutableStateOf("") }
+    LaunchedEffect(text) { onTextChange?.invoke(text) }
     var camera by remember { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current

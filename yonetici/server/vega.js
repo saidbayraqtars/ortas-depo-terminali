@@ -1,6 +1,7 @@
 // Vega (VEGADB, SQL Server) bağlantısı.
 // Okunan: stok kartları, barkodlar, depo stoku, mal kabul belgeleri (stok hareketinden).
-// Yazılan: yalnız yönetici onayladığında sayım fişi (tip 93 giriş / 94 çıkış). Desen gerçek Vega
+// Yazılan: raf adresi alanı ayarda "yaz" açıksa stok kartının o alanı (Ortaş KOD10);
+// yalnız yönetici onayladığında sayım fişi (tip 93 giriş / 94 çıkış). Desen gerçek Vega
 // kaydından alındı (Galya F0102D0002 Z0000048/Z0000022, Vega Kılavuzu §23.7).
 const sql = require('mssql');
 const crypto = require('crypto');
@@ -133,7 +134,7 @@ async function baglam(v) {
   return { p, donem, F, FD };
 }
 
-const IZAHAT_AD = { 20: 'Alış faturası', 26: 'Alış irsaliyesi', 32: 'Stok giriş fişi', 28: 'İade irsaliyesi' };
+const IZAHAT_AD = { 20: 'Alış faturası', 26: 'Alış irsaliyesi', 32: 'Stok giriş fişi', 28: 'İade irsaliyesi', D37: 'Depo transferi', D129: 'Gönderim kabulü' };
 
 function tarihStr(d) {
   if (!(d instanceof Date)) return '';
@@ -164,8 +165,11 @@ async function goruntu(cfg) {
   if (stokKol.has('KOD8')) sart.push("LTRIM(RTRIM(ISNULL(S.KOD8,''))) <> N'PASİF'");
   if (stokKol.has('STOKTIPI')) sart.push('ISNULL(S.STOKTIPI,0) NOT IN (3,7,9)');
 
+  // Raf adresi stok kartının bir özel kod alanında (Ortaş: KOD14 "SERBEST"); alan adı ayardan, tabloda varsa okunur.
+  const rafAlan = String(cfg.rafAdresi?.alan || '').toUpperCase();
+  const rafKol = rafAlan && stokKol.has(rafAlan) ? `, LTRIM(RTRIM(ISNULL(CAST(S.[${rafAlan}] AS nvarchar(400)),''))) AS RAFADRES` : '';
   const kartlar = await p.request().query(`
-    SELECT S.IND, ISNULL(S.STOKKODU,'') AS KOD, ISNULL(S.MALINCINSI,'') AS AD, ISNULL(B.BIRIMADI,'') AS BIRIM
+    SELECT S.IND, ISNULL(S.STOKKODU,'') AS KOD, ISNULL(S.MALINCINSI,'') AS AD, ISNULL(B.BIRIMADI,'') AS BIRIM${rafKol}
     FROM [${F}TBLSTOKLAR] S
     OUTER APPLY (SELECT TOP 1 BIRIMADI FROM [${F}TBLBIRIMLEREX] X WHERE X.STOKNO=S.IND ORDER BY X.VARSAYILAN DESC, X.ANABIRIM DESC, X.IND) B
     WHERE ${sart.join(' AND ')}`);
@@ -200,6 +204,35 @@ async function goruntu(cfg) {
         AND ISNULL(H.GIREN,0) > 0 AND ISNULL(H.IADE,0) = 0
       GROUP BY H.IZAHAT, H.BELGENO, H.DEPO, H.STOKNO`)
     : { recordset: [] };
+
+  // Depolar arası mal girişi stok hareketine değil depo hareket fişine (TBLDEPOHARBASLIK) ve depo envanterine yazılır.
+  // 37 = depolar arası transfer (DEPO → HAREKETDEPOSU, anında); 128 = gönderim (DEPO → yoldaki TRANSFER deposu);
+  // 129 = gönderimin kabulü (yoldaki depo → DEPO, HAREKETDEPOSU gönderen). Rafa kaldırılacak giriş: 37 ve 129'un artı satırları.
+  const transferTip = (cfg.kabul.izahat || []).map(String).filter((x) => /^D\d+$/.test(x)).map((x) => Number(x.slice(1)));
+  const tDH = `${FD}TBLDEPOHARBASLIK`;
+  if (transferTip.length && (await tabloVar(p, tDH))) {
+    const tumDepo = new Map((await depolar(v, v.firma)).map((d) => [Number(d.ind), d.ad]));
+    const t = await p.request().input('bas', sql.DateTime, new Date(`${cfg.kabul.baslangic || '2000-01-01'}T00:00:00`)).query(`
+      SELECT E.BELGETIPI, E.BELGEIND, E.DEPO, E.STOKNO, SUM(E.ENVANTER) AS GIREN, MIN(B.TARIH) AS TARIH,
+             MAX(B.BELGENO) AS EVRAKNO, MAX(CASE WHEN B.BELGETIPI = 129 THEN B.HAREKETDEPOSU ELSE B.DEPO END) AS KAYNAK
+      FROM [${FD}TBLDEPOENVANTER] E
+      JOIN [${tDH}] B ON B.IND = E.BELGEIND AND B.BELGETIPI = E.BELGETIPI
+      WHERE E.BELGETIPI IN (${transferTip.join(',')}) AND E.ENVANTER > 0 AND E.DEPO IN (${depoIn}) AND B.TARIH >= @bas
+        AND ISNULL(B.IPTAL,0) = 0
+      GROUP BY E.BELGETIPI, E.BELGEIND, E.DEPO, E.STOKNO`);
+    for (const r of t.recordset) {
+      kabul.recordset.push({
+        IZAHAT: `D${r.BELGETIPI}`,
+        BELGENO: r.BELGEIND,
+        DEPO: r.DEPO,
+        EVRAKNO: r.EVRAKNO,
+        STOKNO: r.STOKNO,
+        GIREN: r.GIREN,
+        TARIH: r.TARIH,
+        CARI: `${tumDepo.get(Number(r.KAYNAK)) || r.KAYNAK} deposundan`,
+      });
+    }
+  }
 
   const bk = new Map();
   for (const b of barkod.recordset) {
@@ -254,12 +287,46 @@ async function goruntu(cfg) {
       code: String(k.KOD).trim(),
       name: String(k.AD).trim(),
       unit: String(k.BIRIM || 'Adet').trim() || 'Adet',
+      ...(k.RAFADRES ? { raf: String(k.RAFADRES) } : {}),
     })),
+    rafAlan: rafKol ? rafAlan : null,
     stock,
     moved: hareket.recordset.map((h) => String(h.STOKNO)),
     barcodes: Object.fromEntries(bk),
     receipts: [...belgeler.values()].sort((a, b) => b.ts - a.ts),
   };
+}
+
+// ---- Stok kartı alanı yazma (raf adresi) ----------------------------------------------------
+
+/** Stok kartındaki metin alanının karakter uzunluğu; alan yoksa ya da metin değilse null. */
+async function kartAlanUzunluk(cfg, alan) {
+  const { p, F } = await baglam(cfg.vega);
+  const r = await p.request().input('t', sql.NVarChar, `${F}TBLSTOKLAR`).input('k', sql.NVarChar, alan).query(`
+    SELECT c.max_length AS uz, y.name AS tip FROM sys.columns c JOIN sys.types y ON y.user_type_id = c.user_type_id
+    WHERE c.object_id = OBJECT_ID(@t) AND c.name = @k`);
+  const x = r.recordset[0];
+  if (!x || !/char$/i.test(x.tip)) return null;
+  if (x.uz === -1) return 4000;
+  return /^n/i.test(x.tip) ? x.uz / 2 : x.uz;
+}
+
+/** Kartların bir metin alanını yazar. satirlar: [{id, deger}]; 500'lük parçalar, her parça tek UPDATE. */
+async function kartAlanYaz(cfg, alan, satirlar, parcaBitti = () => {}) {
+  if (!/^[A-Z][A-Z0-9_]{0,30}$/.test(alan)) throw new Error('Geçersiz alan adı');
+  const { p, F } = await baglam(cfg.vega);
+  for (let i = 0; i < satirlar.length; i += 500) {
+    const parca = satirlar.slice(i, i + 500);
+    const req = p.request();
+    const degerler = parca.map((s, j) => {
+      req.input(`i${j}`, sql.Int, Number(s.id));
+      req.input(`d${j}`, sql.NVarChar(400), s.deger);
+      return `(@i${j}, @d${j})`;
+    });
+    await req.query(`UPDATE S SET [${alan}] = V.D FROM [${F}TBLSTOKLAR] S JOIN (VALUES ${degerler.join(',')}) V(IND, D) ON V.IND = S.IND`);
+    parcaBitti(parca);
+  }
+  return satirlar.length;
 }
 
 /** Verilen kartların bu andaki depo stoku (sayım fişi kesilmeden hemen önce okunur). */
@@ -513,4 +580,4 @@ async function sayimGeriAl(cfg, docs) {
   }
 }
 
-module.exports = { kullanilanDepolar, dene, firmalar, donemler, depolar, donemCoz, hazirMi, goruntu, anlikStok, sayimYaz, sayimGeriAl, fisVarsayilanlari, kapat, oleTarih };
+module.exports = { kullanilanDepolar, dene, firmalar, donemler, depolar, donemCoz, hazirMi, goruntu, anlikStok, sayimYaz, sayimGeriAl, fisVarsayilanlari, kartAlanUzunluk, kartAlanYaz, kapat, oleTarih };

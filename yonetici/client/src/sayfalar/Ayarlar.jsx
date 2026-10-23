@@ -1,11 +1,20 @@
 import React, { useEffect, useState } from 'react';
-import { Alan, api, Btn, Icon, Rozet, SayfaBaslik, tarihSaat, useApp, useVeri } from '../lib.jsx';
+import { Alan, api, Btn, Icon, Rozet, SayfaBaslik, tarihSaat, useApp, useOnay, useVeri } from '../lib.jsx';
 
 const TURLER = [
   ['20', 'Alış faturası (20)'],
   ['26', 'Alış irsaliyesi (26)'],
   ['32', 'Stok giriş fişi (32)'],
+  ['D37', 'Depolar arası transfer — giren depoda'],
+  ['D129', 'Depo gönderiminin kabulü — alan şubede'],
 ];
+
+/** İşaretli bilinen türler + elle yazılan diğer IZAHAT numaraları. */
+function kabulGovde(k) {
+  const bilinen = k.izahat.filter((x) => TURLER.some(([t]) => t === x));
+  const diger = k.ekTur === undefined ? k.izahat.filter((x) => !bilinen.includes(x)) : k.ekTur.split(/[^\d]+/).filter(Boolean);
+  return { izahat: [...new Set([...bilinen, ...diger])], baslangic: k.baslangic };
+}
 
 function Bolum({ ikon, baslik, aciklama, children, alt }) {
   return (
@@ -203,10 +212,11 @@ export default function Ayarlar() {
   const [fis, setFis] = useState(null);
   const [acilis, setAcilis] = useState(null);
   const [mesgul, setMesgul] = useState('');
+  const [sor, onayPenceresi] = useOnay();
 
   useEffect(() => {
     // Yalnız ilk yüklemede: bir bölüm kaydedilince diğer bölümlerdeki kaydedilmemiş değişiklik silinmesin.
-    if (a) setTaslak((t) => t || { kabul: { ...a.kabul }, urun: { ...a.urun }, sayim: { ...a.sayim }, port: a.port, yenileme: a.yenileme });
+    if (a) setTaslak((t) => t || { kabul: { ...a.kabul }, rafAdresi: { alan: '', depo: null, ...a.rafAdresi }, urun: { ...a.urun }, sayim: { ...a.sayim }, port: a.port, yenileme: a.yenileme });
   }, [a]);
   useEffect(() => {
     api('/vega/fis-varsayilan').then(setFis).catch(() => {});
@@ -259,22 +269,94 @@ export default function Ayarlar() {
   return (
     <>
       <SayfaBaslik baslik="Ayarlar" />
+      {onayPenceresi}
       <div className="stack">
         <VegaAyari a={a} kaydet={(g) => kaydet(g, 'Vega ayarı kaydedildi, veri okunuyor')} />
 
         <div className="grid g2">
           <Bolum ikon="package" baslik="Mal kabul" aciklama="Vega'da depoya giren hangi belgeler rafa kaldırılacak iş olarak terminale gelsin?"
-            alt={<Btn kind="primary" onClick={() => kaydet({ kabul: t.kabul })}>Kaydet</Btn>}>
+            alt={<Btn kind="primary" onClick={() => kaydet({ kabul: kabulGovde(t.kabul) })}>Kaydet</Btn>}>
             <div className="stack" style={{ gap: 8 }}>
               {TURLER.map(([k, ad]) => (
                 <label key={k} className="check"><input type="checkbox" checked={t.kabul.izahat.includes(k)} onChange={() => tur(k)} /><span>{ad}</span></label>
               ))}
             </div>
+            <Alan etiket="Diğer belge türleri (IZAHAT)" ipucu="Örnek: depolar arası transferin giriş türü. Virgülle ayırın.">
+              <input
+                className="inp mono"
+                style={{ width: 180 }}
+                value={t.kabul.ekTur ?? t.kabul.izahat.filter((k) => !TURLER.some(([x]) => x === k)).join(', ')}
+                onChange={(e) => setT('kabul.ekTur', e.target.value.replace(/[^\d, ]/g, ''))}
+              />
+            </Alan>
             <Alan etiket="Başlangıç tarihi" ipucu="Bundan eski belgeler gelmez (kurulum günü önerilir)">
               <input type="date" className="inp" style={{ width: 180 }} value={t.kabul.baslangic || ''} onChange={(e) => setT('kabul.baslangic', e.target.value)} />
             </Alan>
           </Bolum>
           <EtiketAyari a={a} kaydet={kaydet} />
+        </div>
+
+        <div className="grid g2">
+          <Bolum ikon="mapPoint" baslik="Vega'daki raf adresi" aciklama="Ürünün raf adresleri Vega stok kartının bir özel kod alanında durur. Program ya bu alanı okuyup ürünü o raflara zimmetler ya da zimmetleri bu alana kendisi yazar. Birden çok raf virgülle: A-01-02, B-03-01."
+            alt={<Btn kind="primary" onClick={async () => {
+              const ilkYazma = t.rafAdresi.yaz && t.rafAdresi.alan && (!a.rafAdresi?.yaz || a.rafAdresi.alan !== t.rafAdresi.alan);
+              if (ilkYazma && !(await sor(
+                `${t.rafAdresi.alan} alanına yazılsın mı?`,
+                `Bütün stok kartlarında ${t.rafAdresi.alan} alanındaki mevcut bilgi silinecek, yerine yalnız raf adresleri yazılacak.\nKartların eski değerleri programda saklanır.`,
+                { tamam: 'Sil ve yaz', tehlike: true },
+              ))) return;
+              kaydet({ rafAdresi: t.rafAdresi }, 'Kaydedildi, Vega okunuyor');
+            }}>Kaydet</Btn>}>
+            <div className="grid g2">
+              <Alan etiket="Stok kartı alanı" ipucu="Boş = kullanılmaz. Ortaş: KOD10">
+                <input className="inp mono" value={t.rafAdresi.alan || ''} placeholder="KOD10" onChange={(e) => setT('rafAdresi.alan', e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ''))} />
+              </Alan>
+              <Alan etiket="Raflar hangi depoda">
+                <select className="inp" value={t.rafAdresi.depo ?? ''} onChange={(e) => setT('rafAdresi.depo', e.target.value === '' ? null : Number(e.target.value))}>
+                  <option value="">Varsayılan depo</option>
+                  {(durum?.depolar || []).map((d) => <option key={d.ind} value={d.ind}>{d.ad}</option>)}
+                </select>
+              </Alan>
+            </div>
+            <label className="check">
+              <input type="checkbox" checked={Boolean(t.rafAdresi.yaz)} onChange={(e) => setT('rafAdresi.yaz', e.target.checked)} />
+              <span><b>Program bu alana yazsın</b><br /><span className="muted small">Zimmetler değiştikçe karta yazılır. Alandaki eski bilgi silinir (ilk değerler programda saklanır); Vega'da bu alan elle değiştirilmemeli.</span></span>
+            </label>
+            {!t.rafAdresi.yaz && (
+              <label className="check">
+                <input type="checkbox" checked={Boolean(t.rafAdresi.yeniRafAc)} onChange={(e) => setT('rafAdresi.yeniRafAc', e.target.checked)} />
+                <span><b>Tanımsız adresleri raf olarak aç</b><br /><span className="muted small">Kapalıyken yalnız Raflar'da tanımlı kodlar alınır; alanda raf olmayan bilgi (araç modeli gibi) varsa kapalı tutun.</span></span>
+              </label>
+            )}
+            {durum?.vega?.rafAdresi?.yaz && (
+              <div className={`notice ${durum.vega.rafAdresi.hata ? 'warn' : 'info'}`}>
+                <Icon name={durum.vega.rafAdresi.hata ? 'warning' : 'info'} />
+                <p>
+                  {durum.vega.rafAdresi.hata
+                    ? <>Vega'ya yazılamadı: {durum.vega.rafAdresi.hata}</>
+                    : <>{durum.vega.rafAdresi.urun?.toLocaleString('tr-TR')} ürünün {durum.vega.rafAdresi.adres?.toLocaleString('tr-TR')} raf adresi {durum.vega.rafAdresi.alan} alanında. Son yazmada {durum.vega.rafAdresi.yazilan?.toLocaleString('tr-TR')} kart güncellendi.</>}
+                  {durum.vega.rafAdresi.elle > 0 && <> Vega'da elle değiştirilmiş {durum.vega.rafAdresi.elle} kartın üzerine yazıldı.</>}
+                  {durum.vega.rafAdresi.sigmayan > 0 && <> {durum.vega.rafAdresi.sigmayan} kartın adresleri {durum.vega.rafAdresi.uzunluk} karaktere sığmadı, ilk raflar yazıldı (ör. {durum.vega.rafAdresi.sigmayanListe.slice(0, 3).join(', ')}).</>}
+                </p>
+              </div>
+            )}
+            {durum?.vega?.rafAdresi?.alan && !durum.vega.rafAdresi.yaz && (
+              <div className="notice info">
+                <Icon name="info" />
+                <p>
+                  {durum.vega.rafAdresi.urun.toLocaleString('tr-TR')} ürün, {durum.vega.rafAdresi.adres.toLocaleString('tr-TR')} raf adresi okundu.
+                  {durum.vega.rafAdresi.tanimsiz > 0 && <> Raflar'da tanımlı olmayan {durum.vega.rafAdresi.tanimsiz.toLocaleString('tr-TR')} farklı değer alınmadı (en sık: {durum.vega.rafAdresi.tanimsizListe.slice(0, 5).map((x) => `${x.adres} ${x.kart}`).join(', ')}).</>}
+                  {durum.vega.rafAdresi.gecersiz?.length > 0 && <> Raf kodu biçimine uymayan {durum.vega.rafAdresi.gecersiz.length >= 50 ? '50+' : durum.vega.rafAdresi.gecersiz.length} değer atlandı (ör. {durum.vega.rafAdresi.gecersiz.slice(0, 3).map((g) => `${g.code}: ${g.adres}`).join(', ')}).</>}
+                </p>
+              </div>
+            )}
+            {durum?.vega?.rafAdresi?.kullanilmiyor && (
+              <div className="notice warn"><Icon name="warning" /><p>Raflar için seçilen depo "Kullanılan depolar" arasında değil; zimmetler terminale gitmez. Vega ayarından depoyu ekleyin.</p></div>
+            )}
+            {t.rafAdresi.alan && a.rafAdresi?.alan === t.rafAdresi.alan && durum?.vega?.ok && !durum?.vega?.rafAdresi?.alan && (
+              <div className="notice warn"><Icon name="warning" /><p>{t.rafAdresi.alan} alanı Vega stok kartlarında bulunamadı.</p></div>
+            )}
+          </Bolum>
         </div>
 
         {/* Kurulumda bir kez bakılır; varsayılanlar çoğu firmada doğru. */}

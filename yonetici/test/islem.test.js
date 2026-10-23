@@ -161,6 +161,128 @@ test('Excel içe aktarma: depo adı eşleşir, raf açılır, miktar ve asıl ra
   assert.strictEqual(c2.hatalar.length, 1);
 });
 
+test('ürün birden çok rafa zimmetlenir; boş zimmetli raf detayda beklenen olarak görünür', () => {
+  depo.zimmetEkle(1, '103', 'A-01-01');
+  depo.zimmetEkle(1, '103', 'A-01-02');
+  assert.deepStrictEqual(depo.zimmetler(1, '103').map((z) => z.shelf), ['A-01-01', 'A-01-02']);
+  const d = depo.rafDetay(1, 'A-01-02');
+  const z = d.icerik.find((x) => x.productId === '103');
+  assert.strictEqual(z.qty, 0);
+  assert.strictEqual(z.zimmet, 'ADMIN');
+  const r = depo.raflar(1).find((x) => x.code === 'A-01-02');
+  assert.strictEqual(r.zimmet, 1);
+  assert.strictEqual(r.bekleyen, 1);
+  const homes = JSON.parse(depo.master().json).homes.filter((h) => h.productId === '103');
+  assert.deepStrictEqual(homes.map((h) => h.shelf), ['A-01-01', 'A-01-02']);
+});
+
+test('Vega kartındaki raf adresleri zimmet olur; karttan silinen adres zimmetten de kalkar', () => {
+  config.update({ rafAdresi: { alan: 'KOD14', depo: 1, yeniRafAc: true } });
+  const g = depo.goruntu();
+  g.rafAlan = 'KOD14';
+  g.products.find((p) => p.id === '102').raf = 'r-01, R-02;bad*kod';
+  let s = depo.vegaZimmetEsitle();
+  assert.deepStrictEqual(depo.zimmetler(1, '102').map((z) => [z.shelf, z.source]), [['R-01', 'VEGA'], ['R-02', 'VEGA']]);
+  assert.ok(depo.rafVarMi(1, 'R-01'));
+  assert.strictEqual(s.gecersiz.length, 1);
+  assert.throws(() => depo.zimmetSil(1, '102', 'R-01'), /Vega/);
+  g.products.find((p) => p.id === '102').raf = 'R-02';
+  s = depo.vegaZimmetEsitle();
+  assert.deepStrictEqual(depo.zimmetler(1, '102').map((z) => z.shelf), ['R-02']);
+  delete g.products.find((p) => p.id === '102').raf;
+  depo.vegaZimmetEsitle();
+  assert.strictEqual(depo.zimmetler(1, '102').length, 0);
+  // Varsayılan: yalnız tanımlı raflar; alandaki raf olmayan bilgi (araç modeli) zimmet olmaz.
+  config.update({ rafAdresi: { yeniRafAc: false } });
+  g.products.find((p) => p.id === '102').raf = 'PASSAT, B-01-01';
+  s = depo.vegaZimmetEsitle();
+  assert.deepStrictEqual(depo.zimmetler(1, '102').map((z) => z.shelf), ['B-01-01']);
+  assert.ok(!depo.rafVarMi(1, 'PASSAT'));
+  assert.deepStrictEqual(s.tanimsizListe, [{ adres: 'PASSAT', kart: 1 }]);
+  delete g.products.find((p) => p.id === '102').raf;
+  depo.vegaZimmetEsitle();
+});
+
+test('raf adresi yazma: alandaki eski bilgi silinir, zimmetler yazılır, ilk değer saklanır', async () => {
+  const vega = require('../server/vega');
+  const yazilan = [];
+  const eskiYaz = vega.kartAlanYaz;
+  const eskiUz = vega.kartAlanUzunluk;
+  vega.kartAlanUzunluk = async () => 20;
+  vega.kartAlanYaz = async (cfg, alan, satirlar, bitti) => {
+    yazilan.push(...satirlar.map((s) => [alan, s.id, s.deger]));
+    bitti(satirlar);
+    return satirlar.length;
+  };
+  try {
+    config.update({ rafAdresi: { alan: 'KOD10', depo: 1, yaz: true } });
+    const g = depo.goruntu();
+    g.rafAlan = 'KOD10';
+    const p101 = g.products.find((p) => p.id === '101');
+    const p102 = g.products.find((p) => p.id === '102');
+    p101.raf = 'ASYA';
+    p102.raf = 'AVRUPA';
+    depo.zimmetEkle(1, '102', 'B-01-01');
+    depo.zimmetEkle(1, '102', 'R-LONG-0001');
+    depo.zimmetEkle(1, '102', 'R-LONG-0002');
+    const s = await depo.vegaRafYaz();
+    // 101 zimmetsiz: ASYA silinir. 102: 20 karaktere iki raf sığar.
+    assert.deepStrictEqual(yazilan.find((y) => y[1] === '101'), ['KOD10', '101', '']);
+    assert.deepStrictEqual(yazilan.find((y) => y[1] === '102'), ['KOD10', '102', 'B-01-01, R-LONG-0001']);
+    assert.strictEqual(s.sigmayan, 1);
+    assert.strictEqual(p101.raf, undefined);
+    assert.strictEqual(db.get("SELECT eski FROM vega_alan WHERE alan='KOD10' AND product_id='101'").eski, 'ASYA');
+    // Değişmeyen kart yeniden yazılmaz; eski değer ikinci yazmada ezilmez.
+    yazilan.length = 0;
+    depo.zimmetSil(1, '102', 'R-LONG-0002');
+    depo.zimmetSil(1, '102', 'R-LONG-0001');
+    await depo.vegaRafYaz();
+    assert.deepStrictEqual(yazilan, [['KOD10', '102', 'B-01-01']]);
+    assert.strictEqual(db.get("SELECT eski FROM vega_alan WHERE alan='KOD10' AND product_id='102'").eski, 'AVRUPA');
+    // Vega'da elle değiştirilen kart: program zimmeti geçerli, sayısı bildirilir.
+    yazilan.length = 0;
+    p102.raf = 'ELLE';
+    const s2 = await depo.vegaRafYaz();
+    assert.deepStrictEqual(yazilan, [['KOD10', '102', 'B-01-01']]);
+    assert.strictEqual(s2.elle, 1);
+  } finally {
+    vega.kartAlanYaz = eskiYaz;
+    vega.kartAlanUzunluk = eskiUz;
+    config.update({ rafAdresi: { alan: '', yaz: false } });
+    depo.goruntu().rafAlan = null;
+    depo.zimmetSil(1, '102', 'B-01-01');
+  }
+});
+
+test('taşı: miktar ve zimmet hedef rafa geçer; raf boşaltma her şeyi aktarır', () => {
+  // 101 MERKEZ: A-01-01'de 20, B-01-01'de 10
+  depo.zimmetEkle(1, '101', 'A-01-01');
+  depo.tasi(1, '101', 'A-01-01', 'A-01-02', 5);
+  assert.strictEqual(depo.miktar(1, '101', 'A-01-01'), 15);
+  assert.strictEqual(depo.miktar(1, '101', 'A-01-02'), 5);
+  assert.throws(() => depo.tasi(1, '101', 'A-01-01', 'A-01-02', 99), /taşınamaz/);
+  depo.tasi(1, '101', 'A-01-01', 'C-09', null, { zimmetTasi: true });
+  assert.strictEqual(depo.miktar(1, '101', 'A-01-01'), 0);
+  assert.strictEqual(depo.miktar(1, '101', 'C-09'), 15);
+  assert.ok(depo.zimmetler(1, '101').some((z) => z.shelf === 'C-09'));
+  assert.ok(!depo.zimmetler(1, '101').some((z) => z.shelf === 'A-01-01'));
+  // A-01-02: 101 × 5 ve 103 zimmeti
+  const b = depo.rafBosalt(1, 'A-01-02', 'D-01');
+  assert.deepStrictEqual(b, { urun: 1, zimmet: 1 });
+  assert.strictEqual(depo.miktar(1, '101', 'D-01'), 5);
+  assert.ok(depo.zimmetler(1, '103').some((z) => z.shelf === 'D-01'));
+  assert.strictEqual(depo.rafDetay(1, 'A-01-02').icerik.length, 0);
+});
+
+test('adresi olmayan ürünler: Vega stoku var, rafta yok, zimmeti yok', () => {
+  const ids = depo.urunListesi({ filtre: 'adressiz', depo: 1 }).liste.map((u) => u.id);
+  // 102 B-01-01'de; 101 rafta; 103 zimmetli
+  assert.deepStrictEqual(ids, []);
+  depo.zimmetSil(1, '103', 'A-01-01');
+  depo.zimmetSil(1, '103', 'D-01');
+  assert.deepStrictEqual(depo.urunListesi({ filtre: 'adressiz', depo: 1 }).liste.map((u) => u.id), ['103']);
+});
+
 test('eski tek depolu veritabanı göçü: raflar ve stok varsayılan depoya bağlanır', () => {
   const { DatabaseSync } = require('node:sqlite');
   const f = path.join(dir, 'eski.db');
@@ -176,7 +298,7 @@ test('eski tek depolu veritabanı göçü: raflar ve stok varsayılan depoya ba�
   db.open(f, { varsayilanDepo: 7 });
   assert.strictEqual(db.get("SELECT depo FROM shelf WHERE code='X-1'").depo, 7);
   assert.strictEqual(db.get("SELECT depo, qty FROM location WHERE product_id='9'").depo, 7);
-  assert.strictEqual(db.meta('surum'), '2');
+  assert.strictEqual(db.meta('surum'), '4');
   db.close();
   db.open(path.join(dir, 'depo.db'), { varsayilanDepo: 1 });
 });
