@@ -11,21 +11,21 @@ import tr.arcteknik.depo.BuildConfig
 import tr.arcteknik.depo.data.Op
 import tr.arcteknik.depo.data.Repo
 import java.io.IOException
+import java.io.Reader
+import java.io.StringReader
 import java.util.concurrent.TimeUnit
 
 /** Bir işlemin sunucudaki sonucu. `ok=false` kalıcı ret demek; işlem kuyrukta hata olarak kalır. */
 data class OpResult(val id: String, val ok: Boolean, val error: String?)
 
-/** Sunucudan gelen ana veri ve sürüm etiketi (ETag). */
-class Master(val json: JSONObject, val etag: String?)
-
 /** Terminalin konuştuğu sunucu. Sözleşme: `docs/API.md`. */
 interface Backend {
     /**
-     * Ulaşılamazsa IOException atar. [etag] verilirse ve sunucuda değişiklik yoksa null döner (304);
-     * her dakikalık eşitlemede bütün ürün listesi yeniden inmesin.
+     * Ana veriyi [read]'e akış olarak verir (ikinci parametre yeni ETag); 130 bin ürünlük liste belleğe tek parça
+     * alınmaz. Ulaşılamazsa IOException atar. [etag] verilirse ve sunucuda değişiklik yoksa [read] çağrılmaz,
+     * false döner (304); her dakikalık eşitlemede bütün ürün listesi yeniden inmesin.
      */
-    fun master(etag: String?): Master?
+    fun master(etag: String?, read: (Reader, String?) -> Unit): Boolean
 
     fun pushOps(ops: List<Op>, user: String): List<OpResult>
 
@@ -41,7 +41,7 @@ interface Backend {
  * kabul edilir. Cihazın ağı kapalıyken sunucu da "kapalı" sayılır ki çevrimdışı kuyruk denenebilsin.
  */
 class DemoBackend(private val context: Context, private val online: () -> Boolean) : Backend {
-    override fun master(etag: String?): Master {
+    override fun master(etag: String?, read: (Reader, String?) -> Unit): Boolean {
         if (!online()) throw IOException("Ağ yok")
         val json = JSONObject(context.assets.open("demo.json").bufferedReader(Charsets.UTF_8).use { it.readText() })
         val users = json.optJSONArray("users") ?: JSONArray()
@@ -53,7 +53,8 @@ class DemoBackend(private val context: Context, private val online: () -> Boolea
                 u.remove("demoPin")
             }
         }
-        return Master(json, null)
+        read(StringReader(json.toString()), null)
+        return true
     }
 
     override fun pushOps(ops: List<Op>, user: String): List<OpResult> {
@@ -78,12 +79,13 @@ class HttpBackend(private val baseUrl: String, private val deviceKey: String, pr
         .header("X-Device-Name", deviceName)
         .header("X-App-Version", BuildConfig.VERSION_NAME)
 
-    override fun master(etag: String?): Master? {
+    override fun master(etag: String?, read: (Reader, String?) -> Unit): Boolean {
         val req = request("/api/master").apply { if (etag != null) header("If-None-Match", etag) }.get().build()
         client.newCall(req).execute().use { r ->
-            if (r.code == 304) return null
+            if (r.code == 304) return false
             if (!r.isSuccessful) throw IOException(errorText(r.code, r.body?.string()))
-            return Master(JSONObject(r.body!!.string()), r.header("ETag"))
+            read(r.body!!.charStream(), r.header("ETag"))
+            return true
         }
     }
 

@@ -197,7 +197,8 @@ function IceAktar({ kapat, tamam }) {
       }
     >
       <p className="muted" style={{ margin: 0 }}>
-        B2B ya da başka programdan alınan depo/raf listesi. Bir satır bir raf: <b>Depo</b> ve <b>Raf</b> zorunlu; <b>Bölge</b>, <b>Not</b>,
+        B2B ya da başka programdan alınan depo/raf listesi. <b>Depo</b> ve <b>Raf</b> zorunlu; bir hücrede birden çok raf <b>;</b> ile
+        ayrılabilir, uygun olmayan raf kodu atlanır; <b>Bölge</b>, <b>Not</b>,
         <b> Ürün</b> (kod ya da barkod) ve <b>Miktar</b> isteğe bağlı. Ürün + miktar o rafa o miktarı yazar (ilk yerleşim); miktarsız ürün,
         ürünün <b>asıl rafı</b> olur ve terminal rafa kaldırırken o rafı önerir.
       </p>
@@ -219,8 +220,9 @@ function IceAktar({ kapat, tamam }) {
             ))}
           </div>
           {eslesme.depo === undefined && (
-            <Alan etiket="Bütün satırlar bu depoya">
+            <Alan etiket="Bütün satırlar bu depoya" ipucu="Terminal rafı yalnız tanımlı olduğu depoda kabul eder; raf her depoda varsa Bütün depolar seçin">
               <select className="inp" value={sabitDepo} onChange={(e) => { setSabitDepo(e.target.value); onizle(dosya.anahtar, eslesme, depoEslesme, e.target.value); }}>
+                {depolar.length > 1 && <option value="hepsi">Bütün depolar</option>}
                 {depolar.map((d) => <option key={d.ind} value={d.ind}>{d.ad}</option>)}
               </select>
             </Alan>
@@ -237,6 +239,7 @@ function IceAktar({ kapat, tamam }) {
                       <td style={{ width: 260 }}>
                         <select className="inp" value={depoEslesme[d.deger] ?? (d.depo ?? '')} onChange={(e) => { const yeni = { ...depoEslesme, [d.deger]: e.target.value }; setDepoEslesme(yeni); onizle(dosya.anahtar, eslesme, yeni); }}>
                           <option value="">— eşleşmedi, atla —</option>
+                          {depolar.length > 1 && <option value="hepsi">Bütün depolar</option>}
                           {depolar.map((x) => <option key={x.ind} value={x.ind}>{x.ad}</option>)}
                         </select>
                       </td>

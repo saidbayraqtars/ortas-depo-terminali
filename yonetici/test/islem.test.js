@@ -161,6 +161,32 @@ test('Excel içe aktarma: depo adı eşleşir, raf açılır, miktar ve asıl ra
   assert.strictEqual(c2.hatalar.length, 1);
 });
 
+test('Excel içe aktarma: B2B raf adresi ; ile çoklu, uygun olmayan parça atlanır; bütün depolara yazılabilir', async () => {
+  const csv = 'Stok Kodu;Stok Adı;Minimum Adet;Durum;Raf Adresi\nHF-0310;Hava filtresi;1;Aktif;.;TK2-H1\nAN-0040;Antifriz;1;Aktif;TK2-H2, TK3-A1\nYF-1042;Yağ filtresi;1;Aktif;.\n';
+  // Raf Adresi hücresindeki ; ayraçla karışmasın diye tırnaklı
+  const t = await iceaktar.oku('b2b.csv', Buffer.from(csv.replace(/;(\.;TK2-H1|TK2-H2, TK3-A1|\.)\n/g, ';"$1"\n')));
+  const es = iceaktar.tahminEt(t.basliklar);
+  assert.deepStrictEqual(es, { raf: 4, urun: 0 });
+  const c = iceaktar.coz({ ...t, eslesme: es, sabitDepo: iceaktar.HEPSI });
+  assert.deepStrictEqual(c.hatalar.map((h) => h.satir), [4]);
+  assert.deepStrictEqual(c.satirlar.map((s) => `${s.depo}|${s.raf}|${s.productId}`), [
+    '1|TK2-H1|102', '2|TK2-H1|102', '1|TK2-H2|103', '1|TK3-A1|103', '2|TK2-H2|103', '2|TK3-A1|103',
+  ]);
+  assert.strictEqual(iceaktar.ozet(c).satir, 2);
+  const s = iceaktar.uygula(c);
+  assert.deepStrictEqual(s, { yeniRaf: 6, miktar: 0, asilRaf: 6 });
+  assert.ok(depo.rafVarMi(2, 'TK2-H1'));
+  assert.deepStrictEqual(depo.zimmetler(2, '103').map((z) => z.shelf), ['TK2-H2', 'TK3-A1']);
+  // Çok raflı satıra miktar yazılmaz: hangi rafa olduğu belirsiz.
+  const c2 = iceaktar.coz({ satirlar: [['HF-0310', 'TK2-H1;TK2-H2', '5']], eslesme: { urun: 0, raf: 1, miktar: 2 }, sabitDepo: 1 });
+  assert.strictEqual(c2.satirlar.length, 0);
+  assert.strictEqual(c2.hatalar.length, 1);
+  for (const d of [1, 2]) for (const r of ['TK2-H1', 'TK2-H2', 'TK3-A1']) {
+    db.run('DELETE FROM product_home WHERE depo=? AND shelf=?', d, r);
+    db.run('DELETE FROM shelf WHERE depo=? AND code=?', d, r);
+  }
+});
+
 test('ürün birden çok rafa zimmetlenir; boş zimmetli raf detayda beklenen olarak görünür', () => {
   depo.zimmetEkle(1, '103', 'A-01-01');
   depo.zimmetEkle(1, '103', 'A-01-02');

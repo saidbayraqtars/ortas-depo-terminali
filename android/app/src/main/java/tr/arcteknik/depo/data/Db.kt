@@ -5,7 +5,12 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.database.sqlite.SQLiteStatement
+import android.util.JsonReader
+import android.util.JsonToken
+import org.json.JSONArray
 import org.json.JSONObject
+import java.io.Reader
 
 /**
  * Cihazdaki yerel veri. Sunucudan gelen ana veri (ürün, raf, stok, belge, kullanıcı) burada durur;
@@ -15,6 +20,11 @@ import org.json.JSONObject
  * (transfer, sayım, sorgu); mal kabul belgesi kendi deposunu taşır ve rafa kaldırma orada olur.
  */
 class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
+
+    init {
+        // Eşitleme ana veriyi yazarken ekranlar (ana iş parçacığı) beklemeden son kaydedilmiş hali okusun.
+        setWriteAheadLoggingEnabled(true)
+    }
 
     /** Çalışılan depo (Vega depo numarası). Repo ayardan yükler. */
     @Volatile
@@ -66,84 +76,76 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
     /**
      * Sunucudan gelen ana veriyi yerel tabloların yerine koyar. Gönderilmemiş işlem varken çağrılmaz;
      * aksi halde cihazdaki değişiklikler sunucunun eski haliyle ezilirdi (bkz. Sync).
+     *
+     * Ana veri akıştan okunur: Ortaş'ta 130 bin ürün ve 300 bini aşan zimmetle JSON 30 MB'ı geçiyor; tek parça
+     * JSONObject belleği taşırıyor, yazma da onlarca saniye sürüyordu. Bu sırada kullanıcı bir işlem kaydederse
+     * (ana iş parçacığında) eşitleme yazma kilidini bırakır; yoksa ekran donar ve Android "yanıt vermiyor" der.
+     *
+     * @return ürün, raf, konum ve zimmet dışındaki üst alanlar (depo, kullanıcı, belge, sayım, uygulama sürümü).
      */
-    fun replaceMaster(json: JSONObject) {
+    fun replaceMaster(input: Reader): JSONObject {
         searchIndex = null
+        val head = JSONObject()
         val db = writableDatabase
         db.beginTransaction()
         try {
             for (t in listOf("product", "product_stock", "barcode", "depot", "shelf", "location", "home", "receipt", "receipt_line", "app_user")) {
                 db.delete(t, null, null)
             }
-            // Eski sunucu depo bilgisi göndermez; o zaman her şey tek "0" deposunda durur.
-            val defaultDepot = json.optInt("defaultDepot", 0)
-            val depots = json.optJSONArray("depots")
+            val insProduct = db.compileStatement("INSERT OR REPLACE INTO product(id, code, name, unit, vega_stock) VALUES(?,?,?,?,?)")
+            val insStock = db.compileStatement("INSERT OR REPLACE INTO product_stock(product_id, depot, qty) VALUES(?,?,?)")
+            val insBarcode = db.compileStatement("INSERT OR REPLACE INTO barcode(code, product_id) VALUES(?,?)")
+            val insShelf = db.compileStatement("INSERT OR REPLACE INTO shelf(depot, code, zone) VALUES(?,?,?)")
+            val insLocation = db.compileStatement("INSERT OR REPLACE INTO location(depot, product_id, shelf, qty) VALUES(?,?,?,?)")
+            val insHome = db.compileStatement("INSERT OR REPLACE INTO home(depot, product_id, shelf) VALUES(?,?,?)")
+            // Eski sunucu depo bilgisi göndermez; o zaman her şey tek "0" deposunda durur. Sunucu bunu ürünlerden önce yazar.
+            fun defaultDepot() = head.optInt("defaultDepot", 0)
+            var n = 0
+            fun yieldSometimes() {
+                if (++n % 500 == 0) db.yieldIfContendedSafely()
+            }
+            JsonReader(input).use { r ->
+                r.beginObject()
+                while (r.hasNext()) {
+                    when (val key = r.nextName()) {
+                        "products" -> r.eachObject { p ->
+                            val id = p.getString("id")
+                            insProduct.exec(id, p.getString("code"), p.getString("name"), p.optString("unit", "Adet"), p.optDouble("vegaStock", 0.0))
+                            val stocks = p.optJSONObject("stocks")
+                            if (stocks != null) {
+                                for (k in stocks.keys()) insStock.exec(id, k.toIntOrNull() ?: 0, stocks.optDouble(k, 0.0))
+                            } else {
+                                insStock.exec(id, defaultDepot(), p.optDouble("vegaStock", 0.0))
+                            }
+                            val bcs = p.optJSONArray("barcodes")
+                            for (j in 0 until (bcs?.length() ?: 0)) insBarcode.exec(bcs!!.getString(j), id)
+                            yieldSometimes()
+                        }
+                        "shelves" -> r.eachObject { s ->
+                            insShelf.exec(s.optInt("depot", defaultDepot()), s.getString("code").uppercase(), s.optString("zone", ""))
+                            yieldSometimes()
+                        }
+                        "locations" -> r.eachObject { l ->
+                            insLocation.exec(l.optInt("depot", defaultDepot()), l.getString("productId"), l.getString("shelf").uppercase(), l.getDouble("qty"))
+                            yieldSometimes()
+                        }
+                        "homes" -> r.eachObject { h ->
+                            insHome.exec(h.optInt("depot", defaultDepot()), h.getString("productId"), h.getString("shelf").uppercase())
+                            yieldSometimes()
+                        }
+                        else -> head.put(key, r.readValue())
+                    }
+                }
+                r.endObject()
+            }
+            val depots = head.optJSONArray("depots")
             for (i in 0 until (depots?.length() ?: 0)) {
                 val d = depots!!.getJSONObject(i)
                 db.insertWithOnConflict("depot", null, ContentValues().apply {
                     put("id", d.getInt("id")); put("name", d.optString("name", d.getInt("id").toString()))
                 }, SQLiteDatabase.CONFLICT_REPLACE)
             }
-            val products = json.optJSONArray("products")
-            for (i in 0 until (products?.length() ?: 0)) {
-                val p = products!!.getJSONObject(i)
-                val id = p.getString("id")
-                db.insert("product", null, ContentValues().apply {
-                    put("id", id)
-                    put("code", p.getString("code"))
-                    put("name", p.getString("name"))
-                    put("unit", p.optString("unit", "Adet"))
-                    put("vega_stock", p.optDouble("vegaStock", 0.0))
-                })
-                val stocks = p.optJSONObject("stocks")
-                if (stocks != null) {
-                    for (k in stocks.keys()) {
-                        db.insert("product_stock", null, ContentValues().apply {
-                            put("product_id", id); put("depot", k.toIntOrNull() ?: 0); put("qty", stocks.optDouble(k, 0.0))
-                        })
-                    }
-                } else {
-                    db.insert("product_stock", null, ContentValues().apply {
-                        put("product_id", id); put("depot", defaultDepot); put("qty", p.optDouble("vegaStock", 0.0))
-                    })
-                }
-                val bcs = p.optJSONArray("barcodes")
-                for (j in 0 until (bcs?.length() ?: 0)) {
-                    db.insertWithOnConflict("barcode", null, ContentValues().apply {
-                        put("code", bcs!!.getString(j))
-                        put("product_id", id)
-                    }, SQLiteDatabase.CONFLICT_REPLACE)
-                }
-            }
-            val shelves = json.optJSONArray("shelves")
-            for (i in 0 until (shelves?.length() ?: 0)) {
-                val s = shelves!!.getJSONObject(i)
-                db.insertWithOnConflict("shelf", null, ContentValues().apply {
-                    put("depot", s.optInt("depot", defaultDepot))
-                    put("code", s.getString("code").uppercase())
-                    put("zone", s.optString("zone", ""))
-                }, SQLiteDatabase.CONFLICT_REPLACE)
-            }
-            val locs = json.optJSONArray("locations")
-            for (i in 0 until (locs?.length() ?: 0)) {
-                val l = locs!!.getJSONObject(i)
-                db.insertWithOnConflict("location", null, ContentValues().apply {
-                    put("depot", l.optInt("depot", defaultDepot))
-                    put("product_id", l.getString("productId"))
-                    put("shelf", l.getString("shelf").uppercase())
-                    put("qty", l.getDouble("qty"))
-                }, SQLiteDatabase.CONFLICT_REPLACE)
-            }
-            val homes = json.optJSONArray("homes")
-            for (i in 0 until (homes?.length() ?: 0)) {
-                val h = homes!!.getJSONObject(i)
-                db.insertWithOnConflict("home", null, ContentValues().apply {
-                    put("depot", h.optInt("depot", defaultDepot))
-                    put("product_id", h.getString("productId"))
-                    put("shelf", h.getString("shelf").uppercase())
-                }, SQLiteDatabase.CONFLICT_REPLACE)
-            }
-            val receipts = json.optJSONArray("receipts")
+            val receipts = head.optJSONArray("receipts")
             for (i in 0 until (receipts?.length() ?: 0)) {
                 val r = receipts!!.getJSONObject(i)
                 db.insert("receipt", null, ContentValues().apply {
@@ -151,7 +153,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
                     put("doc_no", r.getString("docNo"))
                     put("supplier", r.optString("supplier", ""))
                     put("date", r.optString("date", ""))
-                    put("depot", r.optInt("depot", defaultDepot))
+                    put("depot", r.optInt("depot", defaultDepot()))
                     put("depot_name", r.optString("depotName", ""))
                 })
                 val lines = r.optJSONArray("lines")
@@ -167,7 +169,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
                 }
             }
             // Sayım oturumları: sunucudan gelenler eklenir/güncellenir, cihazda sürenlerin satırları korunur.
-            val counts = json.optJSONArray("counts")
+            val counts = head.optJSONArray("counts")
             val serverIds = mutableSetOf<String>()
             for (i in 0 until (counts?.length() ?: 0)) {
                 val c = counts!!.getJSONObject(i)
@@ -179,7 +181,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
                     put("title", c.optString("title", ""))
                     put("blind", if (c.optBoolean("blind", true)) 1 else 0)
                     put("status", status)
-                    put("depot", c.optInt("depot", defaultDepot))
+                    put("depot", c.optInt("depot", defaultDepot()))
                 }, SQLiteDatabase.CONFLICT_REPLACE)
             }
             // Sunucuda artık açık olmayan ve cihazda gönderilmiş oturumları temizle.
@@ -189,7 +191,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
                     db.delete("count_line", "session_id=?", arrayOf(id))
                     db.delete("count_session", "id=?", arrayOf(id))
                 }
-            val users = json.optJSONArray("users")
+            val users = head.optJSONArray("users")
             for (i in 0 until (users?.length() ?: 0)) {
                 val u = users!!.getJSONObject(i)
                 db.insert("app_user", null, ContentValues().apply {
@@ -203,6 +205,49 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
         } finally {
             db.endTransaction()
         }
+        // Eşitleme sürerken yapılan isimle arama eski ürün listesinden dizin kurmuş olabilir.
+        searchIndex = null
+        return head
+    }
+
+    private fun SQLiteStatement.exec(vararg args: Any) {
+        clearBindings()
+        args.forEachIndexed { i, v ->
+            when (v) {
+                is Int -> bindLong(i + 1, v.toLong())
+                is Double -> bindDouble(i + 1, v)
+                else -> bindString(i + 1, v.toString())
+            }
+        }
+        executeInsert()
+    }
+
+    /** Dizideki nesneleri birer birer okur; dizinin tamamı belleğe alınmaz. */
+    private inline fun JsonReader.eachObject(f: (JSONObject) -> Unit) {
+        if (peek() == JsonToken.NULL) return nextNull()
+        beginArray()
+        while (hasNext()) {
+            val o = readValue()
+            if (o is JSONObject) f(o)
+        }
+        endArray()
+    }
+
+    private fun JsonReader.readValue(): Any = when (peek()) {
+        JsonToken.BEGIN_OBJECT -> JSONObject().also { o ->
+            beginObject()
+            while (hasNext()) o.put(nextName(), readValue())
+            endObject()
+        }
+        JsonToken.BEGIN_ARRAY -> JSONArray().also { a ->
+            beginArray()
+            while (hasNext()) a.put(readValue())
+            endArray()
+        }
+        JsonToken.NUMBER -> nextString().let { it.toLongOrNull() ?: it.toDouble() }
+        JsonToken.BOOLEAN -> nextBoolean()
+        JsonToken.NULL -> JSONObject.NULL.also { nextNull() }
+        else -> nextString()
     }
 
     fun isEmpty(): Boolean = (scalar("SELECT COUNT(*) FROM product")?.toIntOrNull() ?: 0) == 0

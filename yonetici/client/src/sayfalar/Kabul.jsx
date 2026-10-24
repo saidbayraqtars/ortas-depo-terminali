@@ -4,12 +4,16 @@ import { api, Ara, Btn, Durum, Icon, Ilerleme, miktar, Rozet, SayfaBaslik, Secim
 export default function Kabul() {
   const [durum, setDurum] = useState('acik');
   const [q, setQ] = useState('');
-  const { qs, cok, depo } = useDepo();
-  const { veri, hata, yukleniyor } = useVeri(`/kabul?durum=${durum}${qs}`, [durum, qs]);
-  const liste = useMemo(() => {
+  const { cok, depo, setDepo, ad } = useDepo();
+  // Bütün depolar alınır, seçili depo burada süzülür: menüdeki sayı bütün depoları sayıyor; seçili depoda belge
+  // yokken liste boş kalıp sayıyla çelişmesin, başka depodaki belge söylensin.
+  const { veri, hata, yukleniyor } = useVeri(`/kabul?durum=${durum}`, [durum]);
+  const { liste, baska } = useMemo(() => {
     const a = q.trim().toLocaleUpperCase('tr');
-    return (veri || []).filter((b) => !a || b.docNo.toLocaleUpperCase('tr').includes(a) || b.supplier.toLocaleUpperCase('tr').includes(a));
-  }, [veri, q]);
+    const ara = (veri || []).filter((b) => !a || b.docNo.toLocaleUpperCase('tr').includes(a) || b.supplier.toLocaleUpperCase('tr').includes(a));
+    const secili = ara.filter((b) => !depo || b.depo === Number(depo));
+    return { liste: secili, baska: ara.length - secili.length };
+  }, [veri, q, depo]);
   return (
     <>
       <SayfaBaslik baslik="Mal kabul" alt="Vega'da kabul edilen belgeler ve rafa kaldırma ilerlemesi" />
@@ -20,6 +24,13 @@ export default function Kabul() {
           <div className="grow" />
           <span className="muted">{liste.length} belge</span>
         </div>
+        {baska > 0 && (
+          <div className="notice info" style={{ margin: '0 0 12px', alignItems: 'center' }}>
+            <Icon name="package" />
+            <p style={{ flex: 1 }}>{ad(depo)} dışındaki depolarda {baska} belge daha var.</p>
+            <Btn onClick={() => setDepo('')}>Bütün depoları göster</Btn>
+          </div>
+        )}
         <Durum yukleniyor={yukleniyor && !veri} hata={hata} bos={liste.length === 0 && 'Bu listede belge yok. Vega\'da kabul tarihi Ayarlar › Mal kabul başlangıcından eski olanlar gelmez.'}>
           <div className="tbl-wrap">
             <table className="tbl">

@@ -110,12 +110,13 @@ class Sync(private val context: Context, private val repo: Repo) {
                     // Demo "sunucusu" işlemleri saklamaz; örnek veri yalnız cihaz boşken yüklenir,
                     // yoksa her eşitleme yapılan işleri silerdi.
                     val etag = repo.prefs.masterEtag.takeIf { it.isNotBlank() && !db.isEmpty() }
-                    val master = backend.master(etag)
-                    if (master != null && (backend !is DemoBackend || db.isEmpty())) {
-                        db.replaceMaster(master.json)
-                        repo.prefs.applyMaster(master.json)
-                        repo.ensureDepot(master.json.optInt("defaultDepot", 0))
-                        repo.prefs.masterEtag = master.etag ?: ""
+                    backend.master(etag) { reader, newEtag ->
+                        if (backend !is DemoBackend || db.isEmpty()) {
+                            val head = db.replaceMaster(reader)
+                            repo.prefs.applyMaster(head)
+                            repo.ensureDepot(head.optInt("defaultDepot", 0))
+                            repo.prefs.masterEtag = newEtag ?: ""
+                        }
                     }
                     repo.prefs.lastSync = System.currentTimeMillis()
                 }

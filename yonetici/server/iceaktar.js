@@ -1,7 +1,10 @@
 // Excel / CSV'den raf içe aktarma. Ortaş'ın B2B'sinde depo ve raf adları var, Vega'da yok.
 // Sütunlar: Depo, Raf (zorunlu) · Bölge, Not, Ürün (kod ya da barkod), Miktar (isteğe bağlı).
+//   Raf hücresinde birden çok raf olabilir (B2B "Raf Adresi": ".;TK2-H1"); ; , | ayırır, uygun olmayan parça atlanır.
+//   Depo "hepsi": raf ve zimmet kullanılan bütün depolara yazılır (B2B'de depo yok, Vega'da raf depoya bağlı).
 //   Ürün + miktar → o rafa o miktar yazılır (ilk yerleşim, hareket türü IMPORT).
 //   Ürün, miktarsız → ürünün asıl rafı (rafa kaldırırken terminal önerir).
+const { Readable } = require('stream');
 const ExcelJS = require('exceljs');
 const db = require('./db');
 const depo = require('./depo');
@@ -57,16 +60,25 @@ async function oku(ad, buf) {
   if (/\.csv$|\.txt$/i.test(ad)) {
     tablo = csvOku(buf.toString('utf8'));
   } else {
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(buf);
-    const ws = wb.worksheets.find((w) => w.actualRowCount > 0) || wb.worksheets[0];
-    if (!ws) throw Object.assign(new Error('Excel dosyasında sayfa yok'), { status: 400 });
-    tablo = [];
-    ws.eachRow({ includeEmpty: false }, (row) => {
-      const v = [];
-      for (let i = 1; i <= row.cellCount; i++) v.push(hucre(row.getCell(i).value));
-      tablo.push(v);
-    });
+    // Akışla okunur: 130 bin satırlık B2B listesi tümüyle yüklenince 1,4 GB bellek tutuyordu.
+    // İlk dolu sayfa alınır.
+    const wb = new ExcelJS.stream.xlsx.WorkbookReader(Readable.from([buf]), { sharedStrings: 'cache', hyperlinks: 'ignore', styles: 'ignore', worksheets: 'emit' });
+    let sayfa = false;
+    for await (const ws of wb) {
+      sayfa = true;
+      const t = [];
+      for await (const row of ws) {
+        const v = [];
+        for (let i = 1; i <= row.cellCount; i++) v.push(hucre(row.getCell(i).value));
+        if (v.some((x) => x !== '')) t.push(v);
+      }
+      if (t.length) {
+        tablo = t;
+        break;
+      }
+    }
+    if (!sayfa) throw Object.assign(new Error('Excel dosyasında sayfa yok'), { status: 400 });
+    tablo = tablo || [];
   }
   tablo = tablo.filter((r) => r.some((x) => x !== ''));
   if (tablo.length < 2) throw Object.assign(new Error('Dosyada başlık satırı ve en az bir veri satırı olmalı'), { status: 400 });
@@ -122,9 +134,20 @@ function sayiOku(x) {
   return Number.isFinite(n) ? n : NaN;
 }
 
+const HEPSI = 'hepsi';
+
+/** Depo seçimi → depo numaraları. "hepsi" kullanılan bütün depolar; boş ya da geçersiz → null. */
+function hedefDepolar(deger, liste) {
+  if (deger === HEPSI) return liste.map((d) => d.ind);
+  if (deger === null || deger === undefined || deger === '') return null;
+  const d = Number(deger);
+  return Number.isInteger(d) ? [d] : null;
+}
+
 /**
- * Eşleşmeye göre satırları çözer. `eslesme`: alan → sütun no; `depoEslesme`: dosyadaki depo değeri → Vega depo no;
- * `sabitDepo`: depo sütunu yoksa hepsi bu depoya.
+ * Eşleşmeye göre satırları çözer. `eslesme`: alan → sütun no; `depoEslesme`: dosyadaki depo değeri → Vega depo no
+ * ya da "hepsi"; `sabitDepo`: depo sütunu yoksa hepsi bu depoya ("hepsi": bütün depolara).
+ * Dönen `satirlar` depo × raf başına bir kayıt; bir dosya satırı birden çok kayıt verebilir.
  */
 function coz({ satirlar, eslesme, depoEslesme = {}, sabitDepo = null }) {
   const liste = depo.depolar();
@@ -134,18 +157,18 @@ function coz({ satirlar, eslesme, depoEslesme = {}, sabitDepo = null }) {
   const hatalar = [];
   satirlar.forEach((r, i) => {
     const satirNo = i + 2;
-    const raf = depo.rafKodu(al(r, 'raf'));
-    if (!raf) return hatalar.push({ satir: satirNo, hata: 'Raf boş' });
-    if (!depo.rafKoduGecerli(raf)) return hatalar.push({ satir: satirNo, hata: `Raf kodu uygun değil: ${raf}` });
-    let d = sabitDepo !== null && sabitDepo !== '' ? Number(sabitDepo) : null;
+    const hucreRaf = al(r, 'raf');
+    const raflar = depo.adresleriAyir(hucreRaf).filter((c) => depo.rafKoduGecerli(c));
+    if (!raflar.length) return hatalar.push({ satir: satirNo, hata: depo.adresleriAyir(hucreRaf).length ? `Raf kodu uygun değil: ${hucreRaf}` : 'Raf boş' });
+    let ds = hedefDepolar(sabitDepo, liste);
     const dosyaDepo = al(r, 'depo');
     if (eslesme.depo !== undefined && eslesme.depo !== null && eslesme.depo !== '') {
       const elle = depoEslesme[dosyaDepo];
-      d = elle !== undefined && elle !== '' && elle !== null ? Number(elle) : depoEsle(dosyaDepo, liste);
-      if (!depoDegerleri.has(dosyaDepo)) depoDegerleri.set(dosyaDepo, { deger: dosyaDepo, depo: d, satir: 0 });
+      ds = elle !== undefined && elle !== '' && elle !== null ? hedefDepolar(elle, liste) : hedefDepolar(depoEsle(dosyaDepo, liste), liste);
+      if (!depoDegerleri.has(dosyaDepo)) depoDegerleri.set(dosyaDepo, { deger: dosyaDepo, depo: ds && ds.length === 1 ? ds[0] : ds ? HEPSI : null, satir: 0 });
       depoDegerleri.get(dosyaDepo).satir++;
     }
-    if (d === null || !Number.isInteger(d)) return hatalar.push({ satir: satirNo, hata: dosyaDepo ? `Depo eşleşmedi: ${dosyaDepo}` : 'Depo yok' });
+    if (!ds || !ds.length) return hatalar.push({ satir: satirNo, hata: dosyaDepo ? `Depo eşleşmedi: ${dosyaDepo}` : 'Depo yok' });
     const urunDeger = al(r, 'urun');
     let productId = null;
     if (urunDeger) {
@@ -155,12 +178,15 @@ function coz({ satirlar, eslesme, depoEslesme = {}, sabitDepo = null }) {
     const mk = al(r, 'miktar');
     const qty = mk === '' ? null : sayiOku(mk);
     if (Number.isNaN(qty) || (qty !== null && qty < 0)) return hatalar.push({ satir: satirNo, hata: `Miktar okunamadı: ${mk}` });
-    sonuc.push({ satir: satirNo, depo: d, raf, bolge: al(r, 'bolge'), not: al(r, 'not'), productId, qty });
+    if (qty !== null && productId && (raflar.length > 1 || ds.length > 1)) {
+      return hatalar.push({ satir: satirNo, hata: 'Miktar tek raf ve tek depo için yazılır; bu satırda birden çok raf ya da depo var' });
+    }
+    for (const d of ds) for (const raf of raflar) sonuc.push({ satir: satirNo, depo: d, raf, bolge: al(r, 'bolge'), not: al(r, 'not'), productId, qty });
   });
   return {
     satirlar: sonuc,
     hatalar,
-    depolar: [...depoDegerleri.values()].map((x) => ({ ...x, depoAd: x.depo !== null ? depo.depoAdi(x.depo) : null })),
+    depolar: [...depoDegerleri.values()].map((x) => ({ ...x, depoAd: x.depo === HEPSI ? 'Bütün depolar' : x.depo !== null ? depo.depoAdi(x.depo) : null })),
   };
 }
 
@@ -172,7 +198,7 @@ function ozet(c) {
     return !depo.rafVarMi(Number(d), r);
   }).length;
   return {
-    satir: c.satirlar.length,
+    satir: new Set(c.satirlar.map((s) => s.satir)).size,
     hata: c.hatalar.length,
     raf: raflar.size,
     yeniRaf,
@@ -227,4 +253,4 @@ async function sablon() {
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
-module.exports = { oku, tahminEt, coz, ozet, uygula, sablon, depoEsle, sayiOku, ALANLAR };
+module.exports = { oku, tahminEt, coz, ozet, uygula, sablon, depoEsle, sayiOku, ALANLAR, HEPSI };
