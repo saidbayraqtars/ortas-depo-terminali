@@ -134,6 +134,10 @@ async function baglam(v) {
   return { p, donem, F, FD };
 }
 
+// Ortaş pasif kartı adına yazarak işaretler, yazım serbest: "(PASİF OLMUŞTUR)…", "… PASİF OLMUŞTUR", "(PASİF)(…)…",
+// "PASİFTİR…", "…HPASİF". Ortaş'ta adında PASİF geçen 8.723 kartın hepsi pasif işareti (2026-10-23).
+const PASIF_AD = /PAS[İI]F/i;
+
 const IZAHAT_AD = { 20: 'Alış faturası', 26: 'Alış irsaliyesi', 32: 'Stok giriş fişi', 28: 'İade irsaliyesi', D37: 'Depo transferi', D129: 'Gönderim kabulü' };
 
 function tarihStr(d) {
@@ -288,6 +292,7 @@ async function goruntu(cfg) {
       name: String(k.AD).trim(),
       unit: String(k.BIRIM || 'Adet').trim() || 'Adet',
       ...(k.RAFADRES ? { raf: String(k.RAFADRES) } : {}),
+      ...(PASIF_AD.test(String(k.AD)) ? { pasif: true } : {}),
     })),
     rafAlan: rafKol ? rafAlan : null,
     stock,
@@ -580,4 +585,4 @@ async function sayimGeriAl(cfg, docs) {
   }
 }
 
-module.exports = { kullanilanDepolar, dene, firmalar, donemler, depolar, donemCoz, hazirMi, goruntu, anlikStok, sayimYaz, sayimGeriAl, fisVarsayilanlari, kartAlanUzunluk, kartAlanYaz, kapat, oleTarih };
+module.exports = { kullanilanDepolar, dene, firmalar, donemler, depolar, donemCoz, hazirMi, goruntu, anlikStok, sayimYaz, sayimGeriAl, fisVarsayilanlari, PASIF_AD, kartAlanUzunluk, kartAlanYaz, kapat, oleTarih };

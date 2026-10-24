@@ -283,6 +283,39 @@ test('adresi olmayan ürünler: Vega stoku var, rafta yok, zimmeti yok', () => {
   assert.deepStrictEqual(depo.urunListesi({ filtre: 'adressiz', depo: 1 }).liste.map((u) => u.id), ['103']);
 });
 
+test('pasif kart terminale gitmez; belgedeki satırı da gitmez, rafta duruyorsa gider', () => {
+  const { PASIF_AD } = require('../server/vega');
+  assert.ok(PASIF_AD.test('(PASİF OLMUŞTUR)MUSLUK KALORİFER'));
+  assert.ok(PASIF_AD.test('( PASİF OLMUŞTUR ) SALINCAK ALT SAĞ'));
+  assert.ok(PASIF_AD.test('KEÇE KRANK ARKA 90X110X9 PASİF'));
+  assert.ok(PASIF_AD.test('TAKOZ MOTOR ARKA ASTRA HPASİF'));
+  assert.ok(!PASIF_AD.test('SALINCAK ALT SAĞ'));
+  const g = depo.goruntu();
+  g.products.push({ id: '109', code: 'PS-1', name: '(PASİF OLMUŞTUR) Eski filtre', unit: 'Adet', pasif: true });
+  g.stock[1]['109'] = 3;
+  g.receipts.push({ id: '26-7-1', izahat: '26', tur: 'Alış irsaliyesi', docNo: 'IRS-7', supplier: 'T', date: '22.10.2026', ts: 3, depo: 1, depoAd: 'MERKEZ', lines: [
+    { id: '26-7-1-109', productId: '109', accepted: 3 },
+  ] });
+  try {
+    depo._goruntuKur(g);
+    depo.degisti();
+    let m = JSON.parse(depo.master().json);
+    assert.ok(!m.products.some((p) => p.id === '109'));
+    assert.ok(!m.receipts.some((r) => r.id === '26-7-1'));
+    // Programda rafta duran pasif kart raf stoku görünsün diye gider.
+    depo.islemler('TRM-01', 'ali', [op('PUTAWAY', { receiptId: '26-7-1', lineId: '26-7-1-109', productId: '109', shelf: 'B-01-01', qty: 3 })]);
+    m = JSON.parse(depo.master().json);
+    assert.ok(m.products.some((p) => p.id === '109'));
+  } finally {
+    g.products.pop();
+    delete g.stock[1]['109'];
+    g.receipts.pop();
+    db.run("DELETE FROM location WHERE product_id='109'");
+    depo._goruntuKur(g);
+    depo.degisti();
+  }
+});
+
 test('eski tek depolu veritabanı göçü: raflar ve stok varsayılan depoya bağlanır', () => {
   const { DatabaseSync } = require('node:sqlite');
   const f = path.join(dir, 'eski.db');

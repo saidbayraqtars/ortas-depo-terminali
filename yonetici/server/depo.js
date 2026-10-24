@@ -749,10 +749,15 @@ function master() {
   for (const r of acik) for (const l of r.lines) ref.add(l.productId);
 
   const tum = cfg.urun.kapsam === 'tum';
+  // Pasif kart terminale gitmez; yalnız programda bir rafta duruyorsa (raf stoku görünsün, kaldırılabilsin) gider.
+  const rafta = new Set(locations.map((l) => l.product_id));
   const products = [];
+  const gonderilen = new Set();
   for (const p of goruntu.products) {
     const toplam = goruntu.stokToplam.get(p.id);
+    if (p.pasif && !rafta.has(p.id)) continue;
     if (!tum && !ref.has(p.id) && !toplam && !goruntu.movedSet.has(p.id)) continue;
+    gonderilen.add(p.id);
     const stocks = {};
     for (const [d, m] of goruntu.stokDepo) {
       const q = m.get(p.id);
@@ -777,16 +782,21 @@ function master() {
     shelves: db.all('SELECT depo, code, zone FROM shelf ORDER BY depo, code').map((s) => ({ depot: s.depo, code: s.code, zone: s.zone })),
     locations: locations.map((l) => ({ depot: l.depo, productId: l.product_id, shelf: l.shelf, qty: l.qty })),
     // Ürünün zimmetli rafları (Excel, Vega kartı, yönetici): rafa kaldırmada önerilir, sayımda rafta beklenir.
-    homes: db.all('SELECT depo, product_id, shelf FROM product_home ORDER BY depo, product_id, shelf').map((h) => ({ depot: h.depo, productId: h.product_id, shelf: h.shelf })),
-    receipts: acik.map((r) => ({
-      id: r.id,
-      docNo: r.docNo,
-      supplier: r.supplier,
-      date: r.date,
-      depot: r.depo,
-      depotName: r.depoAd,
-      lines: r.lines.map((l) => ({ id: l.id, productId: l.productId, accepted: l.accepted, shelved: l.shelved })),
-    })),
+    homes: db
+      .all('SELECT depo, product_id, shelf FROM product_home ORDER BY depo, product_id, shelf')
+      .filter((h) => gonderilen.has(h.product_id))
+      .map((h) => ({ depot: h.depo, productId: h.product_id, shelf: h.shelf })),
+    receipts: acik
+      .map((r) => ({
+        id: r.id,
+        docNo: r.docNo,
+        supplier: r.supplier,
+        date: r.date,
+        depot: r.depo,
+        depotName: r.depoAd,
+        lines: r.lines.filter((l) => gonderilen.has(l.productId)).map((l) => ({ id: l.id, productId: l.productId, accepted: l.accepted, shelved: l.shelved })),
+      }))
+      .filter((r) => r.lines.length),
     counts,
     users,
   };
