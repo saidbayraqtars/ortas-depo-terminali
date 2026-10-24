@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Alan, api, Ara, Btn, Durum, HAREKET, Icon, indir, miktar, Modal, Rozet, SayfaBaslik, Secim, tarihSaat, useApp, useDepo, useOnay, useVeri } from '../lib.jsx';
 import EtiketPenceresi from './Etiket.jsx';
 import { Tasi } from './Urunler.jsx';
+import { kaliptan, RAF_DESEN } from '../kalip.mjs';
 
 function aralik(metin) {
   // "A-C" → A,B,C · "A,B,D" → A,B,D · "1-12" → 1..12
@@ -17,13 +18,14 @@ function aralik(metin) {
   return out;
 }
 
-/** Yeni raflar hangi depoya: süzgeçteki depo, yoksa varsayılan. */
+/** Yeni raflar hangi depoya: süzgeçteki depo, yoksa varsayılan; "hepsi" kullanılan bütün depolar. */
 function DepoSec({ deger, degis }) {
   const { depolar, cok } = useDepo();
   if (!cok) return null;
   return (
-    <Alan etiket="Depo">
+    <Alan etiket="Depo" ipucu="Terminal rafı yalnız tanımlı olduğu depoda kabul eder">
       <select className="inp" value={deger} onChange={(e) => degis(e.target.value)}>
+        <option value="hepsi">Bütün depolar</option>
         {depolar.map((d) => <option key={d.ind} value={d.ind}>{d.ad}</option>)}
       </select>
     </Alan>
@@ -44,8 +46,12 @@ function TopluOlustur({ kapat, tamam }) {
   const [goz, setGoz] = useState('');
   const [ayrac, setAyrac] = useState('-');
   const [hane, setHane] = useState(2);
+  const [tur, setTur] = useState('kalip');
+  const [kalip, setKalip] = useState('TK[1-10]-H[1-9]');
   const [mesgul, setMesgul] = useState(false);
+  const { depolar } = useDepo();
   const kodlar = useMemo(() => {
+    if (tur === 'kalip') return kaliptan(kalip);
     const p = (x) => (typeof x === 'number' ? String(x).padStart(hane, '0') : x);
     const out = [];
     const gozler = goz.trim() ? aralik(goz) : [null];
@@ -54,13 +60,15 @@ function TopluOlustur({ kapat, tamam }) {
       if (out.length > 5000) return out;
     }
     return out;
-  }, [bolge, koridor, kat, goz, ayrac, hane]);
+  }, [tur, kalip, bolge, koridor, kat, goz, ayrac, hane]);
+  const hatali = useMemo(() => kodlar.filter((k) => !RAF_DESEN.test(k)), [kodlar]);
   const olustur = async () => {
     setMesgul(true);
     try {
       const r = await api('/raflar', { method: 'POST', body: { kodlar, depo } });
       toast(`${r.eklenen} yeni raf eklendi${r.toplam > r.eklenen ? ` (${r.toplam - r.eklenen} zaten vardı)` : ''}`);
-      tamam(kodlar.map((k) => `${depo}|${k}`));
+      // Etiket için seçili kalır; bütün depolarda açılınca aynı kod bir kez seçilir.
+      tamam(kodlar.map((k) => `${depo === 'hepsi' ? depolar[0]?.ind : depo}|${k}`));
     } catch (e) {
       toast(e.message, true);
     } finally {
@@ -68,9 +76,16 @@ function TopluOlustur({ kapat, tamam }) {
     }
   };
   return (
-    <Modal genis baslik="Toplu raf oluştur" kapat={kapat} alt={<><Btn onClick={kapat}>Vazgeç</Btn><Btn kind="primary" busy={mesgul} disabled={!kodlar.length || kodlar.length > 5000} onClick={olustur}>{kodlar.length} raf oluştur</Btn></>}>
-      <p className="muted" style={{ margin: 0 }}>Raf kodu bölge, koridor ve kattan oluşur: <span className="mono">A-03-02</span> = A bölgesi, 3. koridor/dolap, 2. kat. Aralık için tire, liste için virgül.</p>
+    <Modal genis baslik="Toplu raf oluştur" kapat={kapat} alt={<><Btn onClick={kapat}>Vazgeç</Btn><Btn kind="primary" busy={mesgul} disabled={!kodlar.length || kodlar.length > 5000 || hatali.length > 0} onClick={olustur}>{kodlar.length} raf oluştur</Btn></>}>
       <DepoSec deger={depo} degis={setDepo} />
+      <Secim deger={tur} degis={setTur} secenekler={[['kalip', 'Kalıpla (TK2-H1)'], ['parca', 'Bölge / koridor / kat (A-01-02)']]} />
+      {tur === 'kalip' ? (
+        <Alan etiket="Kalıp" ipucu="Köşeli parantez içi aralık ya da liste: [1-20], [A-H], [01-12] (iki hane), [H,K,M]. Gerisi olduğu gibi yazılır.">
+          <input className="inp mono" value={kalip} onChange={(e) => setKalip(e.target.value)} autoFocus />
+        </Alan>
+      ) : (
+      <>
+      <p className="muted" style={{ margin: 0 }}>Raf kodu bölge, koridor ve kattan oluşur: <span className="mono">A-03-02</span> = A bölgesi, 3. koridor/dolap, 2. kat. Aralık için tire, liste için virgül.</p>
       <div className="grid g3">
         <Alan etiket="Bölge" ipucu="A-C ya da A,B,E"><input className="inp mono" value={bolge} onChange={(e) => setBolge(e.target.value)} /></Alan>
         <Alan etiket="Koridor / dolap" ipucu="1-10"><input className="inp mono" value={koridor} onChange={(e) => setKoridor(e.target.value)} /></Alan>
@@ -79,6 +94,11 @@ function TopluOlustur({ kapat, tamam }) {
         <Alan etiket="Ayraç"><select className="inp" value={ayrac} onChange={(e) => setAyrac(e.target.value)}><option value="-">Tire (A-01-02)</option><option value=".">Nokta (A.01.02)</option><option value="">Yok (A0102)</option></select></Alan>
         <Alan etiket="Sayı hanesi"><select className="inp" value={hane} onChange={(e) => setHane(Number(e.target.value))}><option value={1}>1 (A-1-2)</option><option value={2}>2 (A-01-02)</option><option value={3}>3 (A-001-002)</option></select></Alan>
       </div>
+      </>
+      )}
+      {hatali.length > 0 && (
+        <div className="notice err"><Icon name="warning" /><p>Uygun olmayan raf kodu: <span className="mono">{hatali.slice(0, 3).join(', ')}</span>{hatali.length > 3 ? ` ve ${hatali.length - 3} kod daha` : ''}. Raf kodu harf ya da rakamla başlar, en çok 24 karakterdir; harf, rakam, tire, nokta, eğik çizgi ve boşluk içerebilir.</p></div>
+      )}
       <div>
         <div className="small muted" style={{ marginBottom: 6 }}>Önizleme · {kodlar.length > 5000 ? 'en çok 5000 raf' : `${kodlar.length} raf`}</div>
         <div className="chip-list" style={{ maxHeight: 130, overflow: 'auto' }}>

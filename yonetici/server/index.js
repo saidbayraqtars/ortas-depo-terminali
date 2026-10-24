@@ -416,21 +416,8 @@ function yoneticiApi() {
   }));
   r.get('/raf/:depo/:code', sar((req) => depo.rafDetay(Number(req.params.depo), req.params.code)));
   r.post('/raflar', sar((req) => {
-    const kodlar = (Array.isArray(req.body.kodlar) ? req.body.kodlar : [req.body.kod]).map(depo.rafKodu).filter(Boolean);
-    if (!kodlar.length) throw Object.assign(new Error('Raf kodu girin'), { status: 400 });
-    if (kodlar.length > 5000) throw Object.assign(new Error('Bir seferde en çok 5000 raf'), { status: 400 });
-    const d = depo.depoCoz(req.body.depo);
-    const bad = kodlar.find((k) => !depo.rafKoduGecerli(k));
-    if (bad) throw Object.assign(new Error(`Geçersiz raf kodu: ${bad}`), { status: 400 });
-    let yeni = 0;
-    db.tx(() => {
-      for (const k of kodlar) {
-        if (!depo.rafVarMi(d, k)) yeni++;
-        depo.rafEkle(d, k, { zone: req.body.zone || undefined, note: String(req.body.note || '') });
-      }
-    });
-    depo.degisti();
-    return { eklenen: yeni, toplam: kodlar.length };
+    const kodlar = Array.isArray(req.body.kodlar) ? req.body.kodlar : [req.body.kod];
+    return depo.raflarAc(req.body.depo, kodlar, { zone: req.body.zone || undefined, note: String(req.body.note || '') });
   }));
   r.put('/raf/:depo/:code', sar((req) => {
     const c = depo.rafKodu(req.params.code);

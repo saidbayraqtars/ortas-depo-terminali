@@ -173,6 +173,30 @@ function rafVarMi(depo, code) {
   return Boolean(db.get('SELECT 1 FROM shelf WHERE depo=? AND code=?', depo, rafKodu(code)));
 }
 
+/**
+ * Yönetici ekranından toplu raf. `secim` depo numarası ya da "hepsi" (kullanılan her depo; terminal rafı yalnız
+ * tanımlı olduğu depoda kabul eder). Bir kod uygun değilse hiçbiri açılmaz.
+ */
+function raflarAc(secim, kodlar, { zone, note = '' } = {}) {
+  const k = kodlar.map(rafKodu).filter(Boolean);
+  if (!k.length) throw new Ret('Raf kodu girin');
+  if (k.length > 5000) throw new Ret('Bir seferde en çok 5000 raf');
+  const bad = k.find((c) => !rafKoduGecerli(c));
+  if (bad) throw new Ret(`Geçersiz raf kodu: ${bad}`);
+  const ds = secim === 'hepsi' ? depolar().map((d) => d.ind) : [depoCoz(secim)];
+  let eklenen = 0;
+  db.tx(() => {
+    for (const d of ds) {
+      for (const c of k) {
+        if (!rafVarMi(d, c)) eklenen++;
+        rafEkle(d, c, { zone, note });
+      }
+    }
+  });
+  degisti();
+  return { eklenen, toplam: k.length * ds.length };
+}
+
 function rafEkle(depo, code, { zone, note = '', source = 'ADMIN' } = {}) {
   const c = rafKodu(code);
   if (!c) throw new Error('Raf kodu boş');
@@ -1092,6 +1116,7 @@ module.exports = {
   depoCoz,
   depoSuzgec,
   rafEkle,
+  raflarAc,
   rafKodu,
   rafKoduGecerli,
   zimmetler,

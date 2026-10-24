@@ -342,6 +342,16 @@ test('pasif kart terminale gitmez; belgedeki satırı da gitmez, rafta duruyorsa
   }
 });
 
+test('toplu raf: bütün depolarda açılır; uygun olmayan kod varsa hiçbiri açılmaz', () => {
+  assert.deepStrictEqual(depo.raflarAc('hepsi', ['tk9-h1', 'TK9-H2', 'A-01-01']), { eklenen: 4, toplam: 6 });
+  for (const d of [1, 2]) assert.ok(depo.rafVarMi(d, 'TK9-H1') && depo.rafVarMi(d, 'TK9-H2'));
+  assert.deepStrictEqual(depo.raflarAc(2, ['TK9-H3']), { eklenen: 1, toplam: 1 });
+  assert.ok(!depo.rafVarMi(1, 'TK9-H3'));
+  assert.throws(() => depo.raflarAc('hepsi', ['TK9-H4', '.;X']), /Geçersiz raf kodu/);
+  assert.ok(!depo.rafVarMi(1, 'TK9-H4'));
+  for (const d of [1, 2]) db.run("DELETE FROM shelf WHERE depo=? AND code LIKE 'TK9-%'", d);
+});
+
 test('eski tek depolu veritabanı göçü: raflar ve stok varsayılan depoya bağlanır', () => {
   const { DatabaseSync } = require('node:sqlite');
   const f = path.join(dir, 'eski.db');
