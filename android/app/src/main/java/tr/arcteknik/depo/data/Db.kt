@@ -19,7 +19,7 @@ import java.io.Reader
  * Çok depo: raf, raf stoku, Vega stoku ve asıl raf depoya bağlıdır. [depot] terminalin çalıştığı depodur
  * (transfer, sayım, sorgu); mal kabul belgesi kendi deposunu taşır ve rafa kaldırma orada olur.
  */
-class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 5) {
+class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
 
     init {
         // Eşitleme ana veriyi yazarken ekranlar (ana iş parçacığı) beklemeden son kaydedilmiş hali okusun.
@@ -32,13 +32,19 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 5) {
 
     override fun onCreate(db: SQLiteDatabase) {
         createMaster(db)
-        db.execSQL("CREATE TABLE count_session(id TEXT PRIMARY KEY, no TEXT NOT NULL, title TEXT NOT NULL, blind INTEGER NOT NULL, status TEXT NOT NULL, depot INTEGER NOT NULL DEFAULT 0)")
+        db.execSQL("CREATE TABLE count_session(id TEXT PRIMARY KEY, no TEXT NOT NULL, title TEXT NOT NULL, blind INTEGER NOT NULL, status TEXT NOT NULL, depot INTEGER NOT NULL DEFAULT 0, scope TEXT NOT NULL DEFAULT '')")
         db.execSQL("CREATE TABLE count_line(session_id TEXT NOT NULL, shelf TEXT NOT NULL, product_id TEXT NOT NULL, qty REAL NOT NULL, PRIMARY KEY(session_id, shelf, product_id))")
+        createCountShelf(db)
         db.execSQL("CREATE TABLE op(id TEXT PRIMARY KEY, type TEXT NOT NULL, payload TEXT NOT NULL, summary TEXT NOT NULL, created_at INTEGER NOT NULL, status TEXT NOT NULL, error TEXT)")
         db.execSQL("CREATE TABLE movement(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, product_id TEXT NOT NULL, text TEXT NOT NULL, qty REAL NOT NULL)")
         db.execSQL("CREATE INDEX ix_movement_product ON movement(product_id, ts)")
         db.execSQL("CREATE TABLE app_user(username TEXT PRIMARY KEY, name TEXT NOT NULL, pin_hash TEXT NOT NULL, salt TEXT NOT NULL)")
         createParts(db)
+    }
+
+    /** Boş olarak sayılan raflar: count_line'da satırları yoktur ama sayılmıştır. */
+    private fun createCountShelf(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS count_shelf(session_id TEXT NOT NULL, shelf TEXT NOT NULL, PRIMARY KEY(session_id, shelf))")
     }
 
     /** Sunucudan alınmış ana veri parçalarının özeti (bkz. [applyParts]). */
@@ -80,6 +86,13 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 5) {
             createMaster(db)
             createParts(db)
             db.execSQL("DELETE FROM master_part")
+        }
+        // 6: sayım kapsamı (raf önekleri) ve boş sayılan raf. Baş parça yeniden istensin: kapsam gelsin,
+        // yöneticide kapatılıp cihazda açık kalmış sayımlar temizlensin.
+        if (oldVersion < 6) {
+            db.execSQL("ALTER TABLE count_session ADD COLUMN scope TEXT NOT NULL DEFAULT ''")
+            createCountShelf(db)
+            db.execSQL("DELETE FROM master_part WHERE key='head'")
         }
     }
 
@@ -320,13 +333,16 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 5) {
                 put("blind", if (c.optBoolean("blind", true)) 1 else 0)
                 put("status", status)
                 put("depot", c.optInt("depot", dd))
+                val scope = c.optJSONArray("scope")
+                put("scope", (0 until (scope?.length() ?: 0)).joinToString(",") { scope!!.getString(it) })
             }, SQLiteDatabase.CONFLICT_REPLACE)
         }
-        // Sunucuda artık açık olmayan ve cihazda gönderilmiş oturumları temizle.
-        query("SELECT id FROM count_session WHERE status='SUBMITTED'") { it.getString(0) }
-            .filter { it !in serverIds }
-            .forEach { id ->
-                db.delete("count_line", "session_id=?", arrayOf(id))
+        // Sunucuda artık açık olmayan oturumlar (yöneticide kapatılan, iptal edilen, gönderilmiş) cihazdan kalkar.
+        // Cihazda başlatılıp henüz gönderilmemiş serbest sayım (LOCAL-) sunucuda yoktur; o kalır.
+        query("SELECT id, status FROM count_session") { it.getString(0) to it.getString(1) }
+            .filter { (id, status) -> id !in serverIds && (!id.startsWith("LOCAL-") || status == "SUBMITTED") }
+            .forEach { (id, _) ->
+                for (t in listOf("count_line", "count_shelf")) db.delete(t, "session_id=?", arrayOf(id))
                 db.delete("count_session", "id=?", arrayOf(id))
             }
         val users = head.optJSONArray("users")
@@ -489,14 +505,20 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 5) {
 
     /** Çalışılan depodaki açık sayımlar. */
     fun countSessions(): List<CountSession> =
-        query("SELECT id, no, title, blind, status, depot FROM count_session WHERE status='OPEN' AND depot=? ORDER BY no DESC", depot.toString()) {
-            CountSession(it.getString(0), it.getString(1), it.getString(2), it.getInt(3) == 1, it.getString(4), it.getInt(5))
-        }
+        query("SELECT id, no, title, blind, status, depot, scope FROM count_session WHERE status='OPEN' AND depot=? ORDER BY no DESC", depot.toString()) { it.countSession() }
 
     fun countSession(id: String): CountSession? =
-        query("SELECT id, no, title, blind, status, depot FROM count_session WHERE id=?", id) {
-            CountSession(it.getString(0), it.getString(1), it.getString(2), it.getInt(3) == 1, it.getString(4), it.getInt(5))
-        }.firstOrNull()
+        query("SELECT id, no, title, blind, status, depot, scope FROM count_session WHERE id=?", id) { it.countSession() }.firstOrNull()
+
+    private fun Cursor.countSession() = CountSession(
+        getString(0), getString(1), getString(2), getInt(3) == 1, getString(4), getInt(5),
+        getString(6).split(',').filter { it.isNotBlank() },
+    )
+
+    /** Depoda sayımın kapsamına uyan tanımlı raflar. */
+    fun scopeShelves(session: CountSession): List<String> =
+        if (session.scope.isEmpty()) emptyList()
+        else query("SELECT code FROM shelf WHERE depot=? ORDER BY code", session.depot.toString()) { it.getString(0) }.filter { Kapsam.icinde(it, session.scope) }.sortedWith(Kapsam.order)
 
     fun countLines(sessionId: String, shelf: String? = null): List<CountLine> {
         val where = if (shelf == null) "c.session_id=?" else "c.session_id=? AND c.shelf=?"
@@ -507,7 +529,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 5) {
     }
 
     fun countedShelves(sessionId: String): List<String> =
-        query("SELECT DISTINCT shelf FROM count_line WHERE session_id=? ORDER BY shelf", sessionId) { it.getString(0) }
+        query("SELECT shelf FROM count_line WHERE session_id=? UNION SELECT shelf FROM count_shelf WHERE session_id=? ORDER BY 1", sessionId, sessionId) { it.getString(0) }
 
     fun ops(): List<Op> =
         query("SELECT id, type, payload, summary, created_at, status, error FROM op ORDER BY created_at") {
@@ -577,7 +599,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 5) {
     fun clearAll() {
         searchIndex = null
         val db = writableDatabase
-        for (t in listOf("product", "product_stock", "barcode", "depot", "shelf", "location", "home", "receipt", "receipt_line", "count_session", "count_line", "op", "movement", "app_user", "master_part")) {
+        for (t in listOf("product", "product_stock", "barcode", "depot", "shelf", "location", "home", "receipt", "receipt_line", "count_session", "count_line", "count_shelf", "op", "movement", "app_user", "master_part")) {
             db.delete(t, null, null)
         }
     }

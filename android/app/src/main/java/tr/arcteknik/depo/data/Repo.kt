@@ -86,6 +86,27 @@ class Repo(val db: Db, val prefs: Prefs) {
         changed()
     }
 
+    // ---- Raf ----------------------------------------------------------------------------
+
+    /** Tanımsız raf etiketi terminalden raf olarak eklenir; yönetici programında da açılır. */
+    fun addShelf(code: String, depot: Int, user: String) {
+        val s = code.trim().uppercase()
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            db.ensureShelf(w, depot, s)
+            db.insertOp(w, op(
+                OpType.SHELF_ADD,
+                JSONObject().put("code", s).put("depot", depot).put("user", user),
+                "Raf eklendi|$s" + (db.depotName(depot).ifBlank { null }?.let { " · $it" } ?: ""),
+            ))
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+        changed()
+    }
+
     // ---- Transfer ------------------------------------------------------------------------
 
     fun transfer(product: Product, from: String, to: String, qty: Double, user: String) {
@@ -129,12 +150,18 @@ class Repo(val db: Db, val prefs: Prefs) {
     fun discardEmptyLocal(sessionId: String) {
         if (!sessionId.startsWith("LOCAL-")) return
         val w = db.writableDatabase
-        val n = db.scalar("SELECT COUNT(*) FROM count_line WHERE session_id=?", sessionId)?.toIntOrNull() ?: 0
+        val n = db.countedShelves(sessionId).size
         val st = db.scalar("SELECT status FROM count_session WHERE id=?", sessionId)
         if (n == 0 && st == "OPEN") {
             w.execSQL("DELETE FROM count_session WHERE id=?", arrayOf<Any>(sessionId))
             changed()
         }
+    }
+
+    /** Rafta hiçbir şey yok: raf sayılmış olur, sistemde rafta görünen ürünler gönderilince 0'a çekilir. */
+    fun markShelfEmpty(sessionId: String, shelf: String) {
+        db.writableDatabase.execSQL("INSERT OR IGNORE INTO count_shelf(session_id, shelf) VALUES(?,?)", arrayOf<Any>(sessionId, shelf.uppercase()))
+        changed()
     }
 
     fun addCount(sessionId: String, shelf: String, product: Product, delta: Double) {
@@ -218,6 +245,11 @@ class Repo(val db: Db, val prefs: Prefs) {
     )
 
     companion object {
+        /** Yönetici programının kabul ettiği raf kodu (server/depo.js RAF_DESEN). */
+        private val SHELF_CODE = Regex("^[A-Z0-9ÇĞİÖŞÜ][A-Z0-9ÇĞİÖŞÜ\\-./ ]{0,23}$")
+
+        fun validShelfCode(code: String) = SHELF_CODE.matches(code.trim().uppercase())
+
         fun hashPin(salt: String, pin: String): String =
             MessageDigest.getInstance("SHA-256").digest((salt + pin).toByteArray(Charsets.UTF_8))
                 .joinToString("") { "%02x".format(it) }

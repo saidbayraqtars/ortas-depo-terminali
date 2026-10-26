@@ -367,7 +367,7 @@ test('eski tek depolu veritabanı göçü: raflar ve stok varsayılan depoya ba�
   db.open(f, { varsayilanDepo: 7 });
   assert.strictEqual(db.get("SELECT depo FROM shelf WHERE code='X-1'").depo, 7);
   assert.strictEqual(db.get("SELECT depo, qty FROM location WHERE product_id='9'").depo, 7);
-  assert.strictEqual(db.meta('surum'), '4');
+  assert.strictEqual(db.meta('surum'), '5');
   db.close();
   db.open(path.join(dir, 'depo.db'), { varsayilanDepo: 1 });
 });
@@ -408,4 +408,53 @@ test('ana veri parça parça: ilk istekte hepsi, sonra yalnız değişen kova ge
   assert.ok(depo.islemler('TRM-01', 'ali', [op('TRANSFER', { productId: '101', from: 'A-01-01', to: 'A-01-02', qty: 1 })])[0].ok);
   const d = JSON.parse(depo.masterParcaCevabi(bilinen, 8)).parts.map((p) => p.key);
   assert.deepStrictEqual(d, ['b' + depo.kova('101')]);
+});
+
+test('raf sayımı kapsamı: önek sayı/harf dizisini bölmez; özet kalan ve kapsam dışı rafları verir', () => {
+  const kapsam = require('../server/kapsam');
+  const uy = (kod, k) => kapsam.kapsamda(kod, kapsam.coz(k));
+  assert.ok(uy('K1', 'K1') && uy('K1-A3', 'K1') && uy('K1A-2', 'k1'));
+  assert.ok(!uy('K10-A3', 'K1') && !uy('KAT-10', 'KAT-1') && !uy('TK1', 'K1'));
+  assert.ok(uy('TK2-H1', 'TK2-H') && uy('K10', 'K1*') && uy('KAT-1-A1-20', 'KAT-1'));
+  assert.ok(uy('B-02-01', 'A, B-02'));
+  assert.ok(uy('HERHANGİ', ''));
+  assert.throws(() => kapsam.coz('K1;K2'), /uygun değil/);
+
+  for (const c of ['K1-01', 'K1-02', 'K1-03', 'K10-01']) depo.rafEkle(1, c);
+  assert.deepStrictEqual(depo.kapsamRaflari(1, ['K1']), ['K1-01', 'K1-02', 'K1-03']);
+  db.run("INSERT INTO count_session(id, no, title, blind, kind, status, source, created_at, depo, scope) VALUES('CK','SAY-0090','Kat 1',1,'RAF','OPEN','ADMIN',?,1,'K1')", Date.now());
+  depo.degisti();
+  assert.deepStrictEqual(JSON.parse(depo.master().json).counts.find((c) => c.id === 'CK').scope, ['K1']);
+  depo.islemler('TRM-01', 'ali', [
+    op('COUNT_SUBMIT', { sessionId: 'CK', no: 'SAY-0090', shelves: ['K1-01', 'K10-01'], lines: [{ shelf: 'K1-01', productId: '101', system: 0, counted: 2 }] }, Date.now() + 1000),
+  ]);
+  const k = depo.sayimOzet('CK').kapsam;
+  assert.strictEqual(k.raf, 3);
+  assert.strictEqual(k.sayilan, 1);
+  assert.deepStrictEqual(k.kalan, ['K1-02', 'K1-03']);
+  // Raf listesinde gönderilen ama satırı olmayan K10-01 de sayılmıştır; kapsam dışıdır.
+  assert.deepStrictEqual(k.disinda, ['K10-01']);
+  // Boş gönderilen raf da sayılmış olur.
+  depo.islemler('TRM-02', 'veli', [op('COUNT_SUBMIT', { sessionId: 'CK', no: 'SAY-0090', shelves: ['K1-02'], lines: [] }, Date.now() + 2000)]);
+  assert.deepStrictEqual(depo.sayimOzet('CK').kapsam.kalan, ['K1-03']);
+});
+
+test('iptal edilen sayıma gönderim reddedilir; terminalden raf eklenir', () => {
+  db.run("INSERT INTO count_session(id, no, title, blind, kind, status, source, created_at, depo) VALUES('CX','SAY-0091','İptal',1,'RAF','CANCELLED','ADMIN',?,1)", Date.now());
+  const r = depo.islemler('TRM-01', 'ali', [op('COUNT_SUBMIT', { sessionId: 'CX', no: 'SAY-0091', shelves: ['A-01-01'], lines: [{ shelf: 'A-01-01', productId: '101', system: 0, counted: 99 }] })]);
+  assert.ok(!r[0].ok && /iptal/.test(r[0].error));
+  assert.notStrictEqual(depo.miktar(1, '101', 'A-01-01'), 99);
+
+  const e = depo.islemler('TRM-01', 'ali', [op('SHELF_ADD', { depot: 2, code: 'yeni-01' }), op('SHELF_ADD', { depot: 2, code: '.;X' })]);
+  assert.deepStrictEqual(e.map((x) => x.ok), [true, false]);
+  assert.ok(depo.rafVarMi(2, 'YENI-01') || depo.rafVarMi(2, 'YENİ-01'));
+  assert.strictEqual(db.get("SELECT source FROM shelf WHERE depo=2 AND code LIKE 'YEN%-01'").source, 'TERMINAL');
+});
+
+test('raf grupları: bölge ilk parça, grup ilk iki parça; tek tük grup listelenmez', () => {
+  for (const c of ['KAT-1-A1-1', 'KAT-1-A1-2', 'KAT-1-B2-1', 'KAT-10-A1-1', 'KAT-10-A1-2', 'KAT-10-A1-3', 'KAT-B-A1-1', 'KO-4-F7-11']) depo.rafEkle(3, c);
+  const g = depo.rafGruplari(3);
+  assert.deepStrictEqual(g.map((x) => [x.onek, x.adet]), [['KAT', 7], ['KO', 1]]);
+  assert.deepStrictEqual(g[0].gruplar, [{ onek: 'KAT-1', adet: 3 }, { onek: 'KAT-10', adet: 3 }]);
+  assert.strictEqual(depo.kapsamRaflari(3, ['KAT-1']).length, 3);
 });

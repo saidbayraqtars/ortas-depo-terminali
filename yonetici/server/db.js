@@ -206,6 +206,25 @@ function migrate() {
     `);
     set('surum', '4');
   }
+  if (Number(get("SELECT value FROM meta WHERE key='surum'")?.value) < 5) {
+    // 5: raf sayımının kapsamı, virgülle ayrılmış raf önekleri ("K1,K2"); boş = bütün raflar (bkz. kapsam.js).
+    // count_shelf: sayımda gönderilen raflar; boş raf da sayılmış olur (count_line'da satırı yoktur).
+    db.exec(`
+      ALTER TABLE count_session ADD COLUMN scope TEXT NOT NULL DEFAULT '';
+      CREATE TABLE count_shelf(
+        session_id TEXT NOT NULL,
+        shelf TEXT NOT NULL,
+        user TEXT,
+        device TEXT,
+        submitted_at INTEGER NOT NULL,
+        PRIMARY KEY(session_id, shelf)
+      );
+    `);
+    if (get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='count_line'")) {
+      db.exec('INSERT OR IGNORE INTO count_shelf SELECT session_id, shelf, MAX(user), MAX(device), MAX(submitted_at) FROM count_line GROUP BY session_id, shelf');
+    }
+    set('surum', '5');
+  }
 }
 
 function get(sql, ...args) {

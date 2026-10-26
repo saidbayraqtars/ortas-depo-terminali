@@ -142,7 +142,7 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
     fun onShelf(code: String) {
         val s = code.uppercase()
         if (db.findProduct(code) != null) return vm.error("Raf barkodu okutun; bu bir ürün barkodu")
-        if (!db.shelfExists(s, rd)) return vm.error("\"$s\" ${receipt?.depotName?.ifBlank { null }?.let { "$it deposunda " } ?: ""}tanımlı bir raf değil")
+        if (!db.shelfExists(s, rd)) return vm.unknownShelf(s, rd) { onShelf(it) }
         if (suggested != null && suggested != s) {
             vm.feedback.error()
             conflict = suggested to s

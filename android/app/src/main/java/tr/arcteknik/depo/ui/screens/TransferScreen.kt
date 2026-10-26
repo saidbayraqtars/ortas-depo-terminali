@@ -103,8 +103,8 @@ fun TransferScreen(vm: AppVm, online: Boolean, version: Int, initialProduct: Str
             4 -> if (to == null) ScanField("Hedef rafı okutun", "Raf etiketindeki barkodu okutun ya da yazın", true, vm.repo.prefs.cameraButton, { code ->
                 val s = code.uppercase()
                 when {
-                    !db.shelfExists(s) -> vm.error("\"$s\" tanımlı bir raf değil")
                     s == from -> vm.error("Hedef raf kaynakla aynı olamaz")
+                    !db.shelfExists(s) -> vm.unknownShelf(s) { to = it }
                     else -> { to = s; vm.feedback.ok() }
                 }
             })

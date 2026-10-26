@@ -10,7 +10,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -26,6 +30,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import tr.arcteknik.depo.App
+import tr.arcteknik.depo.data.Repo
 import tr.arcteknik.depo.data.User
 import tr.arcteknik.depo.diag.Diag
 import tr.arcteknik.depo.sync.UserActivity
@@ -56,6 +61,9 @@ sealed interface Route {
     data class CountDiff(val sessionId: String) : Route
     data object Queue : Route
 }
+
+/** Okutulan tanımsız raf etiketi: kullanıcıya raf olarak eklensin mi diye sorulur. */
+class ShelfAsk(val code: String, val depot: Int, val onAdded: (String) -> Unit)
 
 class AppVm(app: Application) : AndroidViewModel(app) {
     private val a = app as App
@@ -127,6 +135,26 @@ class AppVm(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    var shelfAsk by mutableStateOf<ShelfAsk?>(null)
+        private set
+
+    /** Tanımsız raf okutuldu: kod raf olabilecekse eklemeyi sor, değilse hata ver. */
+    fun unknownShelf(code: String, depot: Int = repo.db.depot, onAdded: (String) -> Unit) {
+        val s = code.trim().uppercase()
+        val where = repo.db.depotName(depot).takeIf { it.isNotBlank() && repo.db.depots().size > 1 }?.let { "$it deposunda " } ?: ""
+        error("\"$s\" ${where}tanımlı bir raf değil")
+        if (Repo.validShelfCode(s)) shelfAsk = ShelfAsk(s, depot, onAdded)
+    }
+
+    fun confirmShelf(add: Boolean) {
+        val a = shelfAsk ?: return
+        shelfAsk = null
+        if (!add) return
+        repo.addShelf(a.code, a.depot, userName)
+        saved("Raf ${a.code} eklendi")
+        a.onAdded(a.code)
+    }
+
     /** İşlem kaydedildikten sonra çağrılır; ağ varsa hemen gönderilir. */
     fun saved(text: String) {
         ok(text)
@@ -177,5 +205,15 @@ fun DepoApp(vm: AppVm) {
     }
     }
     }
+    }
+    vm.shelfAsk?.let { a ->
+        // Düğmeler odak almaz: el terminalinin okuyucusu Enter gönderir, sonraki okutma kendiliğinden "Ekle"ye basmasın.
+        AlertDialog(
+            onDismissRequest = { vm.confirmShelf(false) },
+            title = { Text("Raf eklensin mi?") },
+            text = { Text("\"${a.code}\" tanımlı bir raf değil. ${vm.repo.db.depotName(a.depot).ifBlank { "Bu" }} deposuna raf olarak eklenir; yönetici programında da açılır.") },
+            confirmButton = { TextButton({ vm.confirmShelf(true) }, Modifier.focusProperties { canFocus = false }) { Text("Rafı ekle") } },
+            dismissButton = { TextButton({ vm.confirmShelf(false) }, Modifier.focusProperties { canFocus = false }) { Text("Vazgeç") } },
+        )
     }
 }

@@ -20,6 +20,7 @@ const apk = require('./apk');
 const etiket = require('./etiket');
 const iceaktar = require('./iceaktar');
 const rapor = require('./rapor');
+const kapsam = require('./kapsam');
 
 const SURUM = require('../package.json').version;
 let yedekKlasoru = null;
@@ -533,32 +534,52 @@ function yoneticiApi() {
 
   // Sayım
   r.get('/sayimlar', sar(() => {
-    const satir = new Map(db.all('SELECT session_id, COUNT(*) AS n, COUNT(DISTINCT shelf) AS raf, SUM(CASE WHEN ABS(counted-server_before)>0.000001 THEN 1 ELSE 0 END) AS fark FROM count_line GROUP BY session_id').map((x) => [x.session_id, x]));
+    const satir = new Map(db.all('SELECT session_id, COUNT(*) AS n, SUM(CASE WHEN ABS(counted-server_before)>0.000001 THEN 1 ELSE 0 END) AS fark FROM count_line GROUP BY session_id').map((x) => [x.session_id, x]));
+    const raf = new Map(db.all('SELECT session_id, COUNT(*) AS n FROM count_shelf GROUP BY session_id').map((x) => [x.session_id, x.n]));
     return db.all('SELECT * FROM count_session ORDER BY created_at DESC LIMIT 500').map((s) => ({
       ...s,
       depoAd: depo.depoAdi(s.depo),
       vega_docs: s.vega_docs ? JSON.parse(s.vega_docs).docs : null,
       kalem: satir.get(s.id)?.n || 0,
-      raf: satir.get(s.id)?.raf || 0,
+      raf: raf.get(s.id) || 0,
       rafFarkli: satir.get(s.id)?.fark || 0,
     }));
   }));
+  r.get('/raf-gruplari', sar((req) => depo.rafGruplari(depo.depoCoz(req.query.depo))));
+  // Raf sayımı kapsamının önizlemesi: öneklere uyan raf sayısı ve ilk birkaçı.
+  r.get('/sayim-kapsam', sar((req) => {
+    const onekler = kapsam.coz(req.query.kapsam);
+    const d = depo.depoCoz(req.query.depo);
+    const raflar = onekler.length ? depo.kapsamRaflari(d, onekler) : [];
+    // "A-0" A-01'i kapsamaz; düz önek ("A-0*") daha çok raf bulursa kullanıcıya önerilir.
+    const duz = onekler.map((o) => (o.endsWith('*') ? o : o + '*'));
+    const duzAdet = onekler.length ? depo.kapsamRaflari(d, duz).length : 0;
+    return { onekler, adet: raflar.length, ornek: raflar.slice(0, 12), oneri: duzAdet > raflar.length ? { kapsam: duz.join(', '), adet: duzAdet } : null };
+  }));
   r.post('/sayimlar', sar((req) => {
     const b = req.body || {};
+    const kind = b.kind === 'GENEL' ? 'GENEL' : 'RAF';
+    const d = depo.depoCoz(b.depo);
+    // Genel sayım bütün depoyu sayar; kapsam yalnız raf sayımında.
+    const onekler = kind === 'RAF' ? kapsam.coz(b.scope) : [];
+    if (onekler.length && !depo.kapsamRaflari(d, onekler).length) {
+      throw Object.assign(new Error(`Kapsama uyan raf yok (${onekler.join(', ')})`), { status: 400 });
+    }
     const id = 'C' + crypto.randomBytes(5).toString('hex');
     const no = depo.sayimNo();
     db.run(
-      'INSERT INTO count_session(id, no, title, blind, kind, status, source, note, created_at, depo) VALUES(?,?,?,?,?,?,?,?,?,?)',
+      'INSERT INTO count_session(id, no, title, blind, kind, status, source, note, created_at, depo, scope) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
       id,
       no,
       String(b.title || 'Sayım').trim().slice(0, 60) || 'Sayım',
       b.blind === false ? 0 : 1,
-      b.kind === 'GENEL' ? 'GENEL' : 'RAF',
+      kind,
       'OPEN',
       'ADMIN',
       String(b.note || '').slice(0, 300),
       Date.now(),
-      depo.depoCoz(b.depo),
+      d,
+      onekler.join(','),
     );
     depo.degisti();
     log.bilgi(`Sayım açıldı: ${no}`);
@@ -583,6 +604,7 @@ function yoneticiApi() {
     const b = req.body || {};
     db.run('UPDATE count_session SET title=COALESCE(?, title), blind=COALESCE(?, blind), kind=COALESCE(?, kind), note=COALESCE(?, note) WHERE id=?',
       b.title ?? null, b.blind === undefined ? null : b.blind ? 1 : 0, b.kind === 'GENEL' || b.kind === 'RAF' ? b.kind : null, b.note ?? null, req.params.id);
+    db.run("UPDATE count_session SET scope='' WHERE id=? AND kind='GENEL'", req.params.id);
     depo.degisti();
     return { ok: true };
   }));

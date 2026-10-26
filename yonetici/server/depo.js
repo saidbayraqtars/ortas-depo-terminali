@@ -7,6 +7,7 @@ const config = require('./config');
 const vega = require('./vega');
 const log = require('./log');
 const fuzzy = require('./fuzzy');
+const kapsam = require('./kapsam');
 
 const EPS = 1e-9;
 const now = () => Date.now();
@@ -594,6 +595,17 @@ function islemUygula(op, cihaz, kullanici) {
     case 'COUNT_SUBMIT':
       sayimKaydet(op, p, { ...h, ts: now() }, ts);
       return;
+    case 'SHELF_ADD': {
+      // Terminalde okutulan tanımsız raf etiketi orada raf olarak eklenir.
+      const kod = rafKodu(p.code);
+      if (!rafKoduGecerli(kod)) throw new Ret(`Geçersiz raf kodu: ${kod}`);
+      const d = depoCoz(p.depot);
+      if (!rafVarMi(d, kod)) {
+        rafEkle(d, kod, { source: 'TERMINAL', note: `${device} · ${user}` });
+        log.bilgi(`Terminalden raf eklendi: ${kod} (${depoAdi(d)}) · ${device} · ${user}`);
+      }
+      return;
+    }
     default:
       throw new Ret(`Bilinmeyen işlem türü: ${op.type}`);
   }
@@ -620,6 +632,9 @@ function sayimKaydet(op, p, h, olusturma) {
     );
     s = db.get('SELECT * FROM count_session WHERE id=?', sid);
   }
+  // Kapatılmış (onay bekleyen) sayıma geç gelen gönderim alınır; iptal ya da onaylanmış sayım raf miktarını değiştirmez.
+  if (s.status === 'CANCELLED') throw new Ret(`${s.no} yönetici programında iptal edildi`);
+  if (s.status === 'APPROVED') throw new Ret(`${s.no} onaylandı; artık sayım gönderilemez`);
   const depo = s.depo;
   const ref = s.no;
   const raflar = [...new Set((p.shelves || []).map(rafKodu).filter(Boolean))];
@@ -631,6 +646,15 @@ function sayimKaydet(op, p, h, olusturma) {
   }
   for (const raf of raflar) {
     if (!rafVarMi(depo, raf)) rafEkle(depo, raf, { source: 'TERMINAL', note: 'Sayımdan geldi' });
+    db.run(
+      `INSERT INTO count_shelf(session_id, shelf, user, device, submitted_at) VALUES(?,?,?,?,?)
+       ON CONFLICT(session_id, shelf) DO UPDATE SET user=excluded.user, device=excluded.device, submitted_at=excluded.submitted_at`,
+      sid,
+      raf,
+      h.user,
+      h.device,
+      now(),
+    );
     const sayilan = new Map();
     for (const l of satirlar.filter((x) => rafKodu(x.shelf) === raf)) {
       const pid = String(l.productId);
@@ -795,8 +819,8 @@ function masterGovde() {
   const depoListe = depolar();
   const vars = varsayilanDepo();
   const counts = db
-    .all("SELECT id, no, title, blind, depo FROM count_session WHERE status='OPEN' ORDER BY created_at")
-    .map((c) => ({ id: c.id, no: c.no, title: c.title, blind: Boolean(c.blind), depot: c.depo }));
+    .all("SELECT id, no, title, blind, depo, scope FROM count_session WHERE status='OPEN' ORDER BY created_at")
+    .map((c) => ({ id: c.id, no: c.no, title: c.title, blind: Boolean(c.blind), depot: c.depo, scope: c.scope ? c.scope.split(',') : [] }));
   const users = db
     .all('SELECT username, name, salt, pin_hash FROM app_user WHERE active=1 ORDER BY username')
     .map((u) => ({ username: u.username, name: u.name, salt: u.salt, pinHash: u.pin_hash }));
@@ -1086,7 +1110,7 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
       if (!urunler.has(pid) && Math.abs(Number(st)) > EPS) urunler.set(pid, { productId: pid, sayilan: 0, onceki: 0, raflar: [], sayilmadi: true });
     }
   }
-  const sayilanRaflar = new Set(satirlar.map((l) => l.shelf));
+  const sayilanRaflar = new Set([...satirlar.map((l) => l.shelf), ...db.all('SELECT shelf FROM count_shelf WHERE session_id=?', id).map((r) => r.shelf)]);
   const liste = [...urunler.values()].map((u) => {
     const p = urun(u.productId);
     const rafToplam = raf.get(u.productId)?.q || 0;
@@ -1110,8 +1134,23 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
   });
   liste.sort((a, b) => Math.abs(b.fark) - Math.abs(a.fark) || a.name.localeCompare(b.name, 'tr'));
   const satirDetay = satirlar.map((l) => ({ ...l, ...urunAdi(l.product_id), fark: yuvarla(l.counted - l.server_before) }));
+  const onekler = s.scope ? s.scope.split(',') : [];
+  let kapsamOzet = null;
+  if (onekler.length) {
+    const raflarK = kapsamRaflari(depo, onekler);
+    const kalan = raflarK.filter((r) => !sayilanRaflar.has(r));
+    kapsamOzet = {
+      onekler,
+      raf: raflarK.length,
+      sayilan: raflarK.length - kalan.length,
+      kalan: kalan.slice(0, 2000),
+      kalanAdet: kalan.length,
+      disinda: [...sayilanRaflar].filter((r) => !kapsam.kapsamda(r, onekler)).sort(),
+    };
+  }
   return {
     oturum: { ...s, depoAd: depoAdi(depo), vega_docs: s.vega_docs ? JSON.parse(s.vega_docs) : null },
+    kapsam: kapsamOzet,
     raflar: [...sayilanRaflar].sort(),
     satirlar: satirDetay,
     urunler: liste,
@@ -1122,6 +1161,42 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
       vegaFarkli: liste.filter((u) => Math.abs(u.fark) > EPS && u.vegadaVar).length,
     },
   };
+}
+
+/** Depoda kapsama uyan tanımlı raflar (terminal de yalnız tanımlı rafı kabul eder). */
+function kapsamRaflari(depo, onekler) {
+  return db
+    .all('SELECT code FROM shelf WHERE depo=?', depo)
+    .map((r) => r.code)
+    .filter((c) => kapsam.kapsamda(c, onekler))
+    .sort((a, b) => a.localeCompare(b, 'tr', { numeric: true }));
+}
+
+/**
+ * Raf sayımında kapsam seçimi için depodaki raflar, Ortaş'ın adlandırmasına göre: ilk parça bölge (KAT, KO, KUTU,
+ * DEPO, TK2…), ilk iki parça grup (KAT-1, KAT-B, KO-4). Üçten az rafı olan grup (yazım hatası, tek tük adres) listelenmez;
+ * bölgenin tamamı seçilince onlar da sayılır.
+ */
+function rafGruplari(depo) {
+  const bolgeler = new Map();
+  for (const { code } of db.all('SELECT code FROM shelf WHERE depo=?', depo)) {
+    const [b, g] = code.split('-');
+    if (!bolgeler.has(b)) bolgeler.set(b, { onek: b, adet: 0, gruplar: new Map() });
+    const x = bolgeler.get(b);
+    x.adet++;
+    if (g !== undefined && g !== '') {
+      const k = `${b}-${g}`;
+      x.gruplar.set(k, (x.gruplar.get(k) || 0) + 1);
+    }
+  }
+  const sirala = (a, b) => a.localeCompare(b, 'tr', { numeric: true });
+  return [...bolgeler.values()]
+    .map((x) => ({
+      onek: x.onek,
+      adet: x.adet,
+      gruplar: [...x.gruplar].filter(([, n]) => n >= 3).map(([onek, adet]) => ({ onek, adet })).sort((a, b) => sirala(a.onek, b.onek)),
+    }))
+    .sort((a, b) => b.adet - a.adet || sirala(a.onek, b.onek));
 }
 
 function satirlarRafToplam(depo, sessionId, productId) {
@@ -1222,6 +1297,8 @@ module.exports = {
   rafDetay,
   urunAdi,
   sayimNo,
+  kapsamRaflari,
+  rafGruplari,
   sayimOzet,
   sayimOnayla,
   sayimGeriAl,

@@ -1,5 +1,31 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Alan, api, Btn, Durum, Icon, indir, miktar, Modal, Rozet, SAYIM_DURUM, SayfaBaslik, Secim, tarihSaat, useApp, useDepo, useOnay, useVeri } from '../lib.jsx';
+
+// Depodaki raflar bölge (KAT, KO, KUTU…) ve grup (KAT-1, KAT-B…) olarak; tıklanan önek kapsama eklenir ya da çıkar.
+function RafSecici({ depo, kapsam, degis }) {
+  const { veri } = useVeri(`/raf-gruplari?depo=${encodeURIComponent(depo)}`, [depo]);
+  const secili = kapsam.split(',').map((x) => x.trim().toLocaleUpperCase('tr-TR')).filter(Boolean);
+  const cevir = (onek) => degis((secili.includes(onek) ? secili.filter((x) => x !== onek) : [...secili, onek]).join(', '));
+  const Cip = ({ onek, adet, ana }) => (
+    <button type="button" className={`chip sec-chip${secili.includes(onek) ? ' on' : ''}${ana ? ' ana' : ''}`} onClick={() => cevir(onek)} title={`${adet} raf`}>
+      {onek} <span className="muted">{adet}</span>
+    </button>
+  );
+  if (!veri?.length) return null;
+  return (
+    <div className="field">
+      <span>Bölge / kat seçin</span>
+      <div className="raf-gruplari">
+        {veri.map((b) => (
+          <div key={b.onek} className="chip-list">
+            <Cip onek={b.onek} adet={b.adet} ana />
+            {b.gruplar.length > 1 && b.gruplar.map((g) => <Cip key={g.onek} {...g} />)}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function YeniSayim({ kapat, tamam }) {
   const { toast } = useApp();
@@ -9,9 +35,23 @@ function YeniSayim({ kapat, tamam }) {
   const [note, setNote] = useState('');
   const { depolar, cok, depo: secili, varsayilan } = useDepo();
   const [depo, setDepo] = useState(String(secili || varsayilan || depolar[0]?.ind || ''));
+  const [kapsam, setKapsam] = useState('');
+  const [onizleme, setOnizleme] = useState(null);
+  const kapsamli = kind === 'RAF' && kapsam.trim() !== '';
+  useEffect(() => {
+    if (!kapsamli) return setOnizleme(null);
+    let iptal = false;
+    const t = setTimeout(() => {
+      api(`/sayim-kapsam?depo=${encodeURIComponent(depo)}&kapsam=${encodeURIComponent(kapsam)}`)
+        .then((d) => !iptal && setOnizleme(d))
+        .catch((e) => !iptal && setOnizleme({ hata: e.message }));
+    }, 250);
+    return () => { iptal = true; clearTimeout(t); };
+  }, [kapsam, depo, kapsamli]);
+  const varsayilanBaslik = kind === 'GENEL' ? 'Genel sayım' : kapsamli ? `${kapsam.split(',').map((x) => x.trim().toLocaleUpperCase('tr-TR')).filter(Boolean).join(', ')} raf sayımı` : 'Raf sayımı';
   const ac = async () => {
     try {
-      const r = await api('/sayimlar', { method: 'POST', body: { title: title || (kind === 'GENEL' ? 'Genel sayım' : 'Raf sayımı'), kind, blind, note, depo } });
+      const r = await api('/sayimlar', { method: 'POST', body: { title: title || varsayilanBaslik, kind, blind, note, depo, scope: kind === 'RAF' ? kapsam : '' } });
       toast(`${r.no} açıldı; terminallerde bir dakika içinde görünür`);
       tamam(r.id);
     } catch (e) {
@@ -19,7 +59,7 @@ function YeniSayim({ kapat, tamam }) {
     }
   };
   return (
-    <Modal baslik="Yeni sayım" kapat={kapat} alt={<><Btn onClick={kapat}>Vazgeç</Btn><Btn kind="primary" onClick={ac}>Sayımı aç</Btn></>}>
+    <Modal baslik="Yeni sayım" kapat={kapat} alt={<><Btn onClick={kapat}>Vazgeç</Btn><Btn kind="primary" onClick={ac} disabled={kapsamli && (!onizleme || Boolean(onizleme.hata) || onizleme.adet === 0)}>Sayımı aç</Btn></>}>
       {cok && (
         <Alan etiket="Depo" ipucu="Terminalde yalnız bu depoyu seçen cihazlar sayar">
           <select className="inp" value={depo} onChange={(e) => setDepo(e.target.value)}>
@@ -27,7 +67,7 @@ function YeniSayim({ kapat, tamam }) {
           </select>
         </Alan>
       )}
-      <Alan etiket="Başlık" ipucu="Terminalde görünür: Koridor A, Yıl sonu sayımı…"><input className="inp" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus /></Alan>
+      <Alan etiket="Başlık" ipucu="Terminalde görünür: Koridor A, Yıl sonu sayımı…"><input className="inp" value={title} placeholder={varsayilanBaslik} onChange={(e) => setTitle(e.target.value)} autoFocus /></Alan>
       <Alan etiket="Sayım türü">
         <Secim deger={kind} degis={setKind} secenekler={[['RAF', 'Raf sayımı'], ['GENEL', 'Genel sayım (Vega\'ya yazılır)']]} />
       </Alan>
@@ -39,6 +79,25 @@ function YeniSayim({ kapat, tamam }) {
             : 'Yalnız raf miktarları düzelir; Vega stoku değişmez. İlk yerleşim ve bölüm sayımları için.'}
         </p>
       </div>
+      {kind === 'RAF' && <RafSecici depo={depo} kapsam={kapsam} degis={setKapsam} />}
+      {kind === 'RAF' && (
+        <Alan etiket="Sayılacak raflar" ipucu={'Yukarıdan seçin ya da raf kodunun başını yazın, virgülle birden çok: KAT-1, KO-4, TK2-HY. "KAT-1" KAT-10\'u kapsamaz; kapsasın isterseniz KAT-1* yazın. Boş: bütün raflar.'}>
+          <input className="inp mono" value={kapsam} placeholder="Bütün raflar" onChange={(e) => setKapsam(e.target.value)} />
+        </Alan>
+      )}
+      {kapsamli && onizleme && (
+        onizleme.hata ? <div className="notice err"><Icon name="alert" /><p>{onizleme.hata}</p></div>
+          : onizleme.adet === 0 ? <div className="notice warn"><Icon name="warning" /><p>Bu depoda uyan tanımlı raf yok.{onizleme.oneri && <> <a href="#" onClick={(e) => { e.preventDefault(); setKapsam(onizleme.oneri.kapsam); }}><b>{onizleme.oneri.kapsam}</b></a> yazarsanız {onizleme.oneri.adet} raf.</>}</p></div>
+            : (
+              <div className="notice info">
+                <Icon name="info" />
+                <div>
+                  <p style={{ margin: '0 0 6px' }}><b>{onizleme.adet} raf</b> sayılacak. Terminal bu sayımda başka rafı kabul etmez.{onizleme.oneri && <span className="muted"> ({onizleme.oneri.kapsam}: {onizleme.oneri.adet} raf)</span>}</p>
+                  <div className="chip-list">{onizleme.ornek.map((r) => <span key={r} className="chip">{r}</span>)}{onizleme.adet > onizleme.ornek.length && <span className="muted small">+{onizleme.adet - onizleme.ornek.length}</span>}</div>
+                </div>
+              </div>
+            )
+      )}
       <label className="check"><input type="checkbox" checked={blind} onChange={(e) => setBlind(e.target.checked)} /><span><b>Kör sayım</b><br /><span className="muted small">Sayan kişi sistemdeki miktarı görmez.</span></span></label>
       <Alan etiket="Not"><input className="inp" value={note} onChange={(e) => setNote(e.target.value)} /></Alan>
     </Modal>
@@ -69,7 +128,7 @@ export default function Sayimlar() {
                 <tr key={s.id} className="click" onClick={() => (window.location.hash = `/sayim/${s.id}`)}>
                   <td className="mono">{s.no}{cok && <div className="code">{s.depoAd}</div>}</td>
                   <td><b>{s.title}</b>{s.source === 'TERMINAL' && <div className="muted small">Terminalde başlatıldı · {s.note}</div>}</td>
-                  <td>{s.kind === 'GENEL' ? <Rozet tur="b-acc">Genel</Rozet> : <Rozet tur="b-mute">Raf</Rozet>}{s.blind ? <span className="muted small"> · kör</span> : ''}</td>
+                  <td>{s.kind === 'GENEL' ? <Rozet tur="b-acc">Genel</Rozet> : <Rozet tur="b-mute">Raf</Rozet>}{s.blind ? <span className="muted small"> · kör</span> : ''}{s.scope && <div className="mono small">{s.scope.split(',').join(', ')}</div>}</td>
                   <td><Rozet tur={SAYIM_DURUM[s.status][1]}>{SAYIM_DURUM[s.status][0]}</Rozet></td>
                   <td className="num">{s.raf || ''}</td>
                   <td className="num">{s.kalem || ''}</td>
@@ -84,6 +143,33 @@ export default function Sayimlar() {
       </div>
       {yeni && <YeniSayim kapat={() => setYeni(false)} tamam={(id) => { setYeni(false); yukle(); window.location.hash = `/sayim/${id}`; }} />}
     </>
+  );
+}
+
+// Kapsamlı raf sayımında ilerleme: kapsamdaki raflardan kaçı sayıldı, hangileri kaldı.
+function KapsamKarti({ k }) {
+  const [hepsi, setHepsi] = useState(false);
+  const goster = hepsi ? k.kalan : k.kalan.slice(0, 60);
+  const yuzde = k.raf ? Math.floor((k.sayilan / k.raf) * 100) : 0;
+  return (
+    <div className="card" style={{ marginBottom: 14, padding: 16 }}>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <b>Kapsam: <span className="mono">{k.onekler.join(', ')}</span></b>
+        <span className="muted">· {k.sayilan} / {k.raf} raf sayıldı (%{yuzde})</span>
+      </div>
+      <div className="progress" style={{ marginBottom: 10 }}><i style={{ width: `${yuzde}%` }} /></div>
+      {k.kalanAdet === 0 ? <p className="muted" style={{ margin: 0 }}>Kapsamdaki bütün raflar sayıldı.</p> : (
+        <>
+          <p className="muted small" style={{ margin: '0 0 6px' }}>Sayılmayan {k.kalanAdet} raf:</p>
+          <div className="chip-list">
+            {goster.map((r) => <span key={r} className="chip">{r}</span>)}
+            {k.kalan.length > goster.length && <Btn size="sm" onClick={() => setHepsi(true)}>+{k.kalan.length - goster.length} daha</Btn>}
+            {k.kalanAdet > k.kalan.length && <span className="muted small">(ilk {k.kalan.length} gösteriliyor)</span>}
+          </div>
+        </>
+      )}
+      {k.disinda.length > 0 && <div className="notice warn" style={{ marginTop: 10 }}><Icon name="warning" /><p>Kapsam dışında sayılan raf (eski terminal sürümünden): {k.disinda.join(', ')}</p></div>}
+    </div>
   );
 }
 
@@ -180,7 +266,7 @@ export function SayimDetay({ id }) {
         const docs = s.vega_docs?.docs || [];
         return (
           <>
-            <SayfaBaslik baslik={<><span className="mono">{s.no}</span> · {s.title}</>} alt={<>{s.depoAd} deposu · {s.kind === 'GENEL' ? 'Genel sayım' : 'Raf sayımı'}{s.blind ? ' · kör' : ''} · açılış {tarihSaat(s.created_at)}{s.note ? ` · ${s.note}` : ''}</>} geri={['/sayimlar', 'Sayımlar']}>
+            <SayfaBaslik baslik={<><span className="mono">{s.no}</span> · {s.title}</>} alt={<>{s.depoAd} deposu · {s.kind === 'GENEL' ? 'Genel sayım' : 'Raf sayımı'}{s.scope ? ` (${s.scope.split(',').join(', ')})` : ''}{s.blind ? ' · kör' : ''} · açılış {tarihSaat(s.created_at)}{s.note ? ` · ${s.note}` : ''}</>} geri={['/sayimlar', 'Sayımlar']}>
               <Rozet tur={SAYIM_DURUM[s.status][1]}>{SAYIM_DURUM[s.status][0]}</Rozet>
               <Btn icon="export" onClick={() => indir(`/sayim/${id}/csv?tur=${gorunum === 'raf' ? 'raf' : 'urun'}${dahil ? '&dahil=1' : ''}`, `${s.no}.csv`).catch((e) => toast(e.message, true))}>CSV</Btn>
               {s.status === 'OPEN' && <Btn icon="lock" onClick={() => durumDegis('kapat', ['Sayım kapatılsın mı?', 'Terminallerde görünmez olur; onay için hazır hale gelir. Gerekirse yeniden açılabilir.', { tamam: 'Kapat' }])}>Sayımı kapat</Btn>}
@@ -198,8 +284,10 @@ export function SayimDetay({ id }) {
               </div>
             )}
 
+            {o.kapsam && <KapsamKarti k={o.kapsam} />}
+
             <div className="grid g4" style={{ marginBottom: 14 }}>
-              <div className="card stat"><span className="k">Sayılan raf</span><span className="v">{o.raflar.length}</span></div>
+              <div className="card stat"><span className="k">Sayılan raf</span><span className="v">{o.raflar.length}</span>{o.kapsam && <span className="s">kapsamda {o.kapsam.sayilan} / {o.kapsam.raf}</span>}</div>
               <div className="card stat"><span className="k">Raf kalemi</span><span className="v">{o.toplam.kalem}</span><span className="s">{o.toplam.rafFarkli} kalemde rafta fark</span></div>
               <div className="card stat"><span className="k">Ürün</span><span className="v">{o.toplam.urun}</span></div>
               <div className={`card stat ${o.toplam.vegaFarkli ? 'warn' : ''}`}><span className="k">Vega ile farklı</span><span className="v">{o.toplam.vegaFarkli}</span></div>

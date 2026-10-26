@@ -52,7 +52,10 @@ sunucudaki APK cihazdakinden yeniyse terminal "Yeni sürüm" gösterir, indirme 
 - `shelves`: yönetici programında tanımlı raflar. Terminal tanımsız rafa işlem yaptırmaz.
 - `locations`: ürünün raftaki miktarı (sunucunun kendi tablosu; Vega'da yok).
 - `receipts`: Vega'da mal kabulü yapılmış, rafa kaldırılması bitmemiş belgeler. `shelved` sunucuda tutulur.
-- `counts`: yönetici programında açılmış, terminalde sayılacak oturumlar.
+- `counts`: yönetici programında açılmış, terminalde sayılacak oturumlar. `scope` (1.4.0+): raf önekleri
+  (`["KAT-1"]`); boşsa bütün raflar. Önek bir sayı ya da harf dizisini bölmez (`KAT-1` → `KAT-1-A1-20`, `KAT-10` değil),
+  sonda `*` düz önektir. Kural `yonetici/server/kapsam.js` ve terminalde `Kapsam.kt`. Listede olmayan oturum
+  (kapatılan, iptal edilen) terminalden silinir.
 - `users`: terminal kullanıcıları. `pinHash = sha256(salt + pin)` küçük harf hex. Şifre düz gönderilmez;
   terminal internetsiz giriş için listeyi saklar.
 
@@ -116,7 +119,8 @@ Cevap: her işlem için bir satır.
 |---|---|---|
 | `PUTAWAY` | `receiptId, lineId, productId, shelf, qty, user, device` | `locations[productId, shelf] += qty`, satırın `shelved += qty` |
 | `TRANSFER` | `productId, from, to, qty, user, device` | `from -= qty`, `to += qty` |
-| `COUNT_SUBMIT` | `sessionId, no, title, shelves[], lines[{shelf, productId, system, counted}], user, device` | Sayımı onay bekleyen olarak kaydet. Raf miktarları sayılan değere çekilir. Vega'ya sayım fişi yönetici onayıyla yazılır. |
+| `COUNT_SUBMIT` | `sessionId, no, title, shelves[], lines[{shelf, productId, system, counted}], user, device` | Sayımı onay bekleyen olarak kaydet. Raf miktarları sayılan değere çekilir. Vega'ya sayım fişi yönetici onayıyla yazılır. `shelves` boş sayılan rafları da içerir. |
+| `SHELF_ADD` (1.4.0+) | `code, depot, user, device` | Terminalde okutulan tanımsız raf etiketini o depoda raf olarak aç (kaynak `TERMINAL`). |
 
 `sessionId` `LOCAL-` ile başlıyorsa terminalde başlatılmış serbest sayımdır; sunucuda karşılığı yoktur,
 yeni kayıt açılır.
@@ -129,7 +133,8 @@ Miktarlar ondalıklı olabilir (litre, metre); sayı olarak gelir.
 - Tanımsız rafa gelen mal reddedilmez (mal fiziken oradadır); raf "terminalde açıldı" notuyla tanımlanır.
 - `TRANSFER` kaynak rafı eksiye düşürmez.
 - `COUNT_SUBMIT`: sayılan raflarda, sunucuda olup terminalin saymadığı ürün sayımdan **önce** yerleştiyse 0 kabul edilir,
-  sonra yerleştiyse (başka terminal) dokunulmaz.
+  sonra yerleştiyse (başka terminal) dokunulmaz. İptal edilmiş ya da onaylanmış sayıma gelen gönderim kalıcı ret alır;
+  kapatılmış (onay bekleyen) sayıma geç gelen gönderim alınır.
 
 ## Diğer uçlar
 

@@ -48,6 +48,8 @@ data class CountSession(
     val blind: Boolean,
     val status: String,
     val depot: Int = 0,
+    /** Raf önekleri (bkz. [Kapsam]); boşsa bütün raflar. */
+    val scope: List<String> = emptyList(),
 )
 
 data class CountLine(val shelf: String, val product: Product, val qty: Double)
@@ -84,4 +86,5 @@ object OpType {
     const val PUTAWAY = "PUTAWAY"
     const val TRANSFER = "TRANSFER"
     const val COUNT_SUBMIT = "COUNT_SUBMIT"
+    const val SHELF_ADD = "SHELF_ADD"
 }
