@@ -25,6 +25,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -123,7 +124,7 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
                     Text("Şu an sayılan raf", color = C.BarSub, fontSize = 12.sp)
                     MonoText(shelf!!, size = 24, color = C.Accent)
                 }
-                Text("Raf değiştir", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.clickable { shelf = null }.padding(8.dp))
+                Text("Raf değiştir", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.focusProperties { canFocus = false }.clickable { shelf = null }.padding(8.dp))
             }
             ProductScanField(
                 vm, "Ürün okutun", "Her okutma 1 adet ekler; miktar aşağıdan da yazılır",

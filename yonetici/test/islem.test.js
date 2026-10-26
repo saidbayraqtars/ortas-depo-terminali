@@ -376,3 +376,36 @@ test.after(() => {
   db.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('ana veri parça parça: ilk istekte hepsi, sonra yalnız değişen kova gelir; içerik tam listeyle aynı', () => {
+  // Terminaldeki Buckets.of ile aynı değerler (BucketsTest.kt).
+  assert.deepStrictEqual(['101', '102', 'YF-1042', ''].map(depo.kova), [47, 2, 42, 5]);
+  const tam = JSON.parse(depo.master().json);
+  const bilinen = {};
+  const urunler = [];
+  const konumlar = [];
+  let istek = 0;
+  for (;;) {
+    const c = JSON.parse(depo.masterParcaCevabi(bilinen, 8));
+    istek++;
+    for (const p of c.parts) {
+      bilinen[p.key] = p.hash;
+      if (p.key.startsWith('b')) {
+        urunler.push(...p.data.products);
+        konumlar.push(...p.data.locations);
+        for (const u of p.data.products) assert.strictEqual('b' + depo.kova(u.id), p.key);
+      }
+      if (p.key === 'head') assert.deepStrictEqual(p.data.depots, tam.depots);
+    }
+    if (c.remaining === 0) break;
+  }
+  assert.strictEqual(istek, 64 / 8);
+  assert.strictEqual(urunler.length, tam.products.length);
+  assert.strictEqual(konumlar.length, tam.locations.length);
+  // Değişiklik yokken boş cevap.
+  assert.deepStrictEqual(JSON.parse(depo.masterParcaCevabi(bilinen, 8)).parts, []);
+  // Bir raf transferi yalnız o ürünün kovasını değiştirir.
+  assert.ok(depo.islemler('TRM-01', 'ali', [op('TRANSFER', { productId: '101', from: 'A-01-01', to: 'A-01-02', qty: 1 })])[0].ok);
+  const d = JSON.parse(depo.masterParcaCevabi(bilinen, 8)).parts.map((p) => p.key);
+  assert.deepStrictEqual(d, ['b' + depo.kova('101')]);
+});

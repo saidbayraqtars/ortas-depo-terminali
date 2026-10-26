@@ -24,7 +24,22 @@ import kotlinx.coroutines.withContext
 import tr.arcteknik.depo.App
 import tr.arcteknik.depo.data.OpStatus
 import tr.arcteknik.depo.data.Repo
+import tr.arcteknik.depo.diag.Diag
+import java.io.IOException
 import java.util.concurrent.TimeUnit
+
+/** Kullanıcının son okutma/kaydı. Çalışılırken ana veri yeniden yazılmaz (aşağıda). */
+object UserActivity {
+    @Volatile
+    var at = 0L
+        private set
+
+    fun touch() {
+        at = System.currentTimeMillis()
+    }
+
+    fun idleFor(ms: Long) = System.currentTimeMillis() - at > ms
+}
 
 /**
  * Eşitleme sırası: önce kuyruktaki işlemler gönderilir, sonra ana veri çekilir. Gönderilemeyen
@@ -43,6 +58,36 @@ class Sync(private val context: Context, private val repo: Repo) {
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy
+
+    /** İlk yüklemede "ana veri 24/64" gibi ilerleme; yoksa null. */
+    private val _progress = MutableStateFlow<String?>(null)
+    val progress: StateFlow<String?> = _progress
+
+    /**
+     * Ana veriyi parça parça çeker (1.3.0+ sunucu): yalnız değişen kovalar, istekte en çok 8 kova, her kova ayrı kısa
+     * işlemle yazılır. Bu yüzden kullanıcı çalışırken de güvenle çalışır. Sunucu desteklemiyorsa false (eski yol).
+     */
+    private fun pullParts(backend: Backend): Boolean {
+        val db = repo.db
+        var done = 0
+        val t0 = System.currentTimeMillis()
+        for (round in 0 until 40) {
+            var result: tr.arcteknik.depo.data.Db.PartsResult? = null
+            val supported = backend.masterParts(db.masterParts(), 8) { reader -> result = db.applyParts(reader) }
+            if (!supported) return false
+            val r = result ?: return true
+            r.head?.let {
+                repo.prefs.applyMaster(it)
+                repo.ensureDepot(it.optInt("defaultDepot", 0))
+            }
+            done += r.parts
+            if (r.parts > 0) repo.changed()
+            if (r.remaining == 0) break
+            _progress.value = "Ana veri alınıyor · ${db.masterParts().count { it.key.startsWith("b") }}/${tr.arcteknik.depo.data.Buckets.COUNT}"
+        }
+        if (done > 0) Diag.crumb("eşitleme: $done parça yazıldı ${System.currentTimeMillis() - t0} ms")
+        return true
+    }
 
     fun backend(): Backend {
         val p = repo.prefs
@@ -67,7 +112,7 @@ class Sync(private val context: Context, private val repo: Repo) {
         // Uygulama açıkken dakikada bir; kapalıyken WorkManager 15 dakikada bir dener.
         scope.launch {
             while (true) {
-                run()
+                run(force = false)
                 delay(60_000)
             }
         }
@@ -82,11 +127,17 @@ class Sync(private val context: Context, private val repo: Repo) {
 
     /** Bir işlem kaydedilince hemen gönderilmeye çalışılır. */
     fun trigger() {
-        scope.launch { run() }
+        scope.launch { run(force = false) }
     }
 
-    /** @return hata metni, başarılıysa null. */
-    suspend fun run(): String? = mutex.withLock {
+    /**
+     * Ana veri yeni sunucudan parça parça gelir ([pullParts]). Eski sunucuda tek parça iner:
+     * @param force kullanıcı "eşitle" dediyse true. Değilse ve kullanıcı son 2 dakikada okutma/kayıt yaptıysa eski
+     *   sunucudan ana veri çekilmez, yalnız kuyruk gönderilir: 130 bin kalemlik liste yazılırken veritabanı kilitli
+     *   kalıyor, ekrandaki kayıt bunu bekleyip terminali donduruyordu (her rafa kaldırmadan sonra baştan iniyordu).
+     * @return hata metni, başarılıysa null.
+     */
+    suspend fun run(force: Boolean = true): String? = mutex.withLock {
         withContext(Dispatchers.IO) {
             _busy.value = true
             try {
@@ -94,25 +145,37 @@ class Sync(private val context: Context, private val repo: Repo) {
                 val backend = backend()
                 val pending = db.ops().filter { it.status == OpStatus.PENDING }
                 if (pending.isNotEmpty()) {
-                    // Gönderilen işlem reddedilirse cihazdaki hali sunucudan farklı kalır; sunucunun ana verisi
-                    // değişmemiş olsa bile bu tur tam liste alınsın.
-                    repo.prefs.masterEtag = ""
+                    val t0 = System.currentTimeMillis()
                     for (chunk in pending.chunked(50)) {
                         val results = backend.pushOps(chunk, repo.prefs.lastUser).associateBy { it.id }
                         for (op in chunk) {
                             val r = results[op.id] ?: continue
-                            if (r.ok) db.deleteOp(op.id) else db.markOpError(op.id, r.error ?: "Sunucu reddetti")
+                            if (r.ok) {
+                                db.deleteOp(op.id)
+                            } else {
+                                db.markOpError(op.id, r.error ?: "Sunucu reddetti")
+                                // Reddedilen işlem cihazdaki hali sunucudan farklı bıraktı; sunucunun ana verisi
+                                // değişmemiş olsa bile sonraki tur tam liste alınsın.
+                                repo.prefs.masterEtag = ""
+                                db.clearMasterParts()
+                            }
                         }
                     }
+                    Diag.crumb("eşitleme: ${pending.size} işlem gönderildi ${System.currentTimeMillis() - t0} ms")
                     repo.changed()
                 }
-                if (db.ops().none { it.status == OpStatus.PENDING }) {
+                if (db.ops().none { it.status == OpStatus.PENDING } && pullParts(backend)) {
+                    repo.prefs.lastSync = System.currentTimeMillis()
+                } else if (db.ops().none { it.status == OpStatus.PENDING } && (force || db.isEmpty() || UserActivity.idleFor(120_000))) {
                     // Demo "sunucusu" işlemleri saklamaz; örnek veri yalnız cihaz boşken yüklenir,
                     // yoksa her eşitleme yapılan işleri silerdi.
                     val etag = repo.prefs.masterEtag.takeIf { it.isNotBlank() && !db.isEmpty() }
                     backend.master(etag) { reader, newEtag ->
                         if (backend !is DemoBackend || db.isEmpty()) {
+                            val t0 = System.currentTimeMillis()
+                            Diag.crumb("eşitleme: ana veri iniyor")
                             val head = db.replaceMaster(reader)
+                            Diag.crumb("eşitleme: ana veri yazıldı ${System.currentTimeMillis() - t0} ms")
                             repo.prefs.applyMaster(head)
                             repo.ensureDepot(head.optInt("defaultDepot", 0))
                             repo.prefs.masterEtag = newEtag ?: ""
@@ -122,16 +185,22 @@ class Sync(private val context: Context, private val repo: Repo) {
                 }
                 repo.prefs.lastSyncError = ""
                 _reachable.value = true
+                _progress.value = null
                 repo.changed()
                 null
             } catch (e: Exception) {
                 val msg = e.message ?: e.javaClass.simpleName
+                Diag.crumb("eşitleme hatası: $msg")
+                // Ağ hatası olağan; başka türlü istisna (veri, SQLite) rapor edilir.
+                if (e !is IOException) Diag.error("eşitleme", e)
                 repo.prefs.lastSyncError = msg
                 _reachable.value = false
                 repo.changed()
                 msg
             } finally {
                 _busy.value = false
+                _progress.value = null
+                runCatching { Diag.sendPending() }
             }
         }
     }
@@ -140,6 +209,6 @@ class Sync(private val context: Context, private val repo: Repo) {
 class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
         val app = applicationContext as App
-        return if (app.sync.run() == null) Result.success() else Result.retry()
+        return if (app.sync.run(force = false) == null) Result.success() else Result.retry()
     }
 }

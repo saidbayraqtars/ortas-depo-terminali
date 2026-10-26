@@ -16,7 +16,8 @@ Hata gövdesi: `{"error": "açıklama"}`. Terminal `401/403` gelince "Cihaz yetk
 ## Eşitleme sırası
 
 1. Terminal önce bekleyen işlemleri `POST /api/ops` ile gönderir.
-2. Bekleyen işlem kalmadıysa `GET /api/master` ile ana veriyi alır ve yerel tablolarının yerine koyar.
+2. Bekleyen işlem kalmadıysa ana veriyi alır: 1.3.0+ terminal `POST /api/master/parts` ile yalnız değişen parçaları,
+   eski terminal (ya da bu ucu bilmeyen eski sunucu, `404`) `GET /api/master` ile hepsini.
 
 Gönderilemeyen işlem varken ana veri çekilmez; çekilseydi sunucunun eski hali cihazdaki değişikliği silerdi.
 Bu yüzden sunucu, kabul ettiği her işlemi `master` cevabına hemen yansıtmalıdır.
@@ -54,6 +55,35 @@ sunucudaki APK cihazdakinden yeniyse terminal "Yeni sürüm" gösterir, indirme 
 - `counts`: yönetici programında açılmış, terminalde sayılacak oturumlar.
 - `users`: terminal kullanıcıları. `pinHash = sha256(salt + pin)` küçük harf hex. Şifre düz gönderilmez;
   terminal internetsiz giriş için listeyi saklar.
+
+## `POST /api/master/parts` (1.3.0+)
+
+130 bin ürünlük liste (~30 MB) her işlemden sonra baştan inince el terminalleri donuyordu. Ana veri parçalara bölünür:
+
+- `head`: `/api/master`'daki `products`, `shelves`, `locations`, `homes` dışındaki her şey (depolar, belgeler, sayımlar, kullanıcılar, `app`).
+- `shelves`: raf listesi.
+- `b0` … `b63`: ürün kovaları. Ürün, stokları, barkodları, raf konumları (`locations`) ve zimmetleri (`homes`)
+  ürün kimliğinin kovasındadır: `FNV-1a 32 bit (UTF-16 kod birimleri) % 64` (`depo.js kova`, `Buckets.kt`).
+
+İstek: `{"known": {"head": "<özet>", "b12": "<özet>", …}, "max": 8}`. Cevap yalnız özeti farklı (ya da bilinmeyen) parçaları
+getirir, kovalardan en çok `max` tanesini:
+
+```json
+{"buckets": 64,
+ "parts": [{"key": "b12", "hash": "…", "data": {"products": […], "locations": […], "homes": […]}}],
+ "remaining": 3}
+```
+
+Terminal her parçayı ayrı kısa işlemle yazar (kovanın eski satırlarını silip yenilerini koyar) ve özetini saklar;
+`remaining > 0` ise hemen yeniden ister. Değişiklik yoksa `parts` boş gelir. Bir rafa kaldırma ya da transfer
+yalnız ilgili ürünün kovasını (ve belge ilerlemesi için `head`'i) değiştirir. Sunucu işlemi reddederse terminal
+bütün özetleri unutur (sonraki tur hepsi yeniden iner). Sıra sabittir; Vega yenilemesi içerik değişmeden özet değiştirmez.
+
+## `POST /api/rapor` (1.3.0+)
+
+Terminalin çökme, donma (ANR) ve elle gönderilen tanı raporu (`diag/Diag.kt`). Sunucu günlüğe bir satır yazar,
+raporu `<veri>/raporlar/` altına koyar ve destek sunucusuna iletir (`araclar/hata-toplayici/`). Gövde serbest JSON;
+`id` (8–64 harf/rakam) zorunlu. Terminal aynı raporu destek sunucusuna doğrudan da yollar, orada kimlikle tekilleşir.
 
 ## `POST /api/ops`
 

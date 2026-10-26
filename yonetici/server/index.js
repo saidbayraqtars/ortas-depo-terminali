@@ -19,6 +19,7 @@ const depo = require('./depo');
 const apk = require('./apk');
 const etiket = require('./etiket');
 const iceaktar = require('./iceaktar');
+const rapor = require('./rapor');
 
 const SURUM = require('../package.json').version;
 let yedekKlasoru = null;
@@ -192,6 +193,24 @@ function terminalApi() {
       res.setHeader('Cache-Control', 'no-cache');
       if (req.get('If-None-Match') === m.etag) return void res.status(304).end();
       res.type('application/json').send(m.json);
+    }),
+  );
+  // 1.3.0+ terminal: { known: { anahtar: özet }, max } → yalnız değişen parçalar (depo.js "Ana veri, parça parça").
+  r.post(
+    '/master/parts',
+    sar((req, res) => {
+      const b = req.body || {};
+      const en = Math.max(1, Math.min(64, Number(b.max) || 8));
+      res.setHeader('Cache-Control', 'no-cache');
+      res.type('application/json').send(depo.masterParcaCevabi(b.known && typeof b.known === 'object' ? b.known : {}, en));
+    }),
+  );
+  // Terminalin çökme/donma raporu (Diag.kt): günlüğe yazılır, destek sunucusuna iletilir.
+  r.post(
+    '/rapor',
+    sar((req) => {
+      rapor.terminalden(req.body, req.cihaz);
+      return { ok: true };
     }),
   );
   r.post(
@@ -802,6 +821,7 @@ ${a ? `<p>Sürüm ${a.versionName} · ${(a.boyut / 1048576).toFixed(1)} MB</p>
 async function baslat({ veriKlasoru, apkKlasoru, arayuz, host = '0.0.0.0', port } = {}) {
   fs.mkdirSync(veriKlasoru, { recursive: true });
   log.kur(path.join(veriKlasoru, 'gunluk'));
+  rapor.kur(veriKlasoru, SURUM);
   config.init(path.join(veriKlasoru, 'config.json'));
   db.open(path.join(veriKlasoru, 'depo.db'), { varsayilanDepo: config.load().vega.depo });
   yedekKlasoru = path.join(veriKlasoru, 'yedek');

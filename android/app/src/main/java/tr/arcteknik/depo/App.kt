@@ -4,6 +4,7 @@ import android.app.Application
 import tr.arcteknik.depo.data.Db
 import tr.arcteknik.depo.data.Prefs
 import tr.arcteknik.depo.data.Repo
+import tr.arcteknik.depo.diag.Diag
 import tr.arcteknik.depo.scan.Feedback
 import tr.arcteknik.depo.sync.Sync
 
@@ -14,9 +15,16 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        repo = Repo(Db(this), Prefs(this))
+        val prefs = Prefs(this)
+        Diag.init(this, prefs)
+        repo = Repo(Db(this), prefs)
         sync = Sync(this, repo)
         feedback = Feedback(this)
         sync.start()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        Diag.crumb("bellek uyarısı $level")
     }
 }

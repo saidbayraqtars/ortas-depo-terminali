@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 let klasor = null;
+const dinleyiciler = [];
 
 function kur(dir) {
   klasor = dir;
@@ -20,6 +21,7 @@ function yaz(seviye, mesaj, hata) {
   const an = new Date();
   const satir = `${an.toLocaleTimeString('tr-TR')} [${seviye}] ${mesaj}${hata ? ` — ${hata.stack || hata.message || hata}` : ''}`;
   (seviye === 'HATA' ? console.error : console.log)(satir);
+  if (seviye === 'HATA') for (const f of dinleyiciler) f(mesaj, hata);
   if (!klasor) return;
   const gun = `${an.getFullYear()}-${String(an.getMonth() + 1).padStart(2, '0')}-${String(an.getDate()).padStart(2, '0')}`;
   try {
@@ -30,6 +32,8 @@ function yaz(seviye, mesaj, hata) {
 module.exports = {
   kur,
   klasor: () => klasor,
+  /** HATA satırlarını dinler (rapor.js bunları destek sunucusuna iletir). */
+  dinle: (f) => dinleyiciler.push(f),
   bilgi: (m) => yaz('BİLGİ', m),
   uyari: (m) => yaz('UYARI', m),
   hata: (m, e) => yaz('HATA', m, e),

@@ -758,8 +758,8 @@ function bekleyenKabul(depo = null) {
 
 // ---- Ana veri (terminale) --------------------------------------------------------------------
 
-function master() {
-  if (masterCache && masterCache.surum === surum) return masterCache;
+/** Terminale giden ana verinin tamamı (nesne). `master()` tek parça, `masterParcalari()` kovalara bölünmüş verir. */
+function masterGovde() {
   if (!goruntu) {
     const e = new Error('Vega verisi henüz alınamadı. Yönetici programında Vega bağlantısını kontrol edin.');
     e.status = 503;
@@ -767,7 +767,9 @@ function master() {
   }
   const cfg = config.load();
   const acik = belgeler().filter((r) => r.acik);
-  const locations = db.all('SELECT depo, product_id, shelf, qty FROM location WHERE qty > 0');
+  // Sıra sabit olmalı: Vega ürünleri her yenilemede farklı sırayla verebiliyor; sıra değişince ETag ve kova özetleri
+  // de değişip terminaller (2 dakikada bir) değişmemiş veriyi baştan indiriyordu.
+  const locations = db.all('SELECT depo, product_id, shelf, qty FROM location WHERE qty > 0 ORDER BY depo, product_id, shelf');
   const ref = new Set(locations.map((l) => l.product_id));
   for (const h of db.all('SELECT DISTINCT product_id FROM product_home')) ref.add(h.product_id);
   for (const r of acik) for (const l of r.lines) ref.add(l.productId);
@@ -787,8 +789,9 @@ function master() {
       const q = m.get(p.id);
       if (q) stocks[d] = Number(q);
     }
-    products.push({ id: p.id, code: p.code, name: p.name, unit: p.unit, vegaStock: Number(toplam || 0), stocks, barcodes: goruntu.barcodes[p.id] || [] });
+    products.push({ id: p.id, code: p.code, name: p.name, unit: p.unit, vegaStock: Number(toplam || 0), stocks, barcodes: [...(goruntu.barcodes[p.id] || [])].sort() });
   }
+  products.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const depoListe = depolar();
   const vars = varsayilanDepo();
   const counts = db
@@ -818,7 +821,10 @@ function master() {
         date: r.date,
         depot: r.depo,
         depotName: r.depoAd,
-        lines: r.lines.filter((l) => gonderilen.has(l.productId)).map((l) => ({ id: l.id, productId: l.productId, accepted: l.accepted, shelved: l.shelved })),
+        lines: r.lines
+          .filter((l) => gonderilen.has(l.productId))
+          .map((l) => ({ id: l.id, productId: l.productId, accepted: l.accepted, shelved: l.shelved }))
+          .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
       }))
       .filter((r) => r.lines.length),
     counts,
@@ -826,9 +832,82 @@ function master() {
   };
   const apk = require('./apk').bilgi();
   if (apk) govde.app = { versionName: apk.versionName, versionCode: apk.versionCode, path: '/apk' };
-  const json = JSON.stringify(govde);
-  masterCache = { surum, json, etag: '"' + crypto.createHash('sha1').update(json).digest('base64').slice(0, 27) + '"', boyut: json.length };
+  return govde;
+}
+
+function ozet(json) {
+  return crypto.createHash('sha1').update(json).digest('base64').slice(0, 27);
+}
+
+/** Eski terminaller (1.2.1 ve öncesi): bütün ana veri tek JSON. */
+function master() {
+  if (masterCache && masterCache.surum === surum) return masterCache;
+  const json = JSON.stringify(masterGovde());
+  masterCache = { surum, json, etag: '"' + ozet(json) + '"', boyut: json.length };
   return masterCache;
+}
+
+// ---- Ana veri, parça parça (1.3.0+) -----------------------------------------------------------
+//
+// 130 bin ürünlük liste her işlemden sonra baştan inince eski terminaller donuyordu. Ürünler kimliklerinin
+// özetine göre sabit KOVA_SAYISI kovaya bölünür; ürünün stokları, barkodları, raf konumları ve zimmetleri kendi
+// kovasındadır. Terminal elindeki parçaların özetini yollar, yalnız değişenler gelir (bir rafa kaldırma = bir kova)
+// ve her parça terminalde ayrı kısa bir işlemle yazılır. "head" (depo, belge, sayım, kullanıcı) ve "shelves" ayrı parça.
+
+const KOVA_SAYISI = 64;
+
+/** FNV-1a 32 bit, UTF-16 kod birimleri üzerinden. Terminaldeki `Buckets.of` ile aynı olmalı. */
+function kova(id) {
+  let h = 0x811c9dc5;
+  const s = String(id);
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h % KOVA_SAYISI;
+}
+
+let parcaCache = null;
+
+/** Map: anahtar ("head", "shelves", "b0".."b63") → { hash, json }. Sıra: head, shelves, kovalar. */
+function masterParcalari() {
+  if (parcaCache && parcaCache.surum === surum) return parcaCache.parcalar;
+  const g = masterGovde();
+  const kovalar = Array.from({ length: KOVA_SAYISI }, () => ({ products: [], locations: [], homes: [] }));
+  for (const p of g.products) kovalar[kova(p.id)].products.push(p);
+  for (const l of g.locations) kovalar[kova(l.productId)].locations.push(l);
+  for (const h of g.homes) kovalar[kova(h.productId)].homes.push(h);
+  const { products, locations, homes, shelves, ...head } = g;
+  const parcalar = new Map();
+  const ekle = (k, v) => {
+    const json = JSON.stringify(v);
+    parcalar.set(k, { hash: ozet(json), json });
+  };
+  ekle('head', head);
+  ekle('shelves', shelves);
+  kovalar.forEach((v, i) => ekle('b' + i, v));
+  parcaCache = { surum, parcalar };
+  return parcalar;
+}
+
+/**
+ * Terminalin bilmediği ya da değişmiş parçalar, en çok `en` tanesi. head ve shelves sınırdan sayılmaz.
+ * Dönen JSON metni: { buckets, parts: [{ key, hash, data }], remaining }.
+ */
+function masterParcaCevabi(bilinen = {}, en = 8) {
+  const parcalar = masterParcalari();
+  const giden = [];
+  let kalan = 0;
+  for (const [k, p] of parcalar) {
+    if (bilinen[k] === p.hash) continue;
+    if (k.startsWith('b') && giden.filter((x) => x.k.startsWith('b')).length >= en) {
+      kalan++;
+      continue;
+    }
+    giden.push({ k, p });
+  }
+  const govde = giden.map(({ k, p }) => `{"key":${JSON.stringify(k)},"hash":${JSON.stringify(p.hash)},"data":${p.json}}`).join(',');
+  return `{"buckets":${KOVA_SAYISI},"parts":[${govde}],"remaining":${kalan}}`;
 }
 
 // ---- Yönetici görünümleri -------------------------------------------------------------------
@@ -1103,6 +1182,8 @@ module.exports = {
   degisti,
   dinle,
   surum: () => surum,
+  masterParcaCevabi,
+  kova,
   vegaDurum,
   vegaYenile,
   vegaZamanla,

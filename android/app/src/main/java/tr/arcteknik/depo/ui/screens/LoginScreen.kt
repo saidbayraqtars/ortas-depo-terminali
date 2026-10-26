@@ -49,6 +49,7 @@ fun LoginScreen(vm: AppVm, version: Int) {
     var username by remember { mutableStateOf(vm.repo.prefs.lastUser) }
     var pin by remember { mutableStateOf("") }
     val busy by vm.sync.busy.collectAsState()
+    val progress by vm.sync.progress.collectAsState()
     val empty = remember(version) { vm.repo.db.isEmpty() }
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
@@ -88,7 +89,7 @@ fun LoginScreen(vm: AppVm, version: Int) {
         ) {
             if (empty) {
                 Notice(
-                    if (busy) "Veriler alınıyor…" else "Cihazda veri yok. Ayarlardan sunucu adresini girin ya da demo modunu açın.",
+                    if (busy) progress ?: "Veriler alınıyor…" else "Cihazda veri yok. Ayarlardan sunucu adresini girin ya da demo modunu açın.",
                     Tone.Info,
                 )
             }

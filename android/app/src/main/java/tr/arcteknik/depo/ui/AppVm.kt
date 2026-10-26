@@ -27,6 +27,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import tr.arcteknik.depo.App
 import tr.arcteknik.depo.data.User
+import tr.arcteknik.depo.diag.Diag
+import tr.arcteknik.depo.sync.UserActivity
 import tr.arcteknik.depo.ui.screens.CountDiffScreen
 import tr.arcteknik.depo.ui.screens.CountListScreen
 import tr.arcteknik.depo.ui.screens.CountScreen
@@ -78,27 +80,37 @@ class AppVm(app: Application) : AndroidViewModel(app) {
 
     fun go(r: Route) {
         stack += r
+        routed()
+    }
+
+    private fun routed() {
+        Diag.route = stack.joinToString(" › ")
+        Diag.crumb("ekran: ${stack.last()}")
     }
 
     /** Geçerli ekranı [r] ile değiştirir; "rafa kaldır → belge listesine dön" gibi akışlar için. */
     fun replace(r: Route) {
         stack[stack.lastIndex] = r
+        routed()
     }
 
     fun back() {
         if (stack.size > 1) stack.removeAt(stack.lastIndex)
+        routed()
     }
 
     fun login(u: User) {
         user = u
         stack.clear()
         stack += Route.Home
+        routed()
     }
 
     fun logout() {
         user = null
         stack.clear()
         stack += Route.Login
+        routed()
     }
 
     fun ok(text: String) = show(text, false).also { feedback.ok() }
@@ -106,6 +118,7 @@ class AppVm(app: Application) : AndroidViewModel(app) {
     fun error(text: String) = show(text, true).also { feedback.error() }
 
     private fun show(text: String, error: Boolean) {
+        Diag.crumb((if (error) "hata: " else "mesaj: ") + text)
         message = text to error
         messageJob?.cancel()
         messageJob = viewModelScope.launch {
@@ -117,6 +130,7 @@ class AppVm(app: Application) : AndroidViewModel(app) {
     /** İşlem kaydedildikten sonra çağrılır; ağ varsa hemen gönderilir. */
     fun saved(text: String) {
         ok(text)
+        UserActivity.touch()
         sync.trigger()
     }
 

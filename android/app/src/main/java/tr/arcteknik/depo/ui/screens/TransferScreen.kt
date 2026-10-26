@@ -17,6 +17,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -126,7 +127,7 @@ private fun StepRow(n: Int, label: String, value: String?, current: Int, mono: B
                 if (sub != null) MonoText(sub, size = 12, weight = FontWeight.Medium, color = C.Muted)
             }
             if (current > n) {
-                Text("Değiştir", color = C.Info, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.clickable(onClick = onEdit).padding(8.dp))
+                Text("Değiştir", color = C.Info, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.focusProperties { canFocus = false }.clickable(onClick = onEdit).padding(8.dp))
             }
         }
     }

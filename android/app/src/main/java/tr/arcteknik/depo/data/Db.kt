@@ -19,7 +19,7 @@ import java.io.Reader
  * Çok depo: raf, raf stoku, Vega stoku ve asıl raf depoya bağlıdır. [depot] terminalin çalıştığı depodur
  * (transfer, sayım, sorgu); mal kabul belgesi kendi deposunu taşır ve rafa kaldırma orada olur.
  */
-class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
+class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 5) {
 
     init {
         // Eşitleme ana veriyi yazarken ekranlar (ana iş parçacığı) beklemeden son kaydedilmiş hali okusun.
@@ -38,21 +38,30 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
         db.execSQL("CREATE TABLE movement(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, product_id TEXT NOT NULL, text TEXT NOT NULL, qty REAL NOT NULL)")
         db.execSQL("CREATE INDEX ix_movement_product ON movement(product_id, ts)")
         db.execSQL("CREATE TABLE app_user(username TEXT PRIMARY KEY, name TEXT NOT NULL, pin_hash TEXT NOT NULL, salt TEXT NOT NULL)")
+        createParts(db)
+    }
+
+    /** Sunucudan alınmış ana veri parçalarının özeti (bkz. [applyParts]). */
+    private fun createParts(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS master_part(key TEXT PRIMARY KEY, hash TEXT NOT NULL)")
     }
 
     /** Sunucudan tümüyle yeniden gelen tablolar. */
     private fun createMaster(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE product(id TEXT PRIMARY KEY, code TEXT NOT NULL, name TEXT NOT NULL, unit TEXT NOT NULL, vega_stock REAL NOT NULL DEFAULT 0)")
+        db.execSQL("CREATE TABLE product(id TEXT PRIMARY KEY, code TEXT NOT NULL, name TEXT NOT NULL, unit TEXT NOT NULL, vega_stock REAL NOT NULL DEFAULT 0, bucket INTEGER NOT NULL DEFAULT 0)")
         db.execSQL("CREATE INDEX ix_product_code ON product(code)")
+        db.execSQL("CREATE INDEX ix_product_bucket ON product(bucket)")
         db.execSQL("CREATE TABLE product_stock(product_id TEXT NOT NULL, depot INTEGER NOT NULL, qty REAL NOT NULL, PRIMARY KEY(product_id, depot))")
         db.execSQL("CREATE TABLE barcode(code TEXT PRIMARY KEY, product_id TEXT NOT NULL)")
         db.execSQL("CREATE INDEX ix_barcode_product ON barcode(product_id)")
         db.execSQL("CREATE TABLE depot(id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
         db.execSQL("CREATE TABLE shelf(depot INTEGER NOT NULL, code TEXT NOT NULL, zone TEXT NOT NULL DEFAULT '', PRIMARY KEY(depot, code))")
-        db.execSQL("CREATE TABLE location(depot INTEGER NOT NULL, product_id TEXT NOT NULL, shelf TEXT NOT NULL, qty REAL NOT NULL, PRIMARY KEY(depot, product_id, shelf))")
+        db.execSQL("CREATE TABLE location(depot INTEGER NOT NULL, product_id TEXT NOT NULL, shelf TEXT NOT NULL, qty REAL NOT NULL, bucket INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(depot, product_id, shelf))")
         db.execSQL("CREATE INDEX ix_location_shelf ON location(depot, shelf)")
-        db.execSQL("CREATE TABLE home(depot INTEGER NOT NULL, product_id TEXT NOT NULL, shelf TEXT NOT NULL, PRIMARY KEY(depot, product_id, shelf))")
+        db.execSQL("CREATE INDEX ix_location_bucket ON location(bucket)")
+        db.execSQL("CREATE TABLE home(depot INTEGER NOT NULL, product_id TEXT NOT NULL, shelf TEXT NOT NULL, bucket INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(depot, product_id, shelf))")
         db.execSQL("CREATE INDEX ix_home_shelf ON home(depot, shelf)")
+        db.execSQL("CREATE INDEX ix_home_bucket ON home(bucket)")
         db.execSQL("CREATE TABLE receipt(id TEXT PRIMARY KEY, doc_no TEXT NOT NULL, supplier TEXT NOT NULL, date TEXT NOT NULL, depot INTEGER NOT NULL DEFAULT 0, depot_name TEXT NOT NULL DEFAULT '')")
         db.execSQL("CREATE TABLE receipt_line(id TEXT PRIMARY KEY, receipt_id TEXT NOT NULL, product_id TEXT NOT NULL, accepted REAL NOT NULL, shelved REAL NOT NULL)")
         db.execSQL("CREATE INDEX ix_receipt_line ON receipt_line(receipt_id)")
@@ -65,9 +74,12 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
         if (oldVersion < 3) db.execSQL("ALTER TABLE count_session ADD COLUMN depot INTEGER NOT NULL DEFAULT 0")
         // 3 çok depo, 4 ürün birden çok rafa zimmetli. Ana veri tabloları boşalır, sunucudan yeniden gelir
         // (boş ürün tablosu tam liste ister); kuyruk ve süren sayım korunur.
-        if (oldVersion < 4) {
+        // 5: ana veri kovalara bölünmüş gelir (ürün, konum ve zimmette kova sütunu).
+        if (oldVersion < 5) {
             for (t in listOf("product", "product_stock", "barcode", "depot", "shelf", "location", "home", "receipt", "receipt_line")) db.execSQL("DROP TABLE IF EXISTS $t")
             createMaster(db)
+            createParts(db)
+            db.execSQL("DELETE FROM master_part")
         }
     }
 
@@ -92,12 +104,13 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
             for (t in listOf("product", "product_stock", "barcode", "depot", "shelf", "location", "home", "receipt", "receipt_line", "app_user")) {
                 db.delete(t, null, null)
             }
-            val insProduct = db.compileStatement("INSERT OR REPLACE INTO product(id, code, name, unit, vega_stock) VALUES(?,?,?,?,?)")
+            db.delete("master_part", null, null)
+            val insProduct = db.compileStatement("INSERT OR REPLACE INTO product(id, code, name, unit, vega_stock, bucket) VALUES(?,?,?,?,?,?)")
             val insStock = db.compileStatement("INSERT OR REPLACE INTO product_stock(product_id, depot, qty) VALUES(?,?,?)")
             val insBarcode = db.compileStatement("INSERT OR REPLACE INTO barcode(code, product_id) VALUES(?,?)")
             val insShelf = db.compileStatement("INSERT OR REPLACE INTO shelf(depot, code, zone) VALUES(?,?,?)")
-            val insLocation = db.compileStatement("INSERT OR REPLACE INTO location(depot, product_id, shelf, qty) VALUES(?,?,?,?)")
-            val insHome = db.compileStatement("INSERT OR REPLACE INTO home(depot, product_id, shelf) VALUES(?,?,?)")
+            val insLocation = db.compileStatement("INSERT OR REPLACE INTO location(depot, product_id, shelf, qty, bucket) VALUES(?,?,?,?,?)")
+            val insHome = db.compileStatement("INSERT OR REPLACE INTO home(depot, product_id, shelf, bucket) VALUES(?,?,?,?)")
             // Eski sunucu depo bilgisi göndermez; o zaman her şey tek "0" deposunda durur. Sunucu bunu ürünlerden önce yazar.
             fun defaultDepot() = head.optInt("defaultDepot", 0)
             var n = 0
@@ -110,7 +123,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
                     when (val key = r.nextName()) {
                         "products" -> r.eachObject { p ->
                             val id = p.getString("id")
-                            insProduct.exec(id, p.getString("code"), p.getString("name"), p.optString("unit", "Adet"), p.optDouble("vegaStock", 0.0))
+                            insProduct.exec(id, p.getString("code"), p.getString("name"), p.optString("unit", "Adet"), p.optDouble("vegaStock", 0.0), Buckets.of(id))
                             val stocks = p.optJSONObject("stocks")
                             if (stocks != null) {
                                 for (k in stocks.keys()) insStock.exec(id, k.toIntOrNull() ?: 0, stocks.optDouble(k, 0.0))
@@ -126,11 +139,11 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
                             yieldSometimes()
                         }
                         "locations" -> r.eachObject { l ->
-                            insLocation.exec(l.optInt("depot", defaultDepot()), l.getString("productId"), l.getString("shelf").uppercase(), l.getDouble("qty"))
+                            insLocation.exec(l.optInt("depot", defaultDepot()), l.getString("productId"), l.getString("shelf").uppercase(), l.getDouble("qty"), Buckets.of(l.getString("productId")))
                             yieldSometimes()
                         }
                         "homes" -> r.eachObject { h ->
-                            insHome.exec(h.optInt("depot", defaultDepot()), h.getString("productId"), h.getString("shelf").uppercase())
+                            insHome.exec(h.optInt("depot", defaultDepot()), h.getString("productId"), h.getString("shelf").uppercase(), Buckets.of(h.getString("productId")))
                             yieldSometimes()
                         }
                         else -> head.put(key, r.readValue())
@@ -138,69 +151,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
                 }
                 r.endObject()
             }
-            val depots = head.optJSONArray("depots")
-            for (i in 0 until (depots?.length() ?: 0)) {
-                val d = depots!!.getJSONObject(i)
-                db.insertWithOnConflict("depot", null, ContentValues().apply {
-                    put("id", d.getInt("id")); put("name", d.optString("name", d.getInt("id").toString()))
-                }, SQLiteDatabase.CONFLICT_REPLACE)
-            }
-            val receipts = head.optJSONArray("receipts")
-            for (i in 0 until (receipts?.length() ?: 0)) {
-                val r = receipts!!.getJSONObject(i)
-                db.insert("receipt", null, ContentValues().apply {
-                    put("id", r.getString("id"))
-                    put("doc_no", r.getString("docNo"))
-                    put("supplier", r.optString("supplier", ""))
-                    put("date", r.optString("date", ""))
-                    put("depot", r.optInt("depot", defaultDepot()))
-                    put("depot_name", r.optString("depotName", ""))
-                })
-                val lines = r.optJSONArray("lines")
-                for (j in 0 until (lines?.length() ?: 0)) {
-                    val l = lines!!.getJSONObject(j)
-                    db.insert("receipt_line", null, ContentValues().apply {
-                        put("id", l.getString("id"))
-                        put("receipt_id", r.getString("id"))
-                        put("product_id", l.getString("productId"))
-                        put("accepted", l.getDouble("accepted"))
-                        put("shelved", l.optDouble("shelved", 0.0))
-                    })
-                }
-            }
-            // Sayım oturumları: sunucudan gelenler eklenir/güncellenir, cihazda sürenlerin satırları korunur.
-            val counts = head.optJSONArray("counts")
-            val serverIds = mutableSetOf<String>()
-            for (i in 0 until (counts?.length() ?: 0)) {
-                val c = counts!!.getJSONObject(i)
-                serverIds += c.getString("id")
-                val status = scalar("SELECT status FROM count_session WHERE id=?", c.getString("id")) ?: "OPEN"
-                db.insertWithOnConflict("count_session", null, ContentValues().apply {
-                    put("id", c.getString("id"))
-                    put("no", c.getString("no"))
-                    put("title", c.optString("title", ""))
-                    put("blind", if (c.optBoolean("blind", true)) 1 else 0)
-                    put("status", status)
-                    put("depot", c.optInt("depot", defaultDepot()))
-                }, SQLiteDatabase.CONFLICT_REPLACE)
-            }
-            // Sunucuda artık açık olmayan ve cihazda gönderilmiş oturumları temizle.
-            query("SELECT id FROM count_session WHERE status='SUBMITTED'") { it.getString(0) }
-                .filter { it !in serverIds }
-                .forEach { id ->
-                    db.delete("count_line", "session_id=?", arrayOf(id))
-                    db.delete("count_session", "id=?", arrayOf(id))
-                }
-            val users = head.optJSONArray("users")
-            for (i in 0 until (users?.length() ?: 0)) {
-                val u = users!!.getJSONObject(i)
-                db.insert("app_user", null, ContentValues().apply {
-                    put("username", u.getString("username").lowercase())
-                    put("name", u.optString("name", u.getString("username")))
-                    put("pin_hash", u.getString("pinHash"))
-                    put("salt", u.getString("salt"))
-                })
-            }
+            applyHead(db, head)
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
@@ -208,6 +159,186 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
         // Eşitleme sürerken yapılan isimle arama eski ürün listesinden dizin kurmuş olabilir.
         searchIndex = null
         return head
+    }
+
+    /** Elimizdeki ana veri parçalarının özetleri; sunucu yalnız farklı olanları gönderir. */
+    fun masterParts(): Map<String, String> =
+        query("SELECT key, hash FROM master_part") { it.getString(0) to it.getString(1) }.toMap()
+
+    /** Sonraki eşitlemede bütün parçalar yeniden istensin (sunucu bir işlemi reddettiğinde). */
+    fun clearMasterParts() {
+        writableDatabase.delete("master_part", null, null)
+    }
+
+    /** [applyParts] sonucu: sunucuda kalan değişmiş kova sayısı ve geldiyse "head" (depo, belge, uygulama sürümü). */
+    class PartsResult(val remaining: Int, val head: JSONObject?, val parts: Int)
+
+    /**
+     * Sunucunun `/api/master/parts` cevabını akıştan okur. Her parça (head, raflar, bir kova) kendi kısa işlemiyle
+     * yazılır: kullanıcı kayıt yaparsa en çok bir kovanın (~2 bin ürün) yazılmasını bekler, ekran donmaz;
+     * bağlantı yarıda koparsa yazılan kovalar kalır, sonraki tur kaldığı yerden devam eder.
+     */
+    fun applyParts(input: Reader): PartsResult {
+        var remaining = 0
+        var head: JSONObject? = null
+        var parts = 0
+        val db = writableDatabase
+        JsonReader(input).use { r ->
+            r.beginObject()
+            while (r.hasNext()) {
+                when (r.nextName()) {
+                    "buckets" -> r.nextInt().let { if (it != Buckets.COUNT) throw java.io.IOException("Sunucunun kova sayısı farklı ($it)") }
+                    "remaining" -> remaining = r.nextInt()
+                    "parts" -> {
+                        r.beginArray()
+                        while (r.hasNext()) {
+                            r.beginObject()
+                            var key = ""
+                            var hash = ""
+                            while (r.hasNext()) {
+                                when (r.nextName()) {
+                                    "key" -> key = r.nextString()
+                                    "hash" -> hash = r.nextString()
+                                    "data" -> {
+                                        db.beginTransaction()
+                                        try {
+                                            when {
+                                                key == "head" -> (r.readValue() as JSONObject).also { applyHead(db, it); head = it }
+                                                key == "shelves" -> writeShelves(db, r)
+                                                key.startsWith("b") -> writeBucket(db, key.substring(1).toInt(), r)
+                                                else -> r.skipValue()
+                                            }
+                                            db.insertWithOnConflict("master_part", null, ContentValues().apply {
+                                                put("key", key); put("hash", hash)
+                                            }, SQLiteDatabase.CONFLICT_REPLACE)
+                                            db.setTransactionSuccessful()
+                                        } finally {
+                                            db.endTransaction()
+                                        }
+                                        parts++
+                                    }
+                                    else -> r.skipValue()
+                                }
+                            }
+                            r.endObject()
+                        }
+                        r.endArray()
+                    }
+                    else -> r.skipValue()
+                }
+            }
+            r.endObject()
+        }
+        if (parts > 0) searchIndex = null
+        return PartsResult(remaining, head, parts)
+    }
+
+    private fun writeShelves(db: SQLiteDatabase, r: JsonReader) {
+        db.delete("shelf", null, null)
+        val ins = db.compileStatement("INSERT OR REPLACE INTO shelf(depot, code, zone) VALUES(?,?,?)")
+        r.eachObject { s -> ins.exec(s.optInt("depot", 0), s.getString("code").uppercase(), s.optString("zone", "")) }
+    }
+
+    private fun writeBucket(db: SQLiteDatabase, b: Int, r: JsonReader) {
+        val arg = arrayOf(b.toString())
+        db.execSQL("DELETE FROM product_stock WHERE product_id IN (SELECT id FROM product WHERE bucket=?)", arg)
+        db.execSQL("DELETE FROM barcode WHERE product_id IN (SELECT id FROM product WHERE bucket=?)", arg)
+        for (t in listOf("product", "location", "home")) db.delete(t, "bucket=?", arg)
+        val insProduct = db.compileStatement("INSERT OR REPLACE INTO product(id, code, name, unit, vega_stock, bucket) VALUES(?,?,?,?,?,?)")
+        val insStock = db.compileStatement("INSERT OR REPLACE INTO product_stock(product_id, depot, qty) VALUES(?,?,?)")
+        val insBarcode = db.compileStatement("INSERT OR REPLACE INTO barcode(code, product_id) VALUES(?,?)")
+        val insLocation = db.compileStatement("INSERT OR REPLACE INTO location(depot, product_id, shelf, qty, bucket) VALUES(?,?,?,?,?)")
+        val insHome = db.compileStatement("INSERT OR REPLACE INTO home(depot, product_id, shelf, bucket) VALUES(?,?,?,?)")
+        r.beginObject()
+        while (r.hasNext()) {
+            when (r.nextName()) {
+                "products" -> r.eachObject { p ->
+                    val id = p.getString("id")
+                    insProduct.exec(id, p.getString("code"), p.getString("name"), p.optString("unit", "Adet"), p.optDouble("vegaStock", 0.0), b)
+                    val stocks = p.optJSONObject("stocks")
+                    if (stocks != null) for (k in stocks.keys()) insStock.exec(id, k.toIntOrNull() ?: 0, stocks.optDouble(k, 0.0))
+                    val bcs = p.optJSONArray("barcodes")
+                    for (j in 0 until (bcs?.length() ?: 0)) insBarcode.exec(bcs!!.getString(j), id)
+                }
+                "locations" -> r.eachObject { l ->
+                    insLocation.exec(l.optInt("depot", 0), l.getString("productId"), l.getString("shelf").uppercase(), l.getDouble("qty"), b)
+                }
+                "homes" -> r.eachObject { h ->
+                    insHome.exec(h.optInt("depot", 0), h.getString("productId"), h.getString("shelf").uppercase(), b)
+                }
+                else -> r.skipValue()
+            }
+        }
+        r.endObject()
+    }
+
+    /** Depolar, açık belgeler, sayım oturumları ve kullanıcılar. Çağıran işlemin içinde. */
+    private fun applyHead(db: SQLiteDatabase, head: JSONObject) {
+        val dd = head.optInt("defaultDepot", 0)
+        for (t in listOf("depot", "receipt", "receipt_line", "app_user")) db.delete(t, null, null)
+        val depots = head.optJSONArray("depots")
+        for (i in 0 until (depots?.length() ?: 0)) {
+            val d = depots!!.getJSONObject(i)
+            db.insertWithOnConflict("depot", null, ContentValues().apply {
+                put("id", d.getInt("id")); put("name", d.optString("name", d.getInt("id").toString()))
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+        }
+        val receipts = head.optJSONArray("receipts")
+        for (i in 0 until (receipts?.length() ?: 0)) {
+            val r = receipts!!.getJSONObject(i)
+            db.insert("receipt", null, ContentValues().apply {
+                put("id", r.getString("id"))
+                put("doc_no", r.getString("docNo"))
+                put("supplier", r.optString("supplier", ""))
+                put("date", r.optString("date", ""))
+                put("depot", r.optInt("depot", dd))
+                put("depot_name", r.optString("depotName", ""))
+            })
+            val lines = r.optJSONArray("lines")
+            for (j in 0 until (lines?.length() ?: 0)) {
+                val l = lines!!.getJSONObject(j)
+                db.insert("receipt_line", null, ContentValues().apply {
+                    put("id", l.getString("id"))
+                    put("receipt_id", r.getString("id"))
+                    put("product_id", l.getString("productId"))
+                    put("accepted", l.getDouble("accepted"))
+                    put("shelved", l.optDouble("shelved", 0.0))
+                })
+            }
+        }
+        // Sayım oturumları: sunucudan gelenler eklenir/güncellenir, cihazda sürenlerin satırları korunur.
+        val counts = head.optJSONArray("counts")
+        val serverIds = mutableSetOf<String>()
+        for (i in 0 until (counts?.length() ?: 0)) {
+            val c = counts!!.getJSONObject(i)
+            serverIds += c.getString("id")
+            val status = scalar("SELECT status FROM count_session WHERE id=?", c.getString("id")) ?: "OPEN"
+            db.insertWithOnConflict("count_session", null, ContentValues().apply {
+                put("id", c.getString("id"))
+                put("no", c.getString("no"))
+                put("title", c.optString("title", ""))
+                put("blind", if (c.optBoolean("blind", true)) 1 else 0)
+                put("status", status)
+                put("depot", c.optInt("depot", dd))
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+        }
+        // Sunucuda artık açık olmayan ve cihazda gönderilmiş oturumları temizle.
+        query("SELECT id FROM count_session WHERE status='SUBMITTED'") { it.getString(0) }
+            .filter { it !in serverIds }
+            .forEach { id ->
+                db.delete("count_line", "session_id=?", arrayOf(id))
+                db.delete("count_session", "id=?", arrayOf(id))
+            }
+        val users = head.optJSONArray("users")
+        for (i in 0 until (users?.length() ?: 0)) {
+            val u = users!!.getJSONObject(i)
+            db.insert("app_user", null, ContentValues().apply {
+                put("username", u.getString("username").lowercase())
+                put("name", u.optString("name", u.getString("username")))
+                put("pin_hash", u.getString("pinHash"))
+                put("salt", u.getString("salt"))
+            })
+        }
     }
 
     private fun SQLiteStatement.exec(vararg args: Any) {
@@ -407,7 +538,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
             db.delete("location", "depot=? AND product_id=? AND shelf=?", arrayOf(d.toString(), productId, shelf))
         } else {
             db.insertWithOnConflict("location", null, ContentValues().apply {
-                put("depot", d); put("product_id", productId); put("shelf", shelf); put("qty", qty)
+                put("depot", d); put("product_id", productId); put("shelf", shelf); put("qty", qty); put("bucket", Buckets.of(productId))
             }, SQLiteDatabase.CONFLICT_REPLACE)
         }
     }
@@ -446,7 +577,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 4) {
     fun clearAll() {
         searchIndex = null
         val db = writableDatabase
-        for (t in listOf("product", "product_stock", "barcode", "depot", "shelf", "location", "home", "receipt", "receipt_line", "count_session", "count_line", "op", "movement", "app_user")) {
+        for (t in listOf("product", "product_stock", "barcode", "depot", "shelf", "location", "home", "receipt", "receipt_line", "count_session", "count_line", "op", "movement", "app_user", "master_part")) {
             db.delete(t, null, null)
         }
     }

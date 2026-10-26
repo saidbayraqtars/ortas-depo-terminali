@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import androidx.compose.ui.platform.LocalContext
 import tr.arcteknik.depo.BuildConfig
+import tr.arcteknik.depo.diag.Diag
 import tr.arcteknik.depo.ui.AppVm
 import tr.arcteknik.depo.ui.Notice
 import tr.arcteknik.depo.ui.ScanField
@@ -121,6 +122,11 @@ fun SettingsScreen(vm: AppVm, online: Boolean) {
                 Notice("Sunucuda yeni uygulama sürümü var: ${p.updateName} (bu cihaz ${BuildConfig.VERSION_NAME}).", Tone.Info)
                 PrimaryButton("Yeni sürümü indir", { openUrl(context, link) })
             }
+            // Sorun yaşanınca destek için: son olaylar ve sistem günlüğü yönetici programına ve destek sunucusuna gider.
+            SecondaryButton("Tanı raporu gönder", {
+                Diag.manual("Ayarlar'dan elle gönderildi")
+                vm.ok("Tanı raporu gönderiliyor")
+            })
             SecondaryButton("Cihaz verisini sıfırla", { confirmReset = true }, icon = Ic.Refresh)
         }
     }

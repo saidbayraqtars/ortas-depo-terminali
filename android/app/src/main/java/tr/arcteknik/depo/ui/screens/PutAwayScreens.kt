@@ -23,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -198,7 +199,7 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
                             MonoText(shelf!!, size = 20)
                             Text(if (shelf == suggested) (if (db.qtyAt(line.product.id, shelf!!, rd) > 0) "Önerilen raf · ürün zaten burada" else "Önerilen raf · ürünün asıl rafı") else "Okutulan raf", fontSize = 12.sp, color = C.OkText)
                         }
-                        Text("Değiştir", color = C.Info, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.clickable { shelf = null }.padding(8.dp))
+                        Text("Değiştir", color = C.Info, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.focusProperties { canFocus = false }.clickable { shelf = null }.padding(8.dp))
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -217,7 +218,7 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
                 Caption("Sıradaki kalemler (${rest.size})")
                 LazyColumn {
                     items(rest, key = { it.id }) { l ->
-                        Column(Modifier.clickable { pick(l) }) {
+                        Column(Modifier.focusProperties { canFocus = false }.clickable { pick(l) }) {
                             Divider()
                             Row(Modifier.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text(l.product.name, Modifier.weight(1f), fontSize = 14.sp)

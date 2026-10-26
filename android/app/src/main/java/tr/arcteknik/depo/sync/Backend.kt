@@ -27,6 +27,13 @@ interface Backend {
      */
     fun master(etag: String?, read: (Reader, String?) -> Unit): Boolean
 
+    /**
+     * Ana verinin yalnız değişen parçaları (1.3.0+ sunucu, `POST /api/master/parts`): [known] elimizdeki parça
+     * özetleri, [max] bir istekte en çok kaç kova. Cevap [read]'e akış olarak verilir. Sunucu bunu bilmiyorsa
+     * (eski yönetici programı) false döner; o zaman [master] kullanılır.
+     */
+    fun masterParts(known: Map<String, String>, max: Int, read: (Reader) -> Unit): Boolean
+
     fun pushOps(ops: List<Op>, user: String): List<OpResult>
 
     /**
@@ -57,6 +64,8 @@ class DemoBackend(private val context: Context, private val online: () -> Boolea
         return true
     }
 
+    override fun masterParts(known: Map<String, String>, max: Int, read: (Reader) -> Unit) = false
+
     override fun pushOps(ops: List<Op>, user: String): List<OpResult> {
         if (!online()) throw IOException("Ağ yok")
         return ops.map { OpResult(it.id, true, null) }
@@ -85,6 +94,18 @@ class HttpBackend(private val baseUrl: String, private val deviceKey: String, pr
             if (r.code == 304) return false
             if (!r.isSuccessful) throw IOException(errorText(r.code, r.body?.string()))
             read(r.body!!.charStream(), r.header("ETag"))
+            return true
+        }
+    }
+
+    override fun masterParts(known: Map<String, String>, max: Int, read: (Reader) -> Unit): Boolean {
+        val k = JSONObject()
+        known.forEach { (key, hash) -> k.put(key, hash) }
+        val body = JSONObject().put("known", k).put("max", max).toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+        client.newCall(request("/api/master/parts").post(body).build()).execute().use { r ->
+            if (r.code == 404) return false
+            if (!r.isSuccessful) throw IOException(errorText(r.code, r.body?.string()))
+            read(r.body!!.charStream())
             return true
         }
     }

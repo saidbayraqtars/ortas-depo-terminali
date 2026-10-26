@@ -258,8 +258,8 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', pencereAc);
-  process.on('uncaughtException', (e) => console.error('Yakalanmamış hata:', e));
-  process.on('unhandledRejection', (e) => console.error('Yakalanmamış söz hatası:', e));
+  process.on('uncaughtException', (e) => require('../server/log').hata('Yakalanmamış hata', e));
+  process.on('unhandledRejection', (e) => require('../server/log').hata('Yakalanmamış söz hatası', e));
   app.whenReady().then(baslat);
   // Pencere kapanınca çıkılmaz; tepsiden "Çıkış" ile kapanır.
   app.on('window-all-closed', () => {});

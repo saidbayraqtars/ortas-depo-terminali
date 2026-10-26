@@ -67,6 +67,8 @@ import kotlinx.coroutines.delay
 import tr.arcteknik.depo.data.Repo
 import tr.arcteknik.depo.scan.CameraScanner
 import tr.arcteknik.depo.scan.ScanBus
+import tr.arcteknik.depo.diag.Diag
+import tr.arcteknik.depo.sync.UserActivity
 
 // ---- Ekran iskeleti ------------------------------------------------------------------------
 
@@ -105,7 +107,9 @@ fun TopBar(title: String, sub: String?, online: Boolean, onBack: (() -> Unit)?, 
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (onBack != null) {
-            IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
+            // Odak almaz: okutma alanı ekrandan kalkınca odak buraya geçiyordu ve klavye modundaki okuyucunun
+            // sonraki Enter'ı geri tuşuna basıp ekranı kapatıyordu.
+            IconButton(onClick = onBack, modifier = Modifier.size(48.dp).focusProperties { canFocus = false }) {
                 Icon(Ic.Back, contentDescription = "Geri", tint = Color.White, modifier = Modifier.size(22.dp))
             }
         }
@@ -270,7 +274,10 @@ fun ScanField(
     fun submit(v: String) {
         val c = v.trim()
         text = ""
-        if (c.isNotEmpty()) handler(c)
+        if (c.isEmpty()) return
+        UserActivity.touch()
+        Diag.crumb("okutma ($title): $c")
+        handler(c)
     }
 
     if (active) {

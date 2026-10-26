@@ -12,6 +12,8 @@ import android.os.Vibrator
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import tr.arcteknik.depo.diag.Diag
+import tr.arcteknik.depo.sync.UserActivity
 
 /**
  * El terminallerinden gelen okumalar iki yoldan gelir:
@@ -25,7 +27,10 @@ object ScanBus {
 
     fun emit(code: String) {
         val c = code.trim()
-        if (c.isNotEmpty()) _scans.tryEmit(c)
+        if (c.isEmpty()) return
+        UserActivity.touch()
+        Diag.crumb("okutma (yayın): $c")
+        if (!_scans.tryEmit(c)) Diag.crumb("okutma kuyruğu dolu, atlandı")
     }
 
     /** Bilinen terminal markalarının yayın eylemleri. */
@@ -69,16 +74,37 @@ object ScanBus {
     }
 }
 
-/** Okuma sonrası ses ve titreşim: başarıda kısa bip, hatada uzun bip ve titreşim. */
+/**
+ * Okuma sonrası ses ve titreşim: başarıda kısa bip, hatada uzun bip ve titreşim.
+ * Ana iş parçacığında çalınmaz: `ToneGenerator.startTone` yerelde ses kanalının açılmasını 3 sn'ye kadar
+ * bekleyebiliyor; terminalin kendi okuyucu bip'iyle çakışınca art arda okutmalarda ekran donup Android
+ * "yanıt vermiyor" diyordu (Movfast, 2026-10-26). Sesler sıraya girer; birikirse eskiler atlanır.
+ */
 class Feedback(context: Context) {
-    private val tone = runCatching { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 90) }.getOrNull()
     private val vibrator = context.getSystemService(Vibrator::class.java)
+    private val thread = android.os.HandlerThread("ses").apply { start() }
+    private val handler = android.os.Handler(thread.looper)
+    private var tone: ToneGenerator? = null
 
-    fun ok() {
+    init {
+        handler.post { tone = runCatching { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 90) }.getOrNull() }
+    }
+
+    private fun play(f: () -> Unit) {
+        handler.removeCallbacksAndMessages(null)
+        handler.post {
+            val t0 = System.currentTimeMillis()
+            runCatching(f)
+            val ms = System.currentTimeMillis() - t0
+            if (ms > 500) Diag.crumb("ses ${ms} ms sürdü")
+        }
+    }
+
+    fun ok() = play {
         tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 80)
     }
 
-    fun error() {
+    fun error() = play {
         tone?.startTone(ToneGenerator.TONE_SUP_ERROR, 300)
         if (Build.VERSION.SDK_INT >= 26) vibrator?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 120, 80, 120), -1))
     }
