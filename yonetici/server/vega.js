@@ -28,7 +28,7 @@ function baglantiAyari(v) {
     password: v.password || '',
     options: { encrypt: false, trustServerCertificate: true, enableArithAbort: true, instanceName, useUTC: false },
     connectionTimeout: 15000,
-    requestTimeout: 120000,
+    requestTimeout: 240000, // Ortaş'ın ~40 GB veritabanında soğuk ilk sorgu uzun sürebilir
     pool: { max: 6, min: 0, idleTimeoutMillis: 60000 },
   };
   if (v.port && !instanceName) out.port = Number(v.port);
@@ -159,7 +159,20 @@ async function kullanilanDepolar(v) {
  */
 async function goruntu(cfg) {
   const v = cfg.vega;
-  const { p, donem, F, FD } = await baglam(v);
+  // Her sorgunun süresi kaydedilir; zaman aşımında hangi sorgunun takıldığı hata metninde görünür.
+  const sureler = {};
+  const olc = async (ad, f) => {
+    const t0 = Date.now();
+    try {
+      return await f();
+    } catch (e) {
+      e.message = `Vega sorgusu "${ad}" (${Math.round((Date.now() - t0) / 1000)} sn): ${e.message}`;
+      throw e;
+    } finally {
+      sureler[ad] = Date.now() - t0;
+    }
+  };
+  const { p, donem, F, FD } = await olc('bağlantı', () => baglam(v));
   const depoListe = await kullanilanDepolar(v);
   const depoIn = depoListe.map((d) => Number(d.ind)).filter(Number.isInteger).join(',') || '0';
   const stokKol = await kolonlar(p, `${F}TBLSTOKLAR`);
@@ -172,25 +185,25 @@ async function goruntu(cfg) {
   // Raf adresi stok kartının bir özel kod alanında (Ortaş: KOD14 "SERBEST"); alan adı ayardan, tabloda varsa okunur.
   const rafAlan = String(cfg.rafAdresi?.alan || '').toUpperCase();
   const rafKol = rafAlan && stokKol.has(rafAlan) ? `, LTRIM(RTRIM(ISNULL(CAST(S.[${rafAlan}] AS nvarchar(400)),''))) AS RAFADRES` : '';
-  const kartlar = await p.request().query(`
+  const kartlar = await olc('kartlar', () => p.request().query(`
     SELECT S.IND, ISNULL(S.STOKKODU,'') AS KOD, ISNULL(S.MALINCINSI,'') AS AD, ISNULL(B.BIRIMADI,'') AS BIRIM${rafKol}
     FROM [${F}TBLSTOKLAR] S
     OUTER APPLY (SELECT TOP 1 BIRIMADI FROM [${F}TBLBIRIMLEREX] X WHERE X.STOKNO=S.IND ORDER BY X.VARSAYILAN DESC, X.ANABIRIM DESC, X.IND) B
-    WHERE ${sart.join(' AND ')}`);
+    WHERE ${sart.join(' AND ')}`));
 
-  const stok = await p.request().query(`
+  const stok = await olc('stok', () => p.request().query(`
     SELECT DEPO, STOKNO, SUM(ENVANTER) AS KALAN FROM [${FD}TBLDEPOENVANTER]
-    WHERE DEPO IN (${depoIn}) AND ISNULL(BELGETIPI,0)<>67 GROUP BY DEPO, STOKNO HAVING ABS(SUM(ENVANTER)) > 0.00001`);
+    WHERE DEPO IN (${depoIn}) AND ISNULL(BELGETIPI,0)<>67 GROUP BY DEPO, STOKNO HAVING ABS(SUM(ENVANTER)) > 0.00001`));
 
   const gun = Math.max(1, Number(cfg.urun.gun) || 365);
-  const hareket = await p.request().input('gun', sql.Int, gun).query(`
+  const hareket = await olc('hareket', () => p.request().input('gun', sql.Int, gun).query(`
     SELECT DISTINCT STOKNO FROM [${FD}TBLSTOKHAREKETLERI]
-    WHERE DEPO IN (${depoIn}) AND TARIH >= DATEADD(day, -@gun, CAST(GETDATE() AS date))`);
+    WHERE DEPO IN (${depoIn}) AND TARIH >= DATEADD(day, -@gun, CAST(GETDATE() AS date))`));
 
   // Barkod TBLBIRIMLEREX'te (Kılavuz §8). Çarpanlı birim (koli) barkodu terminalde 1 adet sayılırdı; alınmaz.
-  const barkod = await p.request().query(`
+  const barkod = await olc('barkod', () => p.request().query(`
     SELECT STOKNO, LTRIM(RTRIM(BARCODE)) AS BARKOD FROM [${F}TBLBIRIMLEREX]
-    WHERE LTRIM(RTRIM(ISNULL(BARCODE,''))) <> '' AND ABS(ISNULL(CARPAN,1) - 1) < 0.00001`);
+    WHERE LTRIM(RTRIM(ISNULL(BARCODE,''))) <> '' AND ABS(ISNULL(CARPAN,1) - 1) < 0.00001`));
 
   const izahat = (cfg.kabul.izahat || ['20', '26']).map(String).filter((x) => /^\d+$/.test(x));
   const cariKol = await kolonlar(p, `${F}TBLCARI`);
@@ -199,14 +212,14 @@ async function goruntu(cfg) {
     : cariKol.has('UNVAN') ? "ISNULL(C.UNVAN,'')" : "''";
   // Belge depo bazlı: bir belgenin satırları hangi depoya girdiyse o depoda rafa kaldırılır.
   const kabul = izahat.length
-    ? await p.request().input('bas', sql.DateTime, new Date(`${cfg.kabul.baslangic || '2000-01-01'}T00:00:00`)).query(`
+    ? await olc('kabul', () => p.request().input('bas', sql.DateTime, new Date(`${cfg.kabul.baslangic || '2000-01-01'}T00:00:00`)).query(`
       SELECT H.IZAHAT, H.BELGENO, H.DEPO, MAX(H.EVRAKNO) AS EVRAKNO, H.STOKNO, SUM(H.GIREN) AS GIREN,
              MIN(H.TARIH) AS TARIH, MAX(H.FIRMANO) AS FIRMANO, MAX(${cariAd}) AS CARI
       FROM [${FD}TBLSTOKHAREKETLERI] H
       LEFT JOIN [${F}TBLCARI] C ON C.IND = H.FIRMANO
       WHERE H.IZAHAT IN (${izahat.map((x) => `'${x}'`).join(',')}) AND H.DEPO IN (${depoIn}) AND H.TARIH >= @bas
         AND ISNULL(H.GIREN,0) > 0 AND ISNULL(H.IADE,0) = 0
-      GROUP BY H.IZAHAT, H.BELGENO, H.DEPO, H.STOKNO`)
+      GROUP BY H.IZAHAT, H.BELGENO, H.DEPO, H.STOKNO`))
     : { recordset: [] };
 
   // Depolar arası mal girişi stok hareketine değil depo hareket fişine (TBLDEPOHARBASLIK) ve depo envanterine yazılır.
@@ -216,14 +229,14 @@ async function goruntu(cfg) {
   const tDH = `${FD}TBLDEPOHARBASLIK`;
   if (transferTip.length && (await tabloVar(p, tDH))) {
     const tumDepo = new Map((await depolar(v, v.firma)).map((d) => [Number(d.ind), d.ad]));
-    const t = await p.request().input('bas', sql.DateTime, new Date(`${cfg.kabul.baslangic || '2000-01-01'}T00:00:00`)).query(`
+    const t = await olc('depoTransfer', () => p.request().input('bas', sql.DateTime, new Date(`${cfg.kabul.baslangic || '2000-01-01'}T00:00:00`)).query(`
       SELECT E.BELGETIPI, E.BELGEIND, E.DEPO, E.STOKNO, SUM(E.ENVANTER) AS GIREN, MIN(B.TARIH) AS TARIH,
              MAX(B.BELGENO) AS EVRAKNO, MAX(CASE WHEN B.BELGETIPI = 129 THEN B.HAREKETDEPOSU ELSE B.DEPO END) AS KAYNAK
       FROM [${FD}TBLDEPOENVANTER] E
       JOIN [${tDH}] B ON B.IND = E.BELGEIND AND B.BELGETIPI = E.BELGETIPI
       WHERE E.BELGETIPI IN (${transferTip.join(',')}) AND E.ENVANTER > 0 AND E.DEPO IN (${depoIn}) AND B.TARIH >= @bas
         AND ISNULL(B.IPTAL,0) = 0
-      GROUP BY E.BELGETIPI, E.BELGEIND, E.DEPO, E.STOKNO`);
+      GROUP BY E.BELGETIPI, E.BELGEIND, E.DEPO, E.STOKNO`));
     for (const r of t.recordset) {
       kabul.recordset.push({
         IZAHAT: `D${r.BELGETIPI}`,
@@ -280,25 +293,31 @@ async function goruntu(cfg) {
     const d = String(s.DEPO);
     (stock[d] ||= {})[String(s.STOKNO)] = Number(s.KALAN);
   }
+  // Aynı Vega verisi hep aynı sırada ve aynı biçimde çıksın: içerik özeti değişmediyse ana veri yeniden kurulmaz (depo.js vegaYenile).
+  const urunler = kartlar.recordset.map((k) => ({
+    id: String(k.IND),
+    code: String(k.KOD).trim(),
+    name: String(k.AD).trim(),
+    unit: String(k.BIRIM || 'Adet').trim() || 'Adet',
+    ...(k.RAFADRES ? { raf: String(k.RAFADRES) } : {}),
+    ...(PASIF_AD.test(String(k.AD)) ? { pasif: true } : {}),
+  })).sort((a, b) => Number(a.id) - Number(b.id));
+  for (const b of bk.values()) b.sort();
+  const belgeListe = [...belgeler.values()].sort((a, b) => b.ts - a.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  for (const r of belgeListe) r.lines.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return {
     surum: 2,
     at: Date.now(),
+    sureler,
     firma: v.firma,
     donem,
     depolar: depoListe.map((d) => ({ ind: Number(d.ind), ad: d.ad })),
-    products: kartlar.recordset.map((k) => ({
-      id: String(k.IND),
-      code: String(k.KOD).trim(),
-      name: String(k.AD).trim(),
-      unit: String(k.BIRIM || 'Adet').trim() || 'Adet',
-      ...(k.RAFADRES ? { raf: String(k.RAFADRES) } : {}),
-      ...(PASIF_AD.test(String(k.AD)) ? { pasif: true } : {}),
-    })),
+    products: urunler,
     rafAlan: rafKol ? rafAlan : null,
     stock,
-    moved: hareket.recordset.map((h) => String(h.STOKNO)),
+    moved: hareket.recordset.map((h) => String(h.STOKNO)).sort(),
     barcodes: Object.fromEntries(bk),
-    receipts: [...belgeler.values()].sort((a, b) => b.ts - a.ts),
+    receipts: belgeListe,
   };
 }
 

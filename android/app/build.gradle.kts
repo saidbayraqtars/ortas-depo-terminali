@@ -40,7 +40,11 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8: kullanılmayan kod ve kaynak atılır (başlangıç ve bellek). İsimler korunur (-dontobfuscate): uzaktan hata
+            // raporlarındaki (diag/Diag.kt) yığın izleri okunur kalsın, eşleme dosyası gerekmesin.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             // El terminalleri ve telefonlar ARM; x86 yalnız emülatör için (debug'da kalır).
             ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }

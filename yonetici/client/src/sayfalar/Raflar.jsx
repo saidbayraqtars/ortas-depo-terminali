@@ -436,7 +436,7 @@ export function RafDetay({ depo, kod }) {
                     <tr key={u.productId} className="click" onClick={() => (window.location.hash = `/urun/${u.productId}`)}>
                       <td><div className="name">{u.name}</div><div className="code">{u.code}</div></td>
                       <td className="num">{u.qty > 0 ? <>{miktar(u.qty)} <span className="muted small">{u.unit}</span></> : <Rozet tur="b-warn">sayılmadı</Rozet>}</td>
-                      <td>{u.zimmet === 'VEGA' ? <Rozet tur="b-info">Vega kartı</Rozet> : u.zimmet === 'IMPORT' ? <Rozet tur="b-mute">Excel</Rozet> : u.zimmet ? <Rozet tur="b-mute">Elle</Rozet> : ''}</td>
+                      <td>{u.zimmet === 'VEGA' ? <Rozet tur="b-info">Vega kartı</Rozet> : u.zimmet === 'IMPORT' ? <Rozet tur="b-mute">Excel</Rozet> : u.zimmet === 'TERMINAL' ? <Rozet tur="b-info">Terminal</Rozet> : u.zimmet ? <Rozet tur="b-mute">Elle</Rozet> : ''}</td>
                       <td className="muted">{u.updated_at ? tarihSaat(u.updated_at) : ''}</td>
                       <td style={{ width: 1 }} onClick={(e) => e.stopPropagation()}><Btn kind="ghost" size="sm" icon="transfer" title="Başka rafa taşı" onClick={() => setTasi(u)} /></td>
                     </tr>

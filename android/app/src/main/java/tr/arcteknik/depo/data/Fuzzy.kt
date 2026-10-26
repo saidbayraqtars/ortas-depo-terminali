@@ -10,19 +10,36 @@ import java.util.Locale
 object Fuzzy {
     private val TR = Locale("tr")
 
+    /** Küçük harf, Türkçe harfler sadeleşmiş, harf/rakam dışı tek boşluk. 130 bin ürün için çağrılır: Regex yok, tek geçiş. */
     fun norm(s: String): String {
         val sb = StringBuilder(s.length)
-        for (c in s.lowercase(TR)) {
-            sb.append(
-                when (c) {
-                    'ç' -> 'c'; 'ğ' -> 'g'; 'ı' -> 'i'; 'ö' -> 'o'; 'ş' -> 's'; 'ü' -> 'u'
-                    'â' -> 'a'; 'î' -> 'i'; 'û' -> 'u'
-                    in 'a'..'z', in '0'..'9' -> c
-                    else -> ' '
-                },
-            )
+        var bosluk = true // baştaki boşluk atılır
+        for (ch in s.lowercase(TR)) {
+            val c = when (ch) {
+                'ç' -> 'c'; 'ğ' -> 'g'; 'ı' -> 'i'; 'ö' -> 'o'; 'ş' -> 's'; 'ü' -> 'u'
+                'â' -> 'a'; 'î' -> 'i'; 'û' -> 'u'
+                in 'a'..'z', in '0'..'9' -> ch
+                else -> ' '
+            }
+            if (c == ' ') {
+                if (!bosluk) sb.append(' ')
+                bosluk = true
+            } else {
+                sb.append(c)
+                bosluk = false
+            }
         }
-        return sb.toString().replace(Regex(" +"), " ").trim()
+        if (sb.isNotEmpty() && sb[sb.length - 1] == ' ') sb.setLength(sb.length - 1)
+        return sb.toString()
+    }
+
+    /**
+     * Ürün satırındaki arama sütunu (`product.search`): sadeleşmiş ad, kod ve boşluksuz kod. Aramanın ilk adımı
+     * bunda `LIKE '%kelime%'` ile yapılır; ürün listesinin hepsi belleğe alınmaz.
+     */
+    fun searchKey(code: String, name: String): String {
+        val nCode = norm(code)
+        return "${norm(name)} $nCode ${nCode.replace(" ", "")}".trim()
     }
 
     fun tokens(q: String): List<String> = norm(q).split(' ').filter { it.isNotEmpty() }

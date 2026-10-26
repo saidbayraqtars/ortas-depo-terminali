@@ -34,6 +34,13 @@ interface Backend {
      */
     fun masterParts(known: Map<String, String>, max: Int, read: (Reader) -> Unit): Boolean
 
+    /**
+     * Sunucuda [since] sayacından sonra bir değişiklik olana kadar en çok [waitSec] sn bekler (1.5.0+ sunucu,
+     * `GET /api/changes`). Dönen: sunucunun güncel sayacı; [since]'e eşitse süre doldu, değişiklik yok. Sunucu bu ucu
+     * bilmiyorsa (eski yönetici programı) -1. Ulaşılamazsa IOException.
+     */
+    fun waitChange(since: Int, waitSec: Int): Int
+
     fun pushOps(ops: List<Op>, user: String): List<OpResult>
 
     /**
@@ -65,6 +72,8 @@ class DemoBackend(private val context: Context, private val online: () -> Boolea
     }
 
     override fun masterParts(known: Map<String, String>, max: Int, read: (Reader) -> Unit) = false
+
+    override fun waitChange(since: Int, waitSec: Int) = -1
 
     override fun pushOps(ops: List<Op>, user: String): List<OpResult> {
         if (!online()) throw IOException("Ağ yok")
@@ -101,12 +110,25 @@ class HttpBackend(private val baseUrl: String, private val deviceKey: String, pr
     override fun masterParts(known: Map<String, String>, max: Int, read: (Reader) -> Unit): Boolean {
         val k = JSONObject()
         known.forEach { (key, hash) -> k.put(key, hash) }
-        val body = JSONObject().put("known", k).put("max", max).toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+        // v=2: Vega stoku kovadan ayrı parçada gelir (docs/API.md "Stok parçaları"); eski sunucu bunu yok sayar.
+        val body = JSONObject().put("known", k).put("max", max).put("v", 2).toString().toRequestBody("application/json; charset=utf-8".toMediaType())
         client.newCall(request("/api/master/parts").post(body).build()).execute().use { r ->
             if (r.code == 404) return false
             if (!r.isSuccessful) throw IOException(errorText(r.code, r.body?.string()))
             read(r.body!!.charStream())
             return true
+        }
+    }
+
+    // Değişiklik beklerken sunucu 25 sn'ye kadar cevap vermez; okuma süresi buna göre uzun.
+    private val waitClient = client.newBuilder().readTimeout(40, TimeUnit.SECONDS).build()
+
+    override fun waitChange(since: Int, waitSec: Int): Int {
+        val req = request("/api/changes?since=$since&wait=$waitSec").get().build()
+        waitClient.newCall(req).execute().use { r ->
+            if (r.code == 404) return -1
+            if (!r.isSuccessful) throw IOException(errorText(r.code, r.body?.string()))
+            return JSONObject(r.body!!.string()).optInt("surum", -1)
         }
     }
 

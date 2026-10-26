@@ -104,8 +104,8 @@ function yedekZamanla() {
       }
     }
   };
-  setTimeout(kontrol, 60 * 1000);
-  setInterval(kontrol, 3600 * 1000);
+  setTimeout(kontrol, 60 * 1000).unref?.();
+  setInterval(kontrol, 3600 * 1000).unref?.();
 }
 
 // ---- Etiket -------------------------------------------------------------------------------------
@@ -203,9 +203,33 @@ function terminalApi() {
       const b = req.body || {};
       const en = Math.max(1, Math.min(64, Number(b.max) || 8));
       res.setHeader('Cache-Control', 'no-cache');
-      res.type('application/json').send(depo.masterParcaCevabi(b.known && typeof b.known === 'object' ? b.known : {}, en));
+      res.type('application/json').send(depo.masterParcaCevabi(b.known && typeof b.known === 'object' ? b.known : {}, en, Number(b.v) || 1));
     }),
   );
+  // 1.5.0+ terminal: ana veri ya da bir işlem sunucuda değişene kadar (en çok `wait` sn) bekler, sonra yeni sayacı verir.
+  // Terminal dakikada bir yoklamak yerine bunu dinler; yönetici ya da başka terminal bir şey değiştirince saniyeler içinde haberi olur.
+  r.get('/changes', (req, res) => {
+    const since = Number(req.query.since);
+    const bekle = Math.max(1, Math.min(30, Number(req.query.wait) || 25));
+    res.setHeader('Cache-Control', 'no-store');
+    if (depo.surum() !== since) return void res.json({ surum: depo.surum() });
+    let bitti = false;
+    let birak = () => {};
+    const bitir = () => {
+      if (bitti) return;
+      bitti = true;
+      clearTimeout(zaman);
+      birak();
+      if (!res.headersSent) res.json({ surum: depo.surum() });
+    };
+    const zaman = setTimeout(bitir, bekle * 1000);
+    birak = depo.dinle(bitir);
+    req.on('close', () => {
+      bitti = true;
+      clearTimeout(zaman);
+      birak();
+    });
+  });
   // Terminalin çökme/donma raporu (Diag.kt): günlüğe yazılır, destek sunucusuna iletilir.
   r.post(
     '/rapor',
@@ -374,7 +398,7 @@ function yoneticiApi() {
         for (const k of ['urunBicim', 'rafBicim']) if (b.etiket[k] && etiket.BICIM[b.etiket[k]]) yeni.etiket[k] = b.etiket[k];
         if ('rafGoster' in b.etiket) yeni.etiket.rafGoster = Boolean(b.etiket.rafGoster);
       }
-      if (b.yenileme) yeni.yenileme = Math.max(30, Math.min(3600, Number(b.yenileme) || 120));
+      if (b.yenileme) yeni.yenileme = Math.max(20, Math.min(3600, Number(b.yenileme) || 60));
       if (b.port) yeni.port = Math.max(1024, Math.min(65535, Number(b.port) || 5480));
       if ('yoneticiParola' in b) {
         if (b.yoneticiParola) {
@@ -387,7 +411,7 @@ function yoneticiApi() {
       log.bilgi('Ayarlar kaydedildi');
       depo.vegaZamanla();
       const vegaDegisti = ['vega', 'kabul', 'rafAdresi'].some((k) => JSON.stringify(cfg[k]) !== JSON.stringify(yeni[k]));
-      if (vegaDegisti) await depo.vegaYenile();
+      if (vegaDegisti) await depo.vegaYenile('ayar');
       else depo.degisti();
       return { ...config.publicView(), portDegisti: yeni.port !== cfg.port };
     }),
@@ -407,7 +431,7 @@ function yoneticiApi() {
   r.post('/vega/firmalar', sar(async (req) => vega.firmalar(vegaAyari(req.body))));
   r.post('/vega/donemler', sar(async (req) => vega.donemler(vegaAyari(req.body), Number(req.body.firma))));
   r.post('/vega/depolar', sar(async (req) => vega.depolar(vegaAyari(req.body), Number(req.body.firma))));
-  r.post('/vega/yenile', sar(async () => depo.vegaYenile()));
+  r.post('/vega/yenile', sar(async () => depo.vegaYenile('elle')));
   r.get('/vega/fis-varsayilan', sar(async () => vega.fisVarsayilanlari(config.load())));
 
   // Ürünler
@@ -851,15 +875,15 @@ async function baslat({ veriKlasoru, apkKlasoru, arayuz, host = '0.0.0.0', port 
   apk.kur(apkKlasoru || path.join(__dirname, '..', 'apk'));
 
   depo.goruntuYukleOnbellek();
-  depo.vegaYenile().catch(() => {});
+  depo.vegaYenile('açılış').catch(() => {});
   depo.vegaZamanla();
   yedekZamanla();
 
   const p = port ?? config.load().port;
   const app = uygulama({ arayuz: arayuz || path.join(__dirname, '..', 'client', 'dist') });
   await new Promise((resolve, reject) => {
-    sunucu = app.listen(p, host, resolve);
-    sunucu.once('error', reject);
+    // Express 5 dinleme hatasını (EADDRINUSE) geri çağırmaya verir, çözüm önce davranıp hatayı yutuyordu.
+    sunucu = app.listen(p, host, (err) => (err ? reject(err) : resolve()));
   });
   const gercek = sunucu.address().port;
   log.bilgi(`Sunucu ${SURUM} dinliyor: ${host}:${gercek} · ${adresler().map((a) => a.ip).join(', ')}`);

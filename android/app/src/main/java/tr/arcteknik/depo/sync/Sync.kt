@@ -71,7 +71,14 @@ class Sync(private val context: Context, private val repo: Repo) {
         val db = repo.db
         var done = 0
         val t0 = System.currentTimeMillis()
+        // Tam eşitlenene kadar sayaç bilinmez; değişiklik beklemesi ancak tam eşitlenmişse başlar.
+        serverSurum = -1
         for (round in 0 until 40) {
+            // Çekim sürerken kullanıcı işlem kaydettiyse çekimi bırak: işlem önce gitsin (eskiden çekim bitene kadar beklerdi).
+            if (round > 0 && db.pendingCount() > 0) {
+                again = true
+                return true
+            }
             var result: tr.arcteknik.depo.data.Db.PartsResult? = null
             val supported = backend.masterParts(db.masterParts(), 8) { reader -> result = db.applyParts(reader) }
             if (!supported) return false
@@ -82,12 +89,23 @@ class Sync(private val context: Context, private val repo: Repo) {
             }
             done += r.parts
             if (r.parts > 0) repo.changed()
-            if (r.remaining == 0) break
+            if (r.remaining == 0) {
+                serverSurum = r.surum
+                break
+            }
             _progress.value = "Ana veri alınıyor · ${db.masterParts().count { it.key.startsWith("b") }}/${tr.arcteknik.depo.data.Buckets.COUNT}"
         }
         if (done > 0) Diag.crumb("eşitleme: $done parça yazıldı ${System.currentTimeMillis() - t0} ms")
         return true
     }
+
+    /** Son tam eşitlemedeki sunucu değişiklik sayacı; bilinmiyorsa -1 (bkz. [waitForChange]). */
+    @Volatile
+    private var serverSurum = -1
+
+    /** Çekim yarıda bırakıldı; bekleyen işlem gönderilsin diye hemen yeni tur gerekir. */
+    @Volatile
+    private var again = false
 
     fun backend(): Backend {
         val p = repo.prefs
@@ -109,11 +127,18 @@ class Sync(private val context: Context, private val repo: Repo) {
                 _reachable.value = false
             }
         })
-        // Uygulama açıkken dakikada bir; kapalıyken WorkManager 15 dakikada bir dener.
+        // Uygulama açıkken sunucudaki değişiklik beklenir (1.5.0+ sunucu: saniyeler içinde gelir); eski sunucuda
+        // dakikada bir yoklanır. Uygulama kapalıyken WorkManager 15 dakikada bir dener.
         scope.launch {
             while (true) {
-                run(force = false)
-                delay(60_000)
+                val err = run(force = false)
+                delay(
+                    when {
+                        err != null -> 20_000L
+                        serverSurum < 0 -> 60_000L
+                        else -> waitForChange()
+                    },
+                )
             }
         }
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
@@ -123,6 +148,24 @@ class Sync(private val context: Context, private val repo: Repo) {
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .build(),
         )
+    }
+
+    /**
+     * Sunucuda değişiklik olana kadar bekler (her seferinde 25 sn'lik uzun yoklama; süre dolarsa tekrar). Dönen: sonraki
+     * eşitlemeden önce beklenecek ms. Beklerken yeni işlem kaydedilirse hemen biter.
+     */
+    private fun waitForChange(): Long {
+        val seen = serverSurum
+        while (true) {
+            val n = try {
+                backend().waitChange(seen, 25)
+            } catch (e: Exception) {
+                return 15_000L
+            }
+            if (n < 0) return 60_000L
+            if (n != seen) return 1_000L
+            if (repo.db.pendingCount() > 0) return 0L
+        }
     }
 
     /** Bir işlem kaydedilince hemen gönderilmeye çalışılır. */
@@ -137,7 +180,16 @@ class Sync(private val context: Context, private val repo: Repo) {
      *   kalıyor, ekrandaki kayıt bunu bekleyip terminali donduruyordu (her rafa kaldırmadan sonra baştan iniyordu).
      * @return hata metni, başarılıysa null.
      */
-    suspend fun run(force: Boolean = true): String? = mutex.withLock {
+    suspend fun run(force: Boolean = true): String? {
+        val sonuc = mutex.withLock { runLocked(force) }
+        if (again) {
+            again = false
+            trigger()
+        }
+        return sonuc
+    }
+
+    private suspend fun runLocked(force: Boolean): String? =
         withContext(Dispatchers.IO) {
             _busy.value = true
             try {
@@ -203,7 +255,6 @@ class Sync(private val context: Context, private val repo: Repo) {
                 runCatching { Diag.sendPending() }
             }
         }
-    }
 }
 
 class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {

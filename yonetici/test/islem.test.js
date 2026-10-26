@@ -145,6 +145,7 @@ test('ürün listesi isimle yakın eşleşmeyi bulur; depo süzgeci', () => {
 });
 
 test('Excel içe aktarma: depo adı eşleşir, raf açılır, miktar ve asıl raf yazılır, hatalı satır atlanır', async () => {
+  db.run('DELETE FROM product_home'); // önceki terminal işlemlerinin açtığı adresler bu testi etkilemesin
   const csv = 'Depo;Raf;Bölge;Ürün kodu;Miktar\nmerkez;C-01-01;C;YF-1042;7\nŞube;C-02-01;C;8691234500412;\nOLMAYAN;C-03-01;;;\n1;C-04-01;;XX-YOK;\n';
   const t = await iceaktar.oku('raflar.csv', Buffer.from(csv));
   const es = iceaktar.tahminEt(t.basliklar);
@@ -162,6 +163,7 @@ test('Excel içe aktarma: depo adı eşleşir, raf açılır, miktar ve asıl ra
 });
 
 test('Excel içe aktarma: B2B raf adresi ; ile çoklu, uygun olmayan parça atlanır; bütün depolara yazılabilir', async () => {
+  db.run('DELETE FROM product_home'); // önceki terminal işlemlerinin açtığı adresler bu testi etkilemesin
   const csv = 'Stok Kodu;Stok Adı;Minimum Adet;Durum;Raf Adresi\nHF-0310;Hava filtresi;1;Aktif;.;TK2-H1\nAN-0040;Antifriz;1;Aktif;TK2-H2, TK3-A1\nYF-1042;Yağ filtresi;1;Aktif;.\n';
   // Raf Adresi hücresindeki ; ayraçla karışmasın diye tırnaklı
   const t = await iceaktar.oku('b2b.csv', Buffer.from(csv.replace(/;(\.;TK2-H1|TK2-H2, TK3-A1|\.)\n/g, ';"$1"\n')));
@@ -188,6 +190,7 @@ test('Excel içe aktarma: B2B raf adresi ; ile çoklu, uygun olmayan parça atla
 });
 
 test('ürün birden çok rafa zimmetlenir; boş zimmetli raf detayda beklenen olarak görünür', () => {
+  db.run('DELETE FROM product_home'); // önceki terminal işlemlerinin açtığı adresler bu testi etkilemesin
   depo.zimmetEkle(1, '103', 'A-01-01');
   depo.zimmetEkle(1, '103', 'A-01-02');
   assert.deepStrictEqual(depo.zimmetler(1, '103').map((z) => z.shelf), ['A-01-01', 'A-01-02']);
@@ -203,6 +206,7 @@ test('ürün birden çok rafa zimmetlenir; boş zimmetli raf detayda beklenen ol
 });
 
 test('Vega kartındaki raf adresleri zimmet olur; karttan silinen adres zimmetten de kalkar', () => {
+  db.run('DELETE FROM product_home'); // önceki terminal işlemlerinin açtığı adresler bu testi etkilemesin
   config.update({ rafAdresi: { alan: 'KOD14', depo: 1, yeniRafAc: true } });
   const g = depo.goruntu();
   g.rafAlan = 'KOD14';
@@ -230,6 +234,7 @@ test('Vega kartındaki raf adresleri zimmet olur; karttan silinen adres zimmette
 });
 
 test('raf adresi yazma: alandaki eski bilgi silinir, zimmetler yazılır, ilk değer saklanır', async () => {
+  db.run('DELETE FROM product_home'); // önceki terminal işlemlerinin açtığı adresler bu testi etkilemesin
   const vega = require('../server/vega');
   const yazilan = [];
   const eskiYaz = vega.kartAlanYaz;
@@ -281,6 +286,9 @@ test('raf adresi yazma: alandaki eski bilgi silinir, zimmetler yazılır, ilk de
 });
 
 test('taşı: miktar ve zimmet hedef rafa geçer; raf boşaltma her şeyi aktarır', () => {
+  db.run('DELETE FROM product_home'); // önceki terminal işlemlerinin açtığı adresler bu testi etkilemesin
+  depo.zimmetEkle(1, '103', 'A-01-01');
+  depo.zimmetEkle(1, '103', 'A-01-02');
   // 101 MERKEZ: A-01-01'de 20, B-01-01'de 10
   depo.zimmetEkle(1, '101', 'A-01-01');
   depo.tasi(1, '101', 'A-01-01', 'A-01-02', 5);
@@ -457,4 +465,160 @@ test('raf grupları: bölge ilk parça, grup ilk iki parça; tek tük grup liste
   assert.deepStrictEqual(g.map((x) => [x.onek, x.adet]), [['KAT', 7], ['KO', 1]]);
   assert.deepStrictEqual(g[0].gruplar, [{ onek: 'KAT-1', adet: 3 }, { onek: 'KAT-10', adet: 3 }]);
   assert.strictEqual(depo.kapsamRaflari(3, ['KAT-1']).length, 3);
+});
+
+test('terminal işlemleri ürünü rafa zimmetler; boşalan raftan terminal zimmeti kalkar, Excel/yönetici zimmetine dokunulmaz', () => {
+  db.run('DELETE FROM product_home');
+  // Rafa kaldırma: raf ürünün adresi olur (ikinci raf da eklenir).
+  assert.ok(depo.islemler('TRM-01', 'ali', [
+    op('PUTAWAY', { productId: '103', shelf: 'T-01-01', qty: 4, depot: 1 }),
+    op('PUTAWAY', { productId: '103', shelf: 'T-01-02', qty: 1, depot: 1 }),
+  ]).every((x) => x.ok));
+  assert.deepStrictEqual(depo.zimmetler(1, '103').map((z) => [z.shelf, z.source]), [['T-01-01', 'TERMINAL'], ['T-01-02', 'TERMINAL']]);
+  assert.strictEqual(depo.zimmetler(2, '103').length, 0);
+  const homes = JSON.parse(depo.master().json).homes.filter((h) => h.productId === '103' && h.depot === 1);
+  assert.deepStrictEqual(homes.map((h) => h.shelf), ['T-01-01', 'T-01-02']);
+  // Kısmi transfer: kaynak durur, hedef eklenir. Tamamı: kaynak kalkar.
+  depo.islemler('TRM-01', 'ali', [op('TRANSFER', { productId: '103', from: 'T-01-01', to: 'T-02-01', qty: 1, depot: 1 })]);
+  assert.deepStrictEqual(depo.zimmetler(1, '103').map((z) => z.shelf), ['T-01-01', 'T-01-02', 'T-02-01']);
+  depo.islemler('TRM-01', 'ali', [op('TRANSFER', { productId: '103', from: 'T-01-02', to: 'T-02-01', qty: 1, depot: 1 })]);
+  assert.deepStrictEqual(depo.zimmetler(1, '103').map((z) => z.shelf), ['T-01-01', 'T-02-01']);
+  // Excel/yönetici zimmeti raf boşalsa da kalır.
+  db.run("UPDATE product_home SET source='IMPORT' WHERE depo=1 AND product_id='103' AND shelf='T-01-01'");
+  db.run("UPDATE product_home SET source='ADMIN' WHERE depo=1 AND product_id='103' AND shelf='T-02-01'");
+  depo.islemler('TRM-01', 'ali', [op('TRANSFER', { productId: '103', from: 'T-02-01', to: 'T-03-01', qty: 99, depot: 1 })]);
+  depo.islemler('TRM-01', 'ali', [op('TRANSFER', { productId: '103', from: 'T-01-01', to: 'T-03-01', qty: 99, depot: 1 })]);
+  assert.deepStrictEqual(depo.zimmetler(1, '103').map((z) => [z.shelf, z.source]), [['T-01-01', 'IMPORT'], ['T-02-01', 'ADMIN'], ['T-03-01', 'TERMINAL']]);
+});
+
+test('sayımda bulunan ürün adressizse o rafa zimmetlenir; rafta yok sayılırsa terminal zimmeti kalkar', () => {
+  db.run('DELETE FROM product_home');
+  db.run("INSERT INTO count_session(id, no, title, blind, kind, status, source, created_at, depo) VALUES('C9','SAY-0009','Zimmet',1,'GENEL','OPEN','ADMIN',?,1)", Date.now());
+  depo.islemler('TRM-01', 'ali', [op('COUNT_SUBMIT', { sessionId: 'C9', no: 'SAY-0009', shelves: ['A-01-01'], lines: [{ shelf: 'A-01-01', productId: '102', system: 0, counted: 3 }] }, Date.now() + 5000)]);
+  assert.deepStrictEqual(depo.zimmetler(1, '102').map((z) => [z.shelf, z.source]), [['A-01-01', 'TERMINAL']]);
+  // Başka rafta bulununca ikinci adres eklenmez (zaten adresi var).
+  depo.islemler('TRM-01', 'ali', [op('COUNT_SUBMIT', { sessionId: 'C9', no: 'SAY-0009', shelves: ['B-01-01'], lines: [{ shelf: 'B-01-01', productId: '102', system: 0, counted: 2 }] }, Date.now() + 6000)]);
+  assert.deepStrictEqual(depo.zimmetler(1, '102').map((z) => z.shelf), ['A-01-01']);
+  // A-01-01'de artık yok denirse terminal adresi kalkar.
+  depo.islemler('TRM-01', 'ali', [op('COUNT_SUBMIT', { sessionId: 'C9', no: 'SAY-0009', shelves: ['A-01-01'], lines: [] }, Date.now() + 7000)]);
+  assert.strictEqual(depo.zimmetler(1, '102').length, 0);
+});
+
+test('raf adresi yazma ayarı eksikse sessiz kalmaz: durumda açık hata, başka depo zimmeti sayılır', async () => {
+  const vega = require('../server/vega');
+  const eskiYaz = vega.kartAlanYaz;
+  const eskiUz = vega.kartAlanUzunluk;
+  vega.kartAlanUzunluk = async () => 50;
+  vega.kartAlanYaz = async (cfg, alan, satirlar, bitti) => { bitti(satirlar); return satirlar.length; };
+  try {
+    config.update({ rafAdresi: { alan: '', depo: 1, yaz: true } });
+    depo.goruntu().rafAlan = null;
+    const s = await depo.vegaRafYaz();
+    assert.match(s.hata, /alanı boş/);
+    assert.strictEqual(depo.vegaDurum.rafAdresi.yaz, true);
+    // Alan seçili ama kartlarda yok.
+    config.update({ rafAdresi: { alan: 'KOD99', yaz: true } });
+    assert.match((await depo.vegaRafYaz()).hata, /KOD99 alanı Vega stok kartlarında bulunamadı/);
+    // Alan var: yalnız raf deposunun zimmetleri yazılır; başka depodakiler sayılır.
+    config.update({ rafAdresi: { alan: 'KOD10', yaz: true } });
+    depo.goruntu().rafAlan = 'KOD10';
+    db.run('DELETE FROM product_home');
+    depo.zimmetEkle(1, '101', 'A-01-01');
+    depo.zimmetEkle(2, '101', 'A-01-01');
+    const t = await depo.vegaRafYaz();
+    assert.strictEqual(t.hata, undefined);
+    assert.strictEqual(t.baskaDepo, 1);
+    assert.strictEqual(t.depoAd, 'MERKEZ');
+  } finally {
+    vega.kartAlanYaz = eskiYaz;
+    vega.kartAlanUzunluk = eskiUz;
+    config.update({ rafAdresi: { alan: '', yaz: false } });
+    depo.goruntu().rafAlan = null;
+    db.run('DELETE FROM product_home');
+  }
+});
+
+test('Vega okuma: içerik aynıysa ana veri yenilenmez ve sürüm artmaz; değişince ya da hata olunca durum günlüğü tutulur', async () => {
+  const vega = require('../server/vega');
+  const eskiGoruntu = vega.goruntu;
+  const eskiCfg = config.load().vega;
+  const temel = JSON.parse(JSON.stringify({ ...depo.goruntu(), stokDepo: undefined, stokToplam: undefined, movedSet: undefined, depoAd: undefined }));
+  let cagri = 0;
+  let sonraki = () => ({ ...temel, at: Date.now(), sureler: { kartlar: 12 } });
+  vega.goruntu = async () => {
+    cagri++;
+    return sonraki();
+  };
+  try {
+    config.update({ vega: { server: 'x', user: 'sa', firma: 101 }, rafAdresi: { yaz: false, alan: '' } });
+    await depo.vegaYenile('elle');
+    assert.strictEqual(depo.vegaDurum.ok, true);
+    assert.strictEqual(depo.vegaDurum.tetik, 'elle');
+    assert.strictEqual(depo.vegaDurum.degisiklik, true);
+    const s0 = depo.surum();
+    // Aynı içerik, farklı "at": terminallere haber gitmez.
+    await depo.vegaYenile('zamanlayıcı');
+    assert.strictEqual(depo.vegaDurum.degisiklik, false);
+    assert.strictEqual(depo.vegaDurum.tetik, 'zamanlayıcı');
+    assert.strictEqual(depo.surum(), s0);
+    // Stok değişti.
+    sonraki = () => ({ ...temel, at: Date.now(), sureler: {}, stock: { ...temel.stock, 1: { ...temel.stock[1], 101: 99 } } });
+    await depo.vegaYenile('zamanlayıcı');
+    assert.strictEqual(depo.vegaDurum.degisiklik, true);
+    assert.ok(depo.surum() > s0);
+    assert.strictEqual(depo.vegaStok('101', 1), 99);
+    // Hata: durum ve sayaç; sonraki başarıda sayaç sıfırlanır.
+    vega.goruntu = async () => { throw new Error('Vega sorgusu "kartlar" (120 sn): zaman aşımı'); };
+    await depo.vegaYenile('zamanlayıcı');
+    await depo.vegaYenile('zamanlayıcı');
+    assert.strictEqual(depo.vegaDurum.ok, false);
+    assert.strictEqual(depo.vegaDurum.ardisikHata, 2);
+    assert.match(depo.vegaDurum.hata, /kartlar/);
+    assert.strictEqual(depo.vegaStok('101', 1), 99); // eski veri korunur
+    vega.goruntu = async () => ({ ...temel, at: Date.now(), sureler: {}, stock: { ...temel.stock, 1: { ...temel.stock[1], 101: 99 } } });
+    await depo.vegaYenile('zamanlayıcı');
+    assert.strictEqual(depo.vegaDurum.ok, true);
+    assert.strictEqual(depo.vegaDurum.ardisikHata, 0);
+    assert.strictEqual(depo.vegaDurum.degisiklik, false);
+    assert.ok(cagri >= 3);
+  } finally {
+    vega.goruntu = eskiGoruntu;
+    config.update({ vega: eskiCfg });
+    depo._goruntuKur(JSON.parse(JSON.stringify({ ...temel })));
+  }
+});
+
+test('Vega okuması takılırsa 10 dakika sonra yenisi başlar, eskisinin dönüşü durumu ezmez', async () => {
+  const vega = require('../server/vega');
+  const eskiGoruntu = vega.goruntu;
+  const eskiCfg = config.load().vega;
+  const temel = JSON.parse(JSON.stringify({ ...depo.goruntu(), stokDepo: undefined, stokToplam: undefined, movedSet: undefined, depoAd: undefined }));
+  const realNow = Date.now;
+  let eskiBitir;
+  try {
+    config.update({ vega: { server: 'x', user: 'sa', firma: 101 } });
+    vega.goruntu = () => new Promise((r) => { eskiBitir = () => r({ ...temel, at: 1, sureler: {}, products: [] }); });
+    const takili = depo.vegaYenile('zamanlayıcı');
+    assert.strictEqual(depo.vegaDurum.calisiyor, true);
+    // 5 dk: hâlâ çalışıyor sayılır, yenisi başlamaz.
+    Date.now = () => realNow() + 5 * 60 * 1000;
+    await depo.vegaYenile('zamanlayıcı');
+    assert.strictEqual(depo.vegaDurum.calisiyor, true);
+    // 11 dk: takılmış; yeni okuma başlar ve biter.
+    Date.now = () => realNow() + 11 * 60 * 1000;
+    vega.goruntu = async () => ({ ...temel, at: realNow(), sureler: {} });
+    await depo.vegaYenile('zamanlayıcı');
+    assert.strictEqual(depo.vegaDurum.calisiyor, false);
+    assert.strictEqual(depo.vegaDurum.ok, true);
+    // Eski okuma sonunda dönse de boş ürün listesi durumu ezmez.
+    eskiBitir();
+    await takili;
+    assert.ok(depo.goruntu().products.length > 0);
+    assert.strictEqual(depo.vegaDurum.calisiyor, false);
+  } finally {
+    Date.now = realNow;
+    vega.goruntu = eskiGoruntu;
+    config.update({ vega: eskiCfg });
+    depo._goruntuKur(JSON.parse(JSON.stringify({ ...temel })));
+  }
 });

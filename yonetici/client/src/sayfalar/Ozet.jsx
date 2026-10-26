@@ -135,7 +135,17 @@ export default function Ozet() {
                 <dt>Stok kartı</dt>
                 <dd>{miktar(v.urun)}</dd>
                 <dt>Son okuma</dt>
-                <dd>{v.at ? `${tarihSaat(v.at)}${v.sureMs ? ` (${(v.sureMs / 1000).toFixed(1)} sn)` : ''}` : '—'}</dd>
+                <dd>{v.at ? `${tarihSaat(v.at)}${v.sureMs ? ` (${(v.sureMs / 1000).toFixed(1)} sn)` : ''}` : '—'}{v.at && v.degisiklik === false && <span className="muted small"> · değişiklik yok</span>}</dd>
+                <dt>Son deneme</dt>
+                <dd>{v.deneme ? `${tarihSaat(v.deneme)}${v.tetik ? ` · ${v.tetik}` : ''}` : '—'}{v.calisiyor && <span className="muted small"> · okunuyor</span>}{v.ardisikHata > 0 && <Rozet tur="b-err">{v.ardisikHata} kez üst üste hata</Rozet>}</dd>
+                <dt>Sonraki okuma</dt>
+                <dd>{v.sonraki ? new Date(v.sonraki).toLocaleTimeString('tr-TR') : '—'}</dd>
+                {v.sureler && v.sureMs > 5000 && (
+                  <>
+                    <dt>Sorgu süreleri</dt>
+                    <dd className="muted small">{Object.entries(v.sureler).map(([k, ms]) => `${k} ${(ms / 1000).toFixed(1)} sn`).join(' · ')}</dd>
+                  </>
+                )}
               </dl>
             ) : (
               <div className="notice warn"><Icon name="warning" /><p>Vega bağlantısı ayarlanmadı. <a href="#/ayarlar">Ayarlar</a></p></div>

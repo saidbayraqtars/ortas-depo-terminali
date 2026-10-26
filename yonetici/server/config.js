@@ -46,7 +46,7 @@ const DEFAULTS = {
     rafBicim: 'y-100x50',
     rafGoster: true, // ürün etiketine bulunduğu raf yazılsın
   },
-  yenileme: 120, // Vega'dan ana veri yenileme aralığı (sn)
+  yenileme: 60, // Vega'dan ana veri yenileme aralığı (sn)
   yoneticiParola: '', // scrypt özeti; boşsa program parolasız açılır
 };
 

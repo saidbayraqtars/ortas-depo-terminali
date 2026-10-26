@@ -38,7 +38,16 @@ function dinle(f) {
 
 let goruntu = null;
 let urunIndex = new Map();
-const vegaDurum = { ok: false, hata: null, at: null, sureMs: null, calisiyor: false };
+const vegaDurum = {
+  ok: false, hata: null, at: null, sureMs: null, calisiyor: false,
+  // Okuma günlüğü: son deneme (başarılı ya da değil), kim tetikledi, bir sonraki zamanlı okuma, üst üste hata sayısı.
+  deneme: null, tetik: null, sonraki: null, ardisikHata: 0, sureler: null, degisiklik: null,
+};
+let sonGoruntuOzet = '';
+let vegaTurNo = 0;
+let vegaBasladi = 0;
+// Okuma bu kadar sürede bitmediyse takılmış sayılır (ağ sessizce koptu); yeni okuma başlayabilir.
+const VEGA_TAKILMA_MS = 10 * 60 * 1000;
 
 function goruntuKur(g) {
   goruntu = g;
@@ -74,34 +83,66 @@ function goruntuYukleOnbellek() {
   }
 }
 
-async function vegaYenile() {
-  if (vegaDurum.calisiyor) return vegaDurum;
+const sn1 = (ms) => (ms / 1000).toFixed(1);
+
+/**
+ * Vega'yı okur. `tetik`: zamanlayıcı, elle, ayar, açılış, sayım (günlükte ve Özet'te görünür).
+ * Her deneme günlüğe yazılır. Vega'daki içerik bir öncekiyle aynıysa ana veri yeniden kurulmaz ve terminaller
+ * boş yere uyarılmaz (sürüm sayacı artmaz).
+ */
+async function vegaYenile(tetik = 'elle') {
+  if (vegaDurum.calisiyor) {
+    if (now() - vegaBasladi < VEGA_TAKILMA_MS) return vegaDurum;
+    log.uyari(`Önceki Vega okuması ${Math.round((now() - vegaBasladi) / 1000)} sn'dir bitmedi; yenisi başlatılıyor`);
+  }
   const cfg = config.load();
   if (!vega.hazirMi(cfg.vega)) {
     vegaDurum.ok = false;
     vegaDurum.hata = 'Vega bağlantısı ayarlanmadı';
     return vegaDurum;
   }
+  const tur = ++vegaTurNo;
   vegaDurum.calisiyor = true;
-  const bas = now();
+  vegaDurum.tetik = tetik;
+  vegaDurum.deneme = now();
+  const bas = (vegaBasladi = now());
   try {
-    const g = await vega.goruntu(cfg);
-    goruntuKur(g);
+    const { sureler, ...g } = await vega.goruntu(cfg);
+    // Takılmış eski okuma sonradan dönerse yenisinin durumunu ezmesin.
+    if (tur !== vegaTurNo) return vegaDurum;
+    const ozet0 = ozet(JSON.stringify({ ...g, at: 0 }));
+    const ayni = Boolean(goruntu) && ozet0 === sonGoruntuOzet;
+    if (!ayni) {
+      goruntuKur(g);
+      db.run(
+        "INSERT INTO vega_cache(key, json, updated_at) VALUES('goruntu', ?, ?) ON CONFLICT(key) DO UPDATE SET json=excluded.json, updated_at=excluded.updated_at",
+        JSON.stringify(g),
+        g.at,
+      );
+      sonGoruntuOzet = ozet0;
+    }
     // yaz açıksa program alanın sahibi: karttan okunmaz, zimmetler karta yazılır (Vega okumasını bekletmeden).
+    let zimmetDegisti = false;
     if (cfg.rafAdresi?.yaz) rafYazTetikle(0);
-    else vegaDurum.rafAdresi = vegaZimmetEsitle(cfg);
-    db.run(
-      "INSERT INTO vega_cache(key, json, updated_at) VALUES('goruntu', ?, ?) ON CONFLICT(key) DO UPDATE SET json=excluded.json, updated_at=excluded.updated_at",
-      JSON.stringify(g),
-      g.at,
-    );
-    Object.assign(vegaDurum, { ok: true, hata: null, at: g.at, sureMs: now() - bas, onbellek: false });
-    degisti();
+    else {
+      vegaDurum.rafAdresi = vegaZimmetEsitle(cfg);
+      zimmetDegisti = Boolean(vegaDurum.rafAdresi.degisen);
+    }
+    const sureMs = now() - bas;
+    if (vegaDurum.ardisikHata > 0) log.bilgi(`Vega yeniden okundu (${vegaDurum.ardisikHata} başarısız denemeden sonra)`);
+    Object.assign(vegaDurum, { ok: true, hata: null, at: g.at, sureMs, onbellek: false, ardisikHata: 0, sureler, degisiklik: !ayni });
+    const yavas = sureMs > 5000 ? ` [${Object.entries(sureler).map(([k, v]) => `${k} ${sn1(v)}`).join(', ')}]` : '';
+    log.bilgi(`Vega okundu (${tetik}): ${g.products.length} kart, ${ayni ? 'değişiklik yok' : 'değişti'}, ${sn1(sureMs)} sn${yavas}`);
+    if (!ayni || zimmetDegisti) degisti();
   } catch (e) {
-    Object.assign(vegaDurum, { ok: false, hata: e.message, sureMs: now() - bas });
-    log.hata('Vega okunamadı', e);
+    if (tur !== vegaTurNo) return vegaDurum;
+    vegaDurum.ardisikHata++;
+    Object.assign(vegaDurum, { ok: false, hata: e.message, sureMs: now() - bas, degisiklik: null });
+    // İlk hata ayrıntılı (yığınla), tekrarları kısa: günlük şişmesin.
+    if (vegaDurum.ardisikHata === 1) log.hata(`Vega okunamadı (${tetik})`, e);
+    else log.uyari(`Vega hâlâ okunamıyor (${vegaDurum.ardisikHata}. deneme, ${tetik}): ${e.message}`);
   } finally {
-    vegaDurum.calisiyor = false;
+    if (tur === vegaTurNo) vegaDurum.calisiyor = false;
   }
   return vegaDurum;
 }
@@ -109,8 +150,13 @@ async function vegaYenile() {
 let zamanlayici = null;
 function vegaZamanla() {
   clearInterval(zamanlayici);
-  const sn = Math.max(30, Number(config.load().yenileme) || 120);
-  zamanlayici = setInterval(() => vegaYenile().catch(() => {}), sn * 1000);
+  const sn = Math.max(15, Number(config.load().yenileme) || 60);
+  vegaDurum.sonraki = now() + sn * 1000;
+  zamanlayici = setInterval(() => {
+    vegaDurum.sonraki = now() + sn * 1000;
+    vegaYenile('zamanlayıcı').catch(() => {});
+  }, sn * 1000);
+  zamanlayici.unref?.();
 }
 
 function urun(id) {
@@ -299,6 +345,23 @@ function zimmetSil(depo, productId, shelf) {
   return true;
 }
 
+/**
+ * Terminalde ürün bir rafa konunca (rafa kaldırma, transfer hedefi, sayımda bulunma) o raf ürünün adresi olur ve
+ * rafAdresi.yaz açıksa Vega kartının raf alanına (Ortaş KOD10) yazılır. Excel ve yönetici zimmetlerine dokunulmaz.
+ */
+function terminalZimmet(depo, productId, shelf) {
+  zimmetEkle(depo, productId, shelf, 'TERMINAL');
+}
+
+/** Raf boşalınca yalnız terminalden gelen zimmet kalkar; Excel/yönetici/Vega zimmeti bilinçli bir karardır. */
+function terminalZimmetBosalt(depo, productId, shelf) {
+  const c = rafKodu(shelf);
+  const z = db.get('SELECT source FROM product_home WHERE depo=? AND product_id=? AND shelf=?', depo, String(productId), c);
+  if (!z || z.source !== 'TERMINAL') return;
+  db.run('DELETE FROM product_home WHERE depo=? AND product_id=? AND shelf=?', depo, String(productId), c);
+  rafYazTetikle();
+}
+
 /** Karttaki raf adresi metni → raf kodları. Virgül, noktalı virgül, | ya da satır sonu ayırır. */
 function adresleriAyir(metin) {
   return [...new Set(String(metin || '').split(/[,;|\r\n]+/).map(rafKodu).filter(Boolean))];
@@ -371,7 +434,7 @@ function vegaZimmetEsitle(cfg = config.load()) {
   if (kullanilmiyor) log.uyari(`Raf adresi deposu (${d}) kullanılan depolar arasında değil`);
   // Tanımsız adresler en sık geçenden: "PASSAT 61 kart" gibi raf olmayan bilgi buradan görülür.
   const tanimsizListe = [...tanimsiz.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([adres, kart]) => ({ adres, kart }));
-  return { alan: alan || null, depo: d, adres: toplam.n, urun: toplam.u, yeniRaf, gecersiz, tanimsiz: tanimsiz.size, tanimsizListe, kullanilmiyor };
+  return { alan: alan || null, depo: d, adres: toplam.n, urun: toplam.u, yeniRaf, degisen: eklenen + silinen + yeniRaf, gecersiz, tanimsiz: tanimsiz.size, tanimsizListe, kullanilmiyor };
 }
 
 // ---- Zimmetleri Vega kartına yazma (rafAdresi.yaz) ------------------------------------------
@@ -414,7 +477,15 @@ async function vegaRafYaz(cfg = config.load()) {
 
 async function rafYazCalistir(cfg) {
   const alan = goruntu && goruntu.rafAlan;
-  if (!cfg.rafAdresi?.yaz || !alan) return null;
+  if (!cfg.rafAdresi?.yaz) return null;
+  if (!alan) {
+    // Sessiz kalmasın: Ayarlar ve Özet'te görünür.
+    const ad = String(cfg.rafAdresi?.alan || '').trim();
+    const hata = ad ? `${ad} alanı Vega stok kartlarında bulunamadı` : 'Raf adresi yazılsın seçili ama stok kartı alanı boş (Ortaş: KOD10)';
+    if (vegaDurum.rafAdresi?.hata !== hata) log.uyari(`Raf adresi Vega'ya yazılamıyor: ${hata}`);
+    vegaDurum.rafAdresi = { alan: ad || null, yaz: true, hata, at: now() };
+    return vegaDurum.rafAdresi;
+  }
   const d = Number(cfg.rafAdresi?.depo) || varsayilanDepo();
   const bas = now();
   // Alanın sahibi artık program: önceden karttan okunmuş zimmetler programdan yönetilir.
@@ -467,12 +538,16 @@ async function rafYazCalistir(cfg) {
   if (yazilacak.length) log.bilgi(`Raf adresleri Vega'ya yazıldı (${alan}): ${yazilacak.length} kart${elle ? `, ${elle} kartta Vega'daki elle değişiklik ezildi` : ''}`);
   if (sigmayan.length) log.uyari(`${alan} alanına sığmayan raf adresi: ${sigmayan.length} kart (ör. ${sigmayan.slice(0, 3).join(', ')}); ilk raflar yazıldı`);
   const kullanilmiyor = !depolar().some((x) => x.ind === d);
+  // Kartta tek alan var: yalnız raf deposunun zimmetleri yazılır. Başka depodaki zimmetler görünür olsun.
+  const baska = db.get('SELECT COUNT(*) AS n, COUNT(DISTINCT product_id) AS u FROM product_home WHERE depo<>?', d);
   vegaDurum.rafAdresi = {
     alan,
     depo: d,
+    depoAd: depoAdi(d),
     yaz: true,
     adres: toplam.n,
     urun: toplam.u,
+    baskaDepo: baska.n,
     yazilan: yazilacak.length,
     elle,
     sigmayan: sigmayan.length,
@@ -482,7 +557,7 @@ async function rafYazCalistir(cfg) {
     sureMs: now() - bas,
     kullanilmiyor,
   };
-  degisti();
+  if (yazilacak.length) degisti();
   return vegaDurum.rafAdresi;
 }
 
@@ -563,6 +638,7 @@ function islemUygula(op, cihaz, kullanici) {
       // Mal fiziken rafa kondu; raf tanımı sonradan silinmiş olsa bile kayıt kaybolmasın.
       if (!rafVarMi(depo, shelf)) rafEkle(depo, shelf, { source: 'TERMINAL', note: 'Terminalden geldi' });
       miktarEkle(depo, pid, shelf, qty, { ...h, kind: 'PUTAWAY', ref: belge ? belge.docNo : p.receiptId || null });
+      terminalZimmet(depo, pid, shelf);
       if (p.lineId) {
         db.run(
           `INSERT INTO receipt_shelved(line_id, receipt_id, product_id, shelved, updated_at) VALUES(?,?,?,?,?)
@@ -590,6 +666,8 @@ function islemUygula(op, cihaz, kullanici) {
       // Sunucudaki miktar terminalin gördüğünden azsa eksiye düşmez; fazlası hareket kaydında görünür.
       miktarEkle(depo, pid, from, -qty, { ...h, kind: 'TRANSFER_OUT', ref: to });
       miktarEkle(depo, pid, to, qty, { ...h, kind: 'TRANSFER_IN', ref: from });
+      if (miktar(depo, pid, from) <= EPS) terminalZimmetBosalt(depo, pid, from);
+      terminalZimmet(depo, pid, to);
       return;
     }
     case 'COUNT_SUBMIT':
@@ -668,6 +746,10 @@ function sayimKaydet(op, p, h, olusturma) {
     for (const [pid, x] of sayilan) {
       const once = miktar(depo, pid, raf);
       miktarAyarla(depo, pid, raf, x.counted, { ...h, kind: 'COUNT', ref });
+      // Rafta bulunan ve hiçbir adresi olmayan ürünün adresi o raf olur; rafta olmadığı sayılan ürünün terminal adresi kalkar.
+      if (x.counted > EPS) {
+        if (!zimmetler(depo, pid).length) terminalZimmet(depo, pid, raf);
+      } else terminalZimmetBosalt(depo, pid, raf);
       db.run(
         `INSERT INTO count_line(session_id, shelf, product_id, terminal_system, server_before, counted, user, device, submitted_at)
          VALUES(?,?,?,?,?,?,?,?,?)
@@ -893,45 +975,81 @@ function kova(id) {
 
 let parcaCache = null;
 
-/** Map: anahtar ("head", "shelves", "b0".."b63") → { hash, json }. Sıra: head, shelves, kovalar. */
-function masterParcalari() {
-  if (parcaCache && parcaCache.surum === surum) return parcaCache.parcalar;
+/**
+ * Map: anahtar ("head", "shelves", "b0".."b63", v2'de ayrıca "q0".."q63") → { hash, json }. Sıra: head, shelves,
+ * kovalar, stok parçaları.
+ *
+ * v2 (1.5.0+ terminal): Vega stoku (`vegaStock`, `stocks`) kovadan ayrılıp stok parçasına (q) konur. Vega'da satış
+ * olunca stok her turda değişir; kovanın içinde olsa bütün kovalar (yüzlerce KB) yeniden inerdi. Artık kova yalnız
+ * rafa kaldırma/transfer/zimmet ile değişir, stok parçası ~50 KB'dır. v1 (eski terminal) kovada stokla birlikte alır.
+ */
+function masterParcalari(v = 1) {
+  if (!parcaCache || parcaCache.surum !== surum) parcaCache = { surum, v1: null, v2: null };
+  const onbellek = v >= 2 ? 'v2' : 'v1';
+  if (parcaCache[onbellek]) return parcaCache[onbellek];
   const g = masterGovde();
   const kovalar = Array.from({ length: KOVA_SAYISI }, () => ({ products: [], locations: [], homes: [] }));
-  for (const p of g.products) kovalar[kova(p.id)].products.push(p);
+  const stoklar = Array.from({ length: KOVA_SAYISI }, () => []);
+  for (const p of g.products) {
+    const k = kova(p.id);
+    if (v >= 2) {
+      const { vegaStock, stocks, ...govde } = p;
+      kovalar[k].products.push(govde);
+      if (vegaStock || Object.keys(stocks).length) stoklar[k].push({ id: p.id, vs: vegaStock, st: stocks });
+    } else kovalar[k].products.push(p);
+  }
   for (const l of g.locations) kovalar[kova(l.productId)].locations.push(l);
   for (const h of g.homes) kovalar[kova(h.productId)].homes.push(h);
   const { products, locations, homes, shelves, ...head } = g;
   const parcalar = new Map();
-  const ekle = (k, v) => {
-    const json = JSON.stringify(v);
+  const ekle = (k, x) => {
+    const json = JSON.stringify(x);
     parcalar.set(k, { hash: ozet(json), json });
   };
   ekle('head', head);
   ekle('shelves', shelves);
-  kovalar.forEach((v, i) => ekle('b' + i, v));
-  parcaCache = { surum, parcalar };
+  kovalar.forEach((x, i) => ekle('b' + i, x));
+  if (v >= 2) stoklar.forEach((x, i) => ekle('q' + i, { items: x }));
+  parcaCache[onbellek] = parcalar;
   return parcalar;
 }
 
 /**
- * Terminalin bilmediği ya da değişmiş parçalar, en çok `en` tanesi. head ve shelves sınırdan sayılmaz.
- * Dönen JSON metni: { buckets, parts: [{ key, hash, data }], remaining }.
+ * Terminalin bilmediği ya da değişmiş parçalar, en çok `en` kova. head, shelves ve stok parçaları sınırdan sayılmaz.
+ * Dönen JSON metni: { buckets, surum, parts: [{ key, hash, data }], remaining }. `surum`: bu verinin değişiklik sayacı
+ * (terminal `GET /api/changes?since=` ile bunu bekler).
+ *
+ * v2'de stok parçası kovasına bağlıdır: kova bu cevapta geliyorsa (terminal kovayı yazarken stokunu siler) ya da
+ * terminalde güncel kova varsa gönderilir; kovası eski kalan terminale stok parçası gönderilmez.
  */
-function masterParcaCevabi(bilinen = {}, en = 8) {
-  const parcalar = masterParcalari();
+function masterParcaCevabi(bilinen = {}, en = 8, v = 1) {
+  const parcalar = masterParcalari(v);
   const giden = [];
+  const gidenKova = new Set();
   let kalan = 0;
   for (const [k, p] of parcalar) {
+    if (k[0] === 'q' && k !== 'q') continue; // stok parçaları aşağıda
     if (bilinen[k] === p.hash) continue;
-    if (k.startsWith('b') && giden.filter((x) => x.k.startsWith('b')).length >= en) {
+    if (k[0] === 'b' && gidenKova.size >= en) {
       kalan++;
       continue;
     }
+    if (k[0] === 'b') gidenKova.add(k);
     giden.push({ k, p });
   }
+  if (v >= 2) {
+    for (let i = 0; i < KOVA_SAYISI; i++) {
+      const q = parcalar.get('q' + i);
+      const b = parcalar.get('b' + i);
+      const kovaGelir = gidenKova.has('b' + i);
+      const kovaGuncel = bilinen['b' + i] === b.hash;
+      if (!kovaGelir && !kovaGuncel) continue;
+      if (!kovaGelir && bilinen['q' + i] === q.hash) continue;
+      giden.push({ k: 'q' + i, p: q });
+    }
+  }
   const govde = giden.map(({ k, p }) => `{"key":${JSON.stringify(k)},"hash":${JSON.stringify(p.hash)},"data":${p.json}}`).join(',');
-  return `{"buckets":${KOVA_SAYISI},"parts":[${govde}],"remaining":${kalan}}`;
+  return `{"buckets":${KOVA_SAYISI},"surum":${surum},"parts":[${govde}],"remaining":${kalan}}`;
 }
 
 // ---- Yönetici görünümleri -------------------------------------------------------------------
@@ -1237,7 +1355,7 @@ async function sayimOnayla(id, { vegaYaz = false, stoknolar = null, dahilSayilma
     id,
   );
   degisti();
-  if (sonuc) vegaYenile().catch(() => {});
+  if (sonuc) vegaYenile('sayım').catch(() => {});
   return sonuc;
 }
 
@@ -1249,7 +1367,7 @@ async function sayimGeriAl(id) {
   db.run("UPDATE count_session SET status='CLOSED', vega_docs=NULL, vega_written_at=NULL, note=TRIM(note || ' · onay geri alındı') WHERE id=?", id);
   log.bilgi(`Sayım ${s.no} onayı geri alındı (${docs.map((d) => d.belgeNo).join(', ') || 'Vega fişi yoktu'})`);
   degisti();
-  vegaYenile().catch(() => {});
+  vegaYenile('sayım geri alındı').catch(() => {});
 }
 
 module.exports = {

@@ -21,6 +21,12 @@ Sistem iki parçadır:
    Yazdırırken ölçek **%100 / gerçek boyut**.
 5. **Kullanıcılar › Yeni kullanıcı**: depo personeli, 4-8 haneli şifre.
 6. **Cihazlar › Yeni cihaz** (TRM-01…): açılan pencerede iki QR var (aşağıda).
+7. İstenirse **Ayarlar › Vega'daki raf adresi**: stok kartı alanı (Ortaş: KOD10), raflar hangi depoda, **Program bu alana yazsın**.
+   Terminalde rafa kaldırılan, transfer edilen ya da sayımda bulunan ürünün rafı o ürünün adresi olur ve ~3 sn sonra karta yazılır
+   (Excel ve yönetici zimmetleri de). Alan boşsa ya da kartlarda yoksa Ayarlar'da ve günlükte açık uyarı çıkar. Kartta tek alan
+   olduğundan yalnız seçili deponun adresleri yazılır. İlk yazma o alandaki eski bilgiyi bütün kartlardan siler (programda saklanır).
+   Vega'yı okuma aralığı **Ayarlar › Sunucu › Vega yenileme** (varsayılan 60 sn); Özet'te son deneme, süre ve hata görünür,
+   günlükte her okuma bir satırdır. İçerik değişmediyse terminallere haber gitmez.
 
 Program kapatılınca saat yanında çalışmaya devam eder; terminaller bağlı kalır. Windows açılınca kendiliğinden başlar
 (Ayarlar › Sunucu'dan kapatılabilir). Sunucu bilgisayarına modemden **sabit IP** verin; adres değişirse terminaller

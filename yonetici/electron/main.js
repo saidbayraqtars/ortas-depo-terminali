@@ -1,7 +1,7 @@
 // Ortaş Depo Yönetici — Electron kabuğu.
 // Sunucu (terminallerin bağlandığı) aynı süreçte, ayardaki portta (5480) ağa açık çalışır.
 // Pencere kapanınca program saat yanında (tepsi) çalışmaya devam eder; terminaller sunucusuz kalmasın.
-const { app, BrowserWindow, Tray, Menu, dialog, shell, ipcMain, Notification } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, shell, ipcMain, Notification, powerSaveBlocker } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -248,6 +248,8 @@ async function baslat() {
     app.setLoginItemSettings({ openAtLogin: true, args: ['--gizli'] });
     fs.writeFileSync(ilk, new Date().toISOString());
   }
+  // Terminaller sunucuya ve sunucu Vega'ya sürekli bağlı kalmalı: Windows uykuya geçip zamanlayıcıları durdurmasın (ekran kapanabilir).
+  powerSaveBlocker.start('prevent-app-suspension');
   ipcKur();
   tepsiKur();
   if (!gizliBasla) pencereAc();

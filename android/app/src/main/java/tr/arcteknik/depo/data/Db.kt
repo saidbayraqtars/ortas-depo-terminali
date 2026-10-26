@@ -19,7 +19,7 @@ import java.io.Reader
  * Çok depo: raf, raf stoku, Vega stoku ve asıl raf depoya bağlıdır. [depot] terminalin çalıştığı depodur
  * (transfer, sayım, sorgu); mal kabul belgesi kendi deposunu taşır ve rafa kaldırma orada olur.
  */
-class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
+class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 7) {
 
     init {
         // Eşitleme ana veriyi yazarken ekranlar (ana iş parçacığı) beklemeden son kaydedilmiş hali okusun.
@@ -54,8 +54,10 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
 
     /** Sunucudan tümüyle yeniden gelen tablolar. */
     private fun createMaster(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE product(id TEXT PRIMARY KEY, code TEXT NOT NULL, name TEXT NOT NULL, unit TEXT NOT NULL, vega_stock REAL NOT NULL DEFAULT 0, bucket INTEGER NOT NULL DEFAULT 0)")
+        db.execSQL("CREATE TABLE product(id TEXT PRIMARY KEY, code TEXT NOT NULL, name TEXT NOT NULL, unit TEXT NOT NULL, vega_stock REAL NOT NULL DEFAULT 0, bucket INTEGER NOT NULL DEFAULT 0, search TEXT NOT NULL DEFAULT '')")
         db.execSQL("CREATE INDEX ix_product_code ON product(code)")
+        // Kod araması büyük/küçük harfe bakmaz (`code=? COLLATE NOCASE`); indeks aynı sıralamada olmalı, yoksa 130 bin satır taranır.
+        db.execSQL("CREATE INDEX ix_product_code_nc ON product(code COLLATE NOCASE)")
         db.execSQL("CREATE INDEX ix_product_bucket ON product(bucket)")
         db.execSQL("CREATE TABLE product_stock(product_id TEXT NOT NULL, depot INTEGER NOT NULL, qty REAL NOT NULL, PRIMARY KEY(product_id, depot))")
         db.execSQL("CREATE TABLE barcode(code TEXT PRIMARY KEY, product_id TEXT NOT NULL)")
@@ -87,6 +89,13 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
             createParts(db)
             db.execSQL("DELETE FROM master_part")
         }
+        // 7: isimle arama SQL'de (product.search) ve kod araması indeksli; ürün listesi artık belleğe alınmıyor.
+        // Arama sütunu ürünler yeniden inerken dolar, bu yüzden bütün parçalar yeniden istenir.
+        if (oldVersion < 7) {
+            db.execSQL("ALTER TABLE product ADD COLUMN search TEXT NOT NULL DEFAULT ''")
+            db.execSQL("CREATE INDEX IF NOT EXISTS ix_product_code_nc ON product(code COLLATE NOCASE)")
+            db.execSQL("DELETE FROM master_part")
+        }
         // 6: sayım kapsamı (raf önekleri) ve boş sayılan raf. Baş parça yeniden istensin: kapsam gelsin,
         // yöneticide kapatılıp cihazda açık kalmış sayımlar temizlensin.
         if (oldVersion < 6) {
@@ -109,7 +118,6 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
      * @return ürün, raf, konum ve zimmet dışındaki üst alanlar (depo, kullanıcı, belge, sayım, uygulama sürümü).
      */
     fun replaceMaster(input: Reader): JSONObject {
-        searchIndex = null
         val head = JSONObject()
         val db = writableDatabase
         db.beginTransaction()
@@ -118,7 +126,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
                 db.delete(t, null, null)
             }
             db.delete("master_part", null, null)
-            val insProduct = db.compileStatement("INSERT OR REPLACE INTO product(id, code, name, unit, vega_stock, bucket) VALUES(?,?,?,?,?,?)")
+            val insProduct = db.compileStatement("INSERT OR REPLACE INTO product(id, code, name, unit, vega_stock, bucket, search) VALUES(?,?,?,?,?,?,?)")
             val insStock = db.compileStatement("INSERT OR REPLACE INTO product_stock(product_id, depot, qty) VALUES(?,?,?)")
             val insBarcode = db.compileStatement("INSERT OR REPLACE INTO barcode(code, product_id) VALUES(?,?)")
             val insShelf = db.compileStatement("INSERT OR REPLACE INTO shelf(depot, code, zone) VALUES(?,?,?)")
@@ -136,7 +144,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
                     when (val key = r.nextName()) {
                         "products" -> r.eachObject { p ->
                             val id = p.getString("id")
-                            insProduct.exec(id, p.getString("code"), p.getString("name"), p.optString("unit", "Adet"), p.optDouble("vegaStock", 0.0), Buckets.of(id))
+                            insProduct.exec(id, p.getString("code"), p.getString("name"), p.optString("unit", "Adet"), p.optDouble("vegaStock", 0.0), Buckets.of(id), Fuzzy.searchKey(p.getString("code"), p.getString("name")))
                             val stocks = p.optJSONObject("stocks")
                             if (stocks != null) {
                                 for (k in stocks.keys()) insStock.exec(id, k.toIntOrNull() ?: 0, stocks.optDouble(k, 0.0))
@@ -169,8 +177,6 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
         } finally {
             db.endTransaction()
         }
-        // Eşitleme sürerken yapılan isimle arama eski ürün listesinden dizin kurmuş olabilir.
-        searchIndex = null
         return head
     }
 
@@ -184,7 +190,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
     }
 
     /** [applyParts] sonucu: sunucuda kalan değişmiş kova sayısı ve geldiyse "head" (depo, belge, uygulama sürümü). */
-    class PartsResult(val remaining: Int, val head: JSONObject?, val parts: Int)
+    class PartsResult(val remaining: Int, val head: JSONObject?, val parts: Int, val surum: Int = -1)
 
     /**
      * Sunucunun `/api/master/parts` cevabını akıştan okur. Her parça (head, raflar, bir kova) kendi kısa işlemiyle
@@ -195,6 +201,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
         var remaining = 0
         var head: JSONObject? = null
         var parts = 0
+        var surum = -1
         val db = writableDatabase
         JsonReader(input).use { r ->
             r.beginObject()
@@ -202,6 +209,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
                 when (r.nextName()) {
                     "buckets" -> r.nextInt().let { if (it != Buckets.COUNT) throw java.io.IOException("Sunucunun kova sayısı farklı ($it)") }
                     "remaining" -> remaining = r.nextInt()
+                    "surum" -> surum = r.nextInt()
                     "parts" -> {
                         r.beginArray()
                         while (r.hasNext()) {
@@ -219,6 +227,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
                                                 key == "head" -> (r.readValue() as JSONObject).also { applyHead(db, it); head = it }
                                                 key == "shelves" -> writeShelves(db, r)
                                                 key.startsWith("b") -> writeBucket(db, key.substring(1).toInt(), r)
+                                                key.startsWith("q") -> writeStock(db, key.substring(1).toInt(), r)
                                                 else -> r.skipValue()
                                             }
                                             db.insertWithOnConflict("master_part", null, ContentValues().apply {
@@ -242,8 +251,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
             }
             r.endObject()
         }
-        if (parts > 0) searchIndex = null
-        return PartsResult(remaining, head, parts)
+        return PartsResult(remaining, head, parts, surum)
     }
 
     private fun writeShelves(db: SQLiteDatabase, r: JsonReader) {
@@ -252,12 +260,44 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
         r.eachObject { s -> ins.exec(s.optInt("depot", 0), s.getString("code").uppercase(), s.optString("zone", "")) }
     }
 
+    /**
+     * Bir kovanın Vega stoku (v2 sunucu, `q` parçası): kovadaki ürünlerin stokları baştan yazılır. Parçada olmayan ürünün
+     * stoku 0'dır. Kovada olmayan ürün satırı alınmaz (kova henüz gelmediyse stok öksüz kalmasın).
+     */
+    private fun writeStock(db: SQLiteDatabase, b: Int, r: JsonReader) {
+        val arg = arrayOf(b.toString())
+        db.execSQL("DELETE FROM product_stock WHERE product_id IN (SELECT id FROM product WHERE bucket=?)", arg)
+        db.execSQL("UPDATE product SET vega_stock=0 WHERE bucket=?", arg)
+        val upd = db.compileStatement("UPDATE product SET vega_stock=? WHERE id=?")
+        val insStock = db.compileStatement("INSERT OR REPLACE INTO product_stock(product_id, depot, qty) VALUES(?,?,?)")
+        r.beginObject()
+        while (r.hasNext()) {
+            when (r.nextName()) {
+                "items" -> r.eachObject { item ->
+                    val id = item.getString("id")
+                    upd.clearBindings()
+                    upd.bindDouble(1, item.optDouble("vs", 0.0))
+                    upd.bindString(2, id)
+                    if (upd.executeUpdateDelete() > 0) {
+                        val st = item.optJSONObject("st")
+                        if (st != null) for (k in st.keys()) insStock.exec(id, k.toIntOrNull() ?: 0, st.optDouble(k, 0.0))
+                    }
+                }
+                else -> r.skipValue()
+            }
+        }
+        r.endObject()
+    }
+
     private fun writeBucket(db: SQLiteDatabase, b: Int, r: JsonReader) {
         val arg = arrayOf(b.toString())
+        // Kova yeniden yazılırken stoku silinir (v2'de stok ayrı `q` parçasında gelir); stok özeti unutulur ki bağlantı
+        // yarıda kalırsa sonraki turda sunucu stok parçasını yeniden göndersin.
+        db.delete("master_part", "key=?", arrayOf("q$b"))
         db.execSQL("DELETE FROM product_stock WHERE product_id IN (SELECT id FROM product WHERE bucket=?)", arg)
         db.execSQL("DELETE FROM barcode WHERE product_id IN (SELECT id FROM product WHERE bucket=?)", arg)
         for (t in listOf("product", "location", "home")) db.delete(t, "bucket=?", arg)
-        val insProduct = db.compileStatement("INSERT OR REPLACE INTO product(id, code, name, unit, vega_stock, bucket) VALUES(?,?,?,?,?,?)")
+        val insProduct = db.compileStatement("INSERT OR REPLACE INTO product(id, code, name, unit, vega_stock, bucket, search) VALUES(?,?,?,?,?,?,?)")
         val insStock = db.compileStatement("INSERT OR REPLACE INTO product_stock(product_id, depot, qty) VALUES(?,?,?)")
         val insBarcode = db.compileStatement("INSERT OR REPLACE INTO barcode(code, product_id) VALUES(?,?)")
         val insLocation = db.compileStatement("INSERT OR REPLACE INTO location(depot, product_id, shelf, qty, bucket) VALUES(?,?,?,?,?)")
@@ -267,7 +307,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
             when (r.nextName()) {
                 "products" -> r.eachObject { p ->
                     val id = p.getString("id")
-                    insProduct.exec(id, p.getString("code"), p.getString("name"), p.optString("unit", "Adet"), p.optDouble("vegaStock", 0.0), b)
+                    insProduct.exec(id, p.getString("code"), p.getString("name"), p.optString("unit", "Adet"), p.optDouble("vegaStock", 0.0), b, Fuzzy.searchKey(p.getString("code"), p.getString("name")))
                     val stocks = p.optJSONObject("stocks")
                     if (stocks != null) for (k in stocks.keys()) insStock.exec(id, k.toIntOrNull() ?: 0, stocks.optDouble(k, 0.0))
                     val bcs = p.optJSONArray("barcodes")
@@ -426,21 +466,53 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
             ?: query("SELECT ${productCols()} FROM product p WHERE p.code=? COLLATE NOCASE", s) { it.product() }.firstOrNull()
     }
 
-    // İsimle arama dizini: ürün listesi yalnız ana veri gelince değişir; o zaman sıfırlanır.
-    @Volatile
-    private var searchIndex: List<Fuzzy.Entry>? = null
-
-    /** Ad ya da kodla, yazım hatasına dayanıklı arama. En iyi [limit] sonuç. */
-    fun searchProducts(q: String, limit: Int = 40): List<Product> {
+    /**
+     * Ad ya da kodla, yazım hatasına dayanıklı arama. En iyi [limit] sonuç. Ürün listesi belleğe alınmaz (130 bin ürün
+     * düşük belleli terminalde taşıyordu): 1) her kelimeyi içeren kartlar SQL'de bulunur, 2) az sonuç varsa yazım
+     * hatası için kelimelerin ilk iki harfiyle başlayan sözcükleri olan kartlar (en çok 4000) puanlanır.
+     * [cancelled] true olursa arama bırakılır (kullanıcı yazmaya devam etti).
+     */
+    fun searchProducts(q: String, limit: Int = 40, cancelled: () -> Boolean = { false }): List<Product> {
         val tokens = Fuzzy.tokens(q)
         if (tokens.isEmpty()) return emptyList()
-        val index = searchIndex ?: query("SELECT id, code, name FROM product") { Fuzzy.Entry(it.getString(0), it.getString(1), it.getString(2)) }
-            .also { searchIndex = it }
+        val t0 = System.currentTimeMillis()
         val compact = tokens.joinToString("")
-        val hits = index.mapNotNull { e -> Fuzzy.score(tokens, compact, e).takeIf { it > 0 }?.let { e to it } }
-            .sortedWith(compareByDescending<Pair<Fuzzy.Entry, Double>> { it.second }.thenBy { it.first.name })
+        val scored = HashMap<String, Pair<Fuzzy.Entry, Double>>()
+        fun consider(rows: List<Fuzzy.Entry>) {
+            for (e in rows) {
+                val sc = Fuzzy.score(tokens, compact, e)
+                if (sc > 0) scored[e.id] = e to sc
+            }
+        }
+        val entry = { c: Cursor -> Fuzzy.Entry(c.getString(0), c.getString(1), c.getString(2)) }
+        consider(
+            query(
+                "SELECT id, code, name FROM product WHERE " + tokens.joinToString(" AND ") { "search LIKE ?" } + " LIMIT 3000",
+                *tokens.map { "%$it%" }.toTypedArray(), map = entry,
+            ),
+        )
+        if (cancelled()) return emptyList()
+        if (scored.size < limit) {
+            val pre = tokens.filter { it.length >= 3 }.map { it.take(2) }.distinct()
+            if (pre.isNotEmpty()) {
+                consider(
+                    query(
+                        "SELECT id, code, name FROM product WHERE " + pre.joinToString(" OR ") { "search LIKE ? OR search LIKE ?" } + " LIMIT 4000",
+                        *pre.flatMap { listOf("$it%", "% $it%") }.toTypedArray(), map = entry,
+                    ),
+                )
+                if (cancelled()) return emptyList()
+            }
+        }
+        val sonuc = scored.values
+            .sortedWith(compareByDescending<Pair<Fuzzy.Entry, Double>> { it.second }.thenBy { it.first.nName })
             .take(limit)
-        return hits.mapNotNull { productById(it.first.id) }
+            .mapNotNull { productById(it.first.id) }
+        val ms = System.currentTimeMillis() - t0
+        android.util.Log.d("arama", "\"$q\" → ${sonuc.size} sonuç, ${scored.size} aday, $ms ms")
+        // Yavaş arama uzaktan raporda görünsün (düşük donanımlı terminallerde ölçmek için).
+        if (ms > 400) tr.arcteknik.depo.diag.Diag.crumb("arama yavaş: $ms ms (${scored.size} aday)")
+        return sonuc
     }
 
     fun shelfExists(code: String, d: Int = depot): Boolean =
@@ -485,15 +557,16 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
         )?.toDoubleOrNull() ?: 0.0
 
     /** Bütün depoların belgeleri; çalışılan deponunkiler önce. */
-    fun receipts(open: Boolean): List<Receipt> {
-        val all = query(
-            "SELECT r.id, r.doc_no, r.supplier, r.date, COUNT(l.id), SUM(CASE WHEN l.shelved>=l.accepted THEN 1 ELSE 0 END), r.depot, r.depot_name " +
-                "FROM receipt r LEFT JOIN receipt_line l ON l.receipt_id=r.id GROUP BY r.id ORDER BY (r.depot<>$depot), r.date DESC, r.doc_no DESC",
-        ) { Receipt(it.getString(0), it.getString(1), it.getString(2), it.getString(3), it.getInt(4), it.getInt(5), it.getInt(6), it.getString(7)) }
-        return all.filter { (it.doneLines < it.lineCount) == open }
-    }
+    fun receipts(open: Boolean): List<Receipt> = receiptRows("").filter { (it.doneLines < it.lineCount) == open }
 
-    fun receipt(id: String): Receipt? = receipts(true).firstOrNull { it.id == id } ?: receipts(false).firstOrNull { it.id == id }
+    private fun receiptRows(where: String, vararg args: String): List<Receipt> = query(
+        "SELECT r.id, r.doc_no, r.supplier, r.date, COUNT(l.id), SUM(CASE WHEN l.shelved>=l.accepted THEN 1 ELSE 0 END), r.depot, r.depot_name " +
+            "FROM receipt r LEFT JOIN receipt_line l ON l.receipt_id=r.id $where GROUP BY r.id ORDER BY (r.depot<>$depot), r.date DESC, r.doc_no DESC",
+        *args,
+    ) { Receipt(it.getString(0), it.getString(1), it.getString(2), it.getString(3), it.getInt(4), it.getInt(5), it.getInt(6), it.getString(7)) }
+
+    /** Tek belge; açık ya da kapalı (eskiden bütün belgeler iki kez gruplanıyordu). */
+    fun receipt(id: String): Receipt? = receiptRows("WHERE r.id=?", id).firstOrNull()
 
     /** Belge satırları; Vega stoku belgenin deposundaki. */
     fun receiptLines(receiptId: String): List<ReceiptLine> {
@@ -537,6 +610,9 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
         }
 
     fun pendingOpCount(): Int = scalar("SELECT COUNT(*) FROM op")?.toIntOrNull() ?: 0
+
+    /** Gönderilmeyi bekleyen (hata almamış) işlem sayısı. */
+    fun pendingCount(): Int = scalar("SELECT COUNT(*) FROM op WHERE status=?", OpStatus.PENDING)?.toIntOrNull() ?: 0
 
     fun movements(productId: String, limit: Int = 5): List<Movement> =
         query("SELECT ts, text, qty FROM movement WHERE product_id=? ORDER BY ts DESC LIMIT $limit", productId) {
@@ -597,7 +673,6 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 6) {
     }
 
     fun clearAll() {
-        searchIndex = null
         val db = writableDatabase
         for (t in listOf("product", "product_stock", "barcode", "depot", "shelf", "location", "home", "receipt", "receipt_line", "count_session", "count_line", "count_shelf", "op", "movement", "app_user", "master_part")) {
             db.delete(t, null, null)

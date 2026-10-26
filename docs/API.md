@@ -15,7 +15,7 @@ Hata gövdesi: `{"error": "açıklama"}`. Terminal `401/403` gelince "Cihaz yetk
 
 ## Eşitleme sırası
 
-1. Terminal önce bekleyen işlemleri `POST /api/ops` ile gönderir.
+1. Terminal önce bekleyen işlemleri `POST /api/ops` ile gönderir. Ana veri çekilirken yeni işlem eklenirse çekim bırakılır, önce o gider.
 2. Bekleyen işlem kalmadıysa ana veriyi alır: 1.3.0+ terminal `POST /api/master/parts` ile yalnız değişen parçaları,
    eski terminal (ya da bu ucu bilmeyen eski sunucu, `404`) `GET /api/master` ile hepsini.
 
@@ -81,6 +81,28 @@ Terminal her parçayı ayrı kısa işlemle yazar (kovanın eski satırlarını 
 `remaining > 0` ise hemen yeniden ister. Değişiklik yoksa `parts` boş gelir. Bir rafa kaldırma ya da transfer
 yalnız ilgili ürünün kovasını (ve belge ilerlemesi için `head`'i) değiştirir. Sunucu işlemi reddederse terminal
 bütün özetleri unutur (sonraki tur hepsi yeniden iner). Sıra sabittir; Vega yenilemesi içerik değişmeden özet değiştirmez.
+
+### Stok parçaları, `v: 2` (1.5.0+)
+
+Vega'da satış olunca stok her tur değişir; stok kovanın içindeyken bütün kovalar yeniden iniyordu. İstekte `"v": 2`
+gönderen terminal için stok kovadan ayrılır:
+
+- `b0` … `b63` ürünleri `vegaStock` ve `stocks` olmadan taşır; yalnız rafa kaldırma, transfer, zimmet ve yeni kart
+  kovayı değiştirir.
+- `q0` … `q63`: aynı kovaların stoku, `{"items": [{"id": "P1", "vs": 24, "st": {"1": 24}}]}` (`vs` toplam, `st` depo bazlı;
+  stoksuz ürün yoktur). Terminal kovanın stokunu silip bu listeyi yazar.
+- `qN` yalnız `bN` bu cevapta geliyorsa ya da terminalde `bN` güncelse gönderilir (terminal kovayı yazarken eski stokunu siler,
+  yeni kovanın stoku eksik kalmasın). Terminal `bN` yazarken `qN` özetini de unutur. `q` parçaları `max` sınırından sayılmaz.
+- Cevapta `"surum": N`: bu verinin değişiklik sayacı (aşağıdaki `/api/changes` için).
+
+`v` yoksa ya da bu ucu bilmeyen eski sunucuda stok kovanın içindedir (1.3.0 / 1.4.0 davranışı).
+
+## `GET /api/changes?since=N&wait=25` (1.5.0+)
+
+Terminal ana veriyi aldıktan sonra cevaptaki `surum`u `since` ile gönderir. Sunucuda bir şey değişmediyse en çok `wait` sn
+(1–30) bekler; değişiklik olunca ya da süre dolunca `{"surum": N}` döner. `N !== since` ise hemen döner. Terminal dakikada bir
+yoklamak yerine bunu dinler: yönetici, başka terminal ya da Vega'daki yeni mal kabul/stok saniyeler içinde gelir. Vega'dan okunan
+içerik değişmediyse sayaç artmaz. Uç yoksa (`404`, eski sunucu) terminal dakikada bir yoklar.
 
 ## `POST /api/rapor` (1.3.0+)
 

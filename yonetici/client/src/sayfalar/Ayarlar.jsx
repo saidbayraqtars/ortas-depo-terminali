@@ -299,6 +299,10 @@ export default function Ayarlar() {
         <div className="grid g2">
           <Bolum ikon="mapPoint" baslik="Vega'daki raf adresi" aciklama="Ürünün raf adresleri Vega stok kartının bir özel kod alanında durur. Program ya bu alanı okuyup ürünü o raflara zimmetler ya da zimmetleri bu alana kendisi yazar. Birden çok raf virgülle: A-01-02, B-03-01."
             alt={<Btn kind="primary" onClick={async () => {
+              if (t.rafAdresi.yaz && !t.rafAdresi.alan) {
+                toast('"Program bu alana yazsın" için önce stok kartı alanını yazın (Ortaş: KOD10)', true);
+                return;
+              }
               const ilkYazma = t.rafAdresi.yaz && t.rafAdresi.alan && (!a.rafAdresi?.yaz || a.rafAdresi.alan !== t.rafAdresi.alan);
               if (ilkYazma && !(await sor(
                 `${t.rafAdresi.alan} alanına yazılsın mı?`,
@@ -320,7 +324,7 @@ export default function Ayarlar() {
             </div>
             <label className="check">
               <input type="checkbox" checked={Boolean(t.rafAdresi.yaz)} onChange={(e) => setT('rafAdresi.yaz', e.target.checked)} />
-              <span><b>Program bu alana yazsın</b><br /><span className="muted small">Zimmetler değiştikçe karta yazılır. Alandaki eski bilgi silinir (ilk değerler programda saklanır); Vega'da bu alan elle değiştirilmemeli.</span></span>
+              <span><b>Program bu alana yazsın</b><br /><span className="muted small">Terminalde rafa kaldırılan, transfer edilen ya da sayımda bulunan ürünün rafı, ayrıca Excel ve yönetici zimmetleri karta yazılır (zimmet değişince ~3 sn sonra). Alandaki eski bilgi silinir (ilk değerler programda saklanır); Vega'da bu alan elle değiştirilmemeli.</span></span>
             </label>
             {!t.rafAdresi.yaz && (
               <label className="check">
@@ -335,6 +339,7 @@ export default function Ayarlar() {
                   {durum.vega.rafAdresi.hata
                     ? <>Vega'ya yazılamadı: {durum.vega.rafAdresi.hata}</>
                     : <>{durum.vega.rafAdresi.urun?.toLocaleString('tr-TR')} ürünün {durum.vega.rafAdresi.adres?.toLocaleString('tr-TR')} raf adresi {durum.vega.rafAdresi.alan} alanında. Son yazmada {durum.vega.rafAdresi.yazilan?.toLocaleString('tr-TR')} kart güncellendi.</>}
+                  {durum.vega.rafAdresi.baskaDepo > 0 && <> {durum.vega.rafAdresi.baskaDepo.toLocaleString('tr-TR')} zimmet başka depoda; kartta tek alan olduğundan yalnız {durum.vega.rafAdresi.depoAd || 'seçili depo'} adresleri yazılır.</>}
                   {durum.vega.rafAdresi.elle > 0 && <> Vega'da elle değiştirilmiş {durum.vega.rafAdresi.elle} kartın üzerine yazıldı.</>}
                   {durum.vega.rafAdresi.sigmayan > 0 && <> {durum.vega.rafAdresi.sigmayan} kartın adresleri {durum.vega.rafAdresi.uzunluk} karaktere sığmadı, ilk raflar yazıldı (ör. {durum.vega.rafAdresi.sigmayanListe.slice(0, 3).join(', ')}).</>}
                 </p>

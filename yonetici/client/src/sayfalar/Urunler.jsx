@@ -20,7 +20,7 @@ const FILTRE = [
   ['adressiz', 'Raf adresi yok'],
 ];
 
-const ZIMMET = { VEGA: ['Vega kartı', 'b-info'], IMPORT: ['Excel', 'b-mute'], ADMIN: ['Elle', 'b-mute'] };
+const ZIMMET = { VEGA: ['Vega kartı', 'b-info'], IMPORT: ['Excel', 'b-mute'], ADMIN: ['Elle', 'b-mute'], TERMINAL: ['Terminal', 'b-info'] };
 
 export default function Urunler() {
   const [q, setQ] = useState('');

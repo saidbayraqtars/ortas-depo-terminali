@@ -47,6 +47,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.withContext
 import tr.arcteknik.depo.data.Product
 import tr.arcteknik.depo.data.Repo.Companion.fmt
@@ -69,7 +71,7 @@ fun ProductSearchDialog(vm: AppVm, initial: String, note: String?, onPick: (Prod
     }
     LaunchedEffect(q.text) {
         if (q.text.isNotBlank()) delay(250)
-        results = if (q.text.isBlank()) null else withContext(Dispatchers.Default) { vm.repo.db.searchProducts(q.text) }
+        results = if (q.text.isBlank()) null else withContext(Dispatchers.Default) { val ctx = coroutineContext; vm.repo.db.searchProducts(q.text, cancelled = { !ctx.isActive }) }
     }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {

@@ -49,5 +49,12 @@ El terminalinde bu düğme Ayarlar › Kamera düğmesi ile gizlenebilir.
 ## Çevrimdışı çalışma
 
 Depoda çekmeyen yerde işlemler cihazda saklanır, üstteki gösterge "Çevrimdışı" olur.
-Bağlantı gelince kuyruk kendiliğinden gönderilir (uygulama açıkken dakikada bir, kapalıyken 15 dakikada bir).
+Bağlantı gelince kuyruk kendiliğinden gönderilir. Uygulama açıkken terminal sunucudaki değişikliği bekler (1.5.0+ yönetici
+programı: yönetici ya da başka terminalin işlemi ve Vega'daki yeni belge/stok birkaç saniyede gelir; eski programda dakikada bir
+yoklar), kapalıyken Android 15 dakikada bir dener.
+
+**Gecikme olmasın diye:** Android 7'nin pil tasarrufu (Doze) ekranı kapalı, hareketsiz cihazda ağı keser. Terminalde
+Ayarlar › Pil › Pil optimizasyonu › Ortaş Depo → **Optimize etme** seçin ve çalışma sırasında ekranı otomatik kapanmaya bırakmayın
+(Ekran › Uyku süresini uzatın). Yönetici programının kurulu olduğu bilgisayar uykuya geçmemeli (program bunu engeller, yine de
+Güç seçeneklerinde "Uyku: Hiçbir zaman" olmalı).
 Ana menü › **Kuyruk** ekranı bekleyen ve reddedilen işlemleri gösterir.
