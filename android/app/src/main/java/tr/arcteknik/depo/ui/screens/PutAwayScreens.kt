@@ -77,7 +77,7 @@ fun ReceiptListScreen(vm: AppVm, online: Boolean, version: Int) {
         ProductScanField(
             vm,
             title = "Ürün ya da belge okutun",
-            hint = "Belge no yazınca liste süzülür; ürün okutunca belgesiz de kalkar",
+            hint = "Belge no ya da firma adı yazın; ürün okutunca belgesiz de kalkar",
             onProduct = { vm.go(Route.PutAwayProduct(it.id)) },
             onOther = { raw ->
                 val code = eInvoiceNo(raw) ?: raw

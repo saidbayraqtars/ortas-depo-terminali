@@ -17,7 +17,8 @@ programının bilgisayarındaki etiket yazıcısından çıkarır.
 ## Rafa kaldırma ve raftan alma (1.5.0+)
 
 - **Rafa Kaldır** listesi çalışılan deponun belgelerini gösterir ("Bütün depolar" ile hepsi). Okutma alanına belge
-  numarasının bir kısmı yazılınca liste süzülür: `2014`, `npe2014` ya da tedarikçi adı `NPE2026000002014`'ü bulur.
+  numarasının bir kısmı ya da belgedeki firma (tedarikçi) adı yazılınca liste süzülür: `2014` ya da `npe2014`
+  `NPE2026000002014`'ü, `nipar oto` Nipar Otomotiv'den gelen belgeleri bulur (Türkçe harfsiz yazılabilir).
   Tam numara ya da e-Fatura karekodu okutulursa belge açılır.
 - Aynı alana **ürün** okutulursa belge seçmeden rafa kaldırılır: ürün → miktar → raf. Miktar o depodaki açık belgelerden
   (en eski önce) düşülür; belgede olmayan kısım **belgesiz** kalkar (Vega'da stok var ama mal kabul belgesi yok:
