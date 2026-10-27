@@ -99,15 +99,19 @@ fun HomeScreen(vm: AppVm, online: Boolean, version: Int) {
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Tile("Rafa Kaldır", "Kabul edilen mal", Ic.Inbox, openReceipts, Modifier.weight(1f)) { vm.go(Route.Receipts) }
+                Tile("Raftan Al", "Raftaki malı eksilt", Ic.Outbox, 0, Modifier.weight(1f)) { vm.go(Route.Pick) }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Tile("Raf Transferi", "Raftan rafa taşı", Ic.Transfer, 0, Modifier.weight(1f)) { vm.go(Route.Transfer()) }
+                Tile("Sayım", "Raf ya da tam sayım", Ic.Clipboard, openCounts, Modifier.weight(1f)) { vm.go(Route.Counts) }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Tile("Ürün Sorgu", "Hangi rafta, kaç adet", Ic.Search, 0, Modifier.weight(1f)) { vm.go(Route.ProductQuery()) }
                 Tile("Raf Sorgu", "Rafta neler var", Ic.Pin, 0, Modifier.weight(1f)) { vm.go(Route.ShelfQuery()) }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Tile("Sayım", "Raf ya da tam sayım", Ic.Clipboard, openCounts, Modifier.weight(1f)) { vm.go(Route.Counts) }
                 Tile("Kuyruk", "Bekleyen işlemler", Ic.CloudUp, pending, Modifier.weight(1f)) { vm.go(Route.Queue) }
+                Box(Modifier.weight(1f))
             }
         }
 

@@ -147,9 +147,11 @@ fun ProductScanField(
     hint: String,
     onProduct: (Product) -> Unit,
     onOther: ((String) -> Boolean)? = null,
+    /** Alana yazılıp henüz gönderilmemiş metin (Rafa Kaldır listesi yazarken süzülür). */
+    onTextChange: ((String) -> Unit)? = null,
 ) {
     var search by remember { mutableStateOf<Pair<String, String?>?>(null) }
-    ScanField(title, hint, search == null, vm.repo.prefs.cameraButton, { code ->
+    ScanField(title, hint, search == null, vm.repo.prefs.cameraButton, onTextChange = onTextChange, onScan = { code ->
         val p = vm.repo.db.findProduct(code)
         when {
             p != null -> onProduct(p)

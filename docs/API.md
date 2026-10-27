@@ -139,7 +139,8 @@ Cevap: her işlem için bir satır.
 
 | `type` | `payload` | Sunucuda yapılacak |
 |---|---|---|
-| `PUTAWAY` | `receiptId, lineId, productId, shelf, qty, user, device` | `locations[productId, shelf] += qty`, satırın `shelved += qty` |
+| `PUTAWAY` | `receiptId, lineId, productId, shelf, qty, depot, user, device` | `locations[productId, shelf] += qty`, satırın `shelved += qty`. `receiptId`/`lineId` yoksa belgesiz rafa kaldırmadır (1.5.0+ terminal: ürün okutarak; Vega stoku var, belgesi yok), mal `depot`'a girer. |
+| `PICK` (1.5.0+) | `productId, shelf, qty, depot, user, device` | Raftan alma: `locations[productId, shelf] -= qty` (eksiye düşmez), hareket `PICK`. Raf boşalırsa terminal zimmeti kalkar. Vega'ya yazılmaz. |
 | `TRANSFER` | `productId, from, to, qty, user, device` | `from -= qty`, `to += qty` |
 | `COUNT_SUBMIT` | `sessionId, no, title, shelves[], lines[{shelf, productId, system, counted}], user, device` | Sayımı onay bekleyen olarak kaydet. Raf miktarları sayılan değere çekilir. Vega'ya sayım fişi yönetici onayıyla yazılır. `shelves` boş sayılan rafları da içerir. |
 | `SHELF_ADD` (1.4.0+) | `code, depot, user, device` | Terminalde okutulan tanımsız raf etiketini o depoda raf olarak aç (kaynak `TERMINAL`). |

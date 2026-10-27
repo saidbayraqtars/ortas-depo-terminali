@@ -556,6 +556,38 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 7) {
             productId, d.toString(),
         )?.toDoubleOrNull() ?: 0.0
 
+    /** Ürünün depodaki raflarında toplam. */
+    fun shelvedTotal(productId: String, d: Int = depot): Double =
+        scalar("SELECT SUM(qty) FROM location WHERE depot=? AND product_id=? AND qty>0", d.toString(), productId)?.toDoubleOrNull() ?: 0.0
+
+    /**
+     * Belgesiz miktar: depodaki Vega stoku − raflardaki − açık belgede bekleyen. Belgeye girmeyen stok (seçili olmayan
+     * belge türü, devir, başlangıçtan eski giriş) budur; ürün okutularak belgesiz rafa kaldırılır. Eksi olmaz.
+     */
+    fun unshelved(productId: String, d: Int = depot): Double {
+        val p = productById(productId, d) ?: return 0.0
+        val x = p.vegaStock - shelvedTotal(productId, d) - pendingPutAway(productId, d)
+        return if (x > 1e-6) Math.round(x * 10000) / 10000.0 else 0.0
+    }
+
+    /** Ürünün depodaki açık belge satırları, en eski belge önce (ürün okutarak rafa kaldırmada miktar bunlardan düşer). */
+    fun openLinesOf(productId: String, d: Int = depot): List<ReceiptLine> =
+        // Tarih "gg.aa.yyyy" metni; yıl-ay-gün sırasına çevrilip sıralanır.
+        query(
+            "SELECT l.id, l.receipt_id, ${productCols(d)}, l.accepted, l.shelved FROM receipt_line l JOIN receipt r ON r.id=l.receipt_id " +
+                "JOIN product p ON p.id=l.product_id WHERE l.product_id=? AND r.depot=? AND l.shelved < l.accepted " +
+                "ORDER BY substr(r.date,7,4)||substr(r.date,4,2)||substr(r.date,1,2), r.doc_no, l.id",
+            productId, d.toString(),
+        ) { ReceiptLine(it.getString(0), it.getString(1), it.product(2), it.getDouble(8), it.getDouble(9)) }
+
+    /** Başka depolarda açık belgesi olan miktar (ürün okutulunca "o depoyu seçin" uyarısı için). */
+    fun pendingElsewhere(productId: String, d: Int = depot): List<Pair<String, Double>> =
+        query(
+            "SELECT r.depot_name, SUM(MAX(l.accepted-l.shelved, 0)) FROM receipt_line l JOIN receipt r ON r.id=l.receipt_id " +
+                "WHERE l.product_id=? AND r.depot<>? GROUP BY r.depot HAVING SUM(MAX(l.accepted-l.shelved, 0)) > 0",
+            productId, d.toString(),
+        ) { it.getString(0) to it.getDouble(1) }
+
     /** Bütün depoların belgeleri; çalışılan deponunkiler önce. */
     fun receipts(open: Boolean): List<Receipt> = receiptRows("").filter { (it.doneLines < it.lineCount) == open }
 

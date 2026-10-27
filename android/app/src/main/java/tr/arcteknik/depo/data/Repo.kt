@@ -86,6 +86,75 @@ class Repo(val db: Db, val prefs: Prefs) {
         changed()
     }
 
+    /**
+     * Belge seçmeden, ürün okutarak rafa kaldırma (çalışılan depoda). Miktar önce ürünün açık belge satırlarından,
+     * en eski belgeden başlayarak düşülür; artanı belgesiz rafa kaldırılır (Vega'da stok var, belgesi yok).
+     * Her belge satırı ve belgesiz kısım ayrı bir PUTAWAY işlemidir. Dönen: kullanıcıya gösterilecek özet.
+     */
+    fun putAwayProduct(product: Product, shelf: String, qty: Double, user: String, d: Int = db.depot): String {
+        val s = shelf.uppercase()
+        val unit = product.unit.lowercase()
+        val parts = mutableListOf<String>()
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            db.ensureShelf(w, d, s)
+            db.addQty(w, d, product.id, s, qty)
+            var left = qty
+            for (l in db.openLinesOf(product.id, d)) {
+                if (left <= 1e-9) break
+                val q = minOf(left, l.remaining)
+                val docNo = db.receipt(l.receiptId)?.docNo ?: l.receiptId
+                w.execSQL("UPDATE receipt_line SET shelved=shelved+? WHERE id=?", arrayOf<Any>(q, l.id))
+                db.insertOp(w, op(
+                    OpType.PUTAWAY,
+                    JSONObject().put("receiptId", l.receiptId).put("lineId", l.id).put("productId", product.id)
+                        .put("shelf", s).put("qty", q).put("depot", d).put("user", user),
+                    "Rafa kaldırma · ${fmt(q)} $unit|${product.code} → $s · $docNo",
+                ))
+                parts += "$docNo ${fmt(q)}"
+                left -= q
+            }
+            if (left > 1e-9) {
+                db.insertOp(w, op(
+                    OpType.PUTAWAY,
+                    JSONObject().put("productId", product.id).put("shelf", s).put("qty", left).put("depot", d).put("user", user),
+                    "Rafa kaldırma (belgesiz) · ${fmt(left)} $unit|${product.code} → $s",
+                ))
+                parts += "belgesiz ${fmt(left)}"
+            }
+            db.addMovement(w, product.id, "Rafa kaldırma → $s", qty)
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+        changed()
+        return parts.joinToString(", ")
+    }
+
+    // ---- Raftan alma ---------------------------------------------------------------------
+
+    /** Raftan mal alındı (sevkiyat, üretim, satış): raf stoku azalır. Vega'ya bir şey yazılmaz. */
+    fun pick(product: Product, shelf: String, qty: Double, user: String) {
+        val s = shelf.uppercase()
+        val d = db.depot
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            db.addQty(w, d, product.id, s, -qty)
+            db.addMovement(w, product.id, "Raftan alma ← $s", -qty)
+            db.insertOp(w, op(
+                OpType.PICK,
+                JSONObject().put("productId", product.id).put("shelf", s).put("qty", qty).put("depot", d).put("user", user),
+                "Raftan alma · ${fmt(qty)} ${product.unit.lowercase()}|${product.code} ← $s",
+            ))
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+        changed()
+    }
+
     // ---- Raf ----------------------------------------------------------------------------
 
     /** Tanımsız raf etiketi terminalden raf olarak eklenir; yönetici programında da açılır. */

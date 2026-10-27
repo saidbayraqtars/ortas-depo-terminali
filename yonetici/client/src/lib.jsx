@@ -83,6 +83,7 @@ export const HAREKET = {
   PUTAWAY: ['Rafa kaldırma', 'b-ok'],
   TRANSFER_IN: ['Transfer giriş', 'b-info'],
   TRANSFER_OUT: ['Transfer çıkış', 'b-info'],
+  PICK: ['Raftan alma', 'b-warn'],
   COUNT: ['Sayım', 'b-acc'],
   IMPORT: ['Excel', 'b-mute'],
   ADJUST: ['Düzeltme', 'b-warn'],

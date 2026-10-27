@@ -441,6 +441,8 @@ function yoneticiApi() {
     csv(res, 'urunler.csv', ['Kod', 'Ad', 'Birim', 'Vega stok', 'Rafta', 'Raf sayısı', 'Rafa kaldırılacak', 'Yerleşmemiş'], liste.map((u) => [u.code, u.name, u.unit, u.vegaStock, u.raf, u.rafSayisi, u.bekleyen, u.fark]));
   }));
   r.get('/urun/:id', sar((req) => depo.urunDetay(req.params.id)));
+  // Tanı: kartın Vega envanteri belge belge, neden terminale gitmediğiyle (Vega'dan canlı, salt okunur).
+  r.get('/tani/stok', sar(async (req) => depo.stokTani(req.query.q)));
   r.post('/konum', sar((req) => {
     const b = req.body || {};
     const shelf = depo.rafKodu(b.shelf);

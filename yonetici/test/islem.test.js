@@ -622,3 +622,67 @@ test('Vega okuması takılırsa 10 dakika sonra yenisi başlar, eskisinin dönü
     depo._goruntuKur(JSON.parse(JSON.stringify({ ...temel })));
   }
 });
+
+test('raftan alma raf stokunu azaltır, eksiye düşürmez; boşalan raftan terminal zimmeti kalkar', () => {
+  db.run('DELETE FROM product_home');
+  depo.islemler('TRM-01', 'ali', [op('PUTAWAY', { productId: '103', shelf: 'B-01-01', qty: 4, depot: 1 })]);
+  assert.strictEqual(depo.miktar(1, '103', 'B-01-01'), 4);
+  const r = depo.islemler('TRM-01', 'ali', [op('PICK', { productId: '103', shelf: 'B-01-01', qty: 3, depot: 1 })]);
+  assert.ok(r[0].ok);
+  assert.strictEqual(depo.miktar(1, '103', 'B-01-01'), 1);
+  const h = db.get("SELECT * FROM movement WHERE kind='PICK' ORDER BY id DESC");
+  assert.strictEqual(h.delta, -3);
+  assert.strictEqual(h.user, 'ali');
+  assert.ok(depo.zimmetler(1, '103').some((z) => z.shelf === 'B-01-01'));
+  // Terminalin gördüğünden fazlası alınırsa sıfırda kalır.
+  depo.islemler('TRM-01', 'ali', [op('PICK', { productId: '103', shelf: 'B-01-01', qty: 5, depot: 1 })]);
+  assert.strictEqual(depo.miktar(1, '103', 'B-01-01'), 0);
+  assert.ok(!depo.zimmetler(1, '103').some((z) => z.shelf === 'B-01-01'));
+  const ret = depo.islemler('TRM-01', 'ali', [op('PICK', { productId: '103', shelf: 'B-01-01', qty: 0, depot: 1 })]);
+  assert.strictEqual(ret[0].ok, false);
+});
+
+test('tanı: Vega girişlerinin terminaldeki durumu (seçili değil, eski, iade, terminalde, belgesiz)', async () => {
+  const vega = require('../server/vega');
+  const eski = vega.stokTani;
+  const eskiKabul = config.load().kabul;
+  config.update({ kabul: { izahat: ['20', '26', 'D37'], baslangic: '2026-09-01' } });
+  const g = (x) => ({ tur: 'x', belgeNo: 'B' + x.belgeInd, tarih: '', gun: '2026-10-01', iade: false, iptal: false, ...x });
+  vega.stokTani = async () => ({
+    depolar: [{ ind: 1, ad: 'MERKEZ' }, { ind: 2, ad: 'ŞUBE' }, { ind: 9, ad: 'YOLDA' }],
+    kartlar: [{
+      id: '102', kod: 'HF-0310', ad: 'Hava filtresi', suzgec: [], pasifAd: false, stok: { 1: 20, 9: 3 },
+      girisler: [
+        g({ depo: 1, tip: 26, belgeInd: 9, miktar: 10 }),
+        g({ depo: 1, tip: 22, belgeInd: 40, miktar: 2 }),
+        g({ depo: 1, tip: 20, belgeInd: 41, miktar: 3, gun: '2026-08-01' }),
+        g({ depo: 1, tip: 20, belgeInd: 42, miktar: 1, iade: true }),
+        g({ depo: 1, tip: 20, belgeInd: 43, miktar: 4 }),
+        g({ depo: 9, tip: 129, belgeInd: 7, miktar: 3 }),
+      ],
+      cikislar: [],
+    }],
+  });
+  try {
+    const t = await depo.stokTani('HF-0310');
+    const k = t.kartlar[0];
+    const durum = Object.fromEntries(k.girisler.map((x) => [`${x.anahtar}-${x.belgeInd}`, [x.durum, x.neden]]));
+    assert.strictEqual(durum['26-9'][0], 'terminalde');
+    assert.match(durum['22-40'][1], /seçili değil/);
+    assert.match(durum['20-41'][1], /başlangıç/);
+    assert.match(durum['20-42'][1], /İade/);
+    assert.match(durum['20-43'][1], /görüntüsünde yok/);
+    assert.match(durum['D129-7'][1], /kullanılan depolar/);
+    const m = k.depolar.find((d) => d.depo === 1);
+    assert.strictEqual(m.vegaStock, 20);
+    assert.strictEqual(m.belgesiz, yuvarla4(20 - m.raf - m.bekleyen));
+    assert.strictEqual(k.depolar.find((d) => d.depo === 9).kullaniliyor, false);
+  } finally {
+    vega.stokTani = eski;
+    config.update({ kabul: eskiKabul });
+  }
+});
+
+function yuvarla4(x) {
+  return Math.round(x * 10000) / 10000;
+}

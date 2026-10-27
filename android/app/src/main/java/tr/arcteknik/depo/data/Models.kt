@@ -87,4 +87,6 @@ object OpType {
     const val TRANSFER = "TRANSFER"
     const val COUNT_SUBMIT = "COUNT_SUBMIT"
     const val SHELF_ADD = "SHELF_ADD"
+    /** Raftan alma (1.5.0+ sunucu). */
+    const val PICK = "PICK"
 }

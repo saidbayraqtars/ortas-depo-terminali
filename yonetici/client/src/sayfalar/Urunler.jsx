@@ -38,11 +38,13 @@ export default function Urunler() {
     else n.add(id);
     return n;
   });
+  const [tani, setTani] = useState(false);
   const gorunen = veri?.liste || [];
   const hepsi = gorunen.length > 0 && gorunen.every((u) => secili.has(u.id));
   return (
     <>
       <SayfaBaslik baslik="Ürün ve stok" alt={`Vega stoku ile raflardaki miktarın karşılaştırması · ${depo ? `${ad(depo)} deposu` : 'bütün depolar'}`}>
+        <Btn icon="search" onClick={() => setTani(true)}>Neden terminalde yok?</Btn>
         <Btn icon="barcode" disabled={!secili.size} onClick={() => setEtiket(true)}>Barkod etiketi{secili.size ? ` (${secili.size})` : ''}</Btn>
         <Btn icon="export" onClick={() => indir(`/urunler.csv?filtre=${filtre}&q=${encodeURIComponent(ara)}${qs}`, 'urunler.csv').catch((e) => toast(e.message, true))}>Excel (CSV)</Btn>
       </SayfaBaslik>
@@ -82,7 +84,91 @@ export default function Urunler() {
         </Durum>
       </div>
       {etiket && <EtiketPenceresi tur="urun" urunler={[...secili]} kapat={() => setEtiket(false)} />}
+      {tani && <StokTani kapat={() => setTani(false)} />}
     </>
+  );
+}
+
+const TANI_DURUM = { terminalde: ['Terminalde', 'b-ok'], tamam: ['Tamam', 'b-mute'], yok: ['Terminale gitmiyor', 'b-warn'], bilgi: ['Bilgi', 'b-info'] };
+
+/** Vega'da stoku olan ürünün terminalde neden görünmediği: Vega envanteri belge belge, her girişin durumu. */
+export function StokTani({ kapat, ilk = '' }) {
+  const [q, setQ] = useState(ilk);
+  const [d, setD] = useState(null);
+  const [hata, setHata] = useState(null);
+  const [mesgul, setMesgul] = useState(false);
+  const sorgula = async (x = q) => {
+    if (!String(x).trim()) return;
+    setMesgul(true);
+    setHata(null);
+    try {
+      setD(await api(`/tani/stok?q=${encodeURIComponent(String(x).trim())}`));
+    } catch (e) {
+      setHata(e.message);
+      setD(null);
+    } finally {
+      setMesgul(false);
+    }
+  };
+  useEffect(() => {
+    if (ilk) sorgula(ilk);
+  }, []);
+  return (
+    <Modal baslik="Neden terminalde yok?" genis kapat={kapat} alt={<Btn onClick={kapat}>Kapat</Btn>}>
+      <div className="row" style={{ gap: 8 }}>
+        <input className="inp mono" style={{ flex: 1 }} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && sorgula()} placeholder="Stok kodu, kart no ya da barkod" autoFocus />
+        <Btn kind="primary" icon="search" busy={mesgul} onClick={() => sorgula()}>Sorgula</Btn>
+      </div>
+      <p className="small muted">Vega'dan canlı okunur, bir şey yazılmaz. Belgeye girmeyen stok terminalde Rafa Kaldır ekranında ürün okutularak kaldırılır.</p>
+      {hata && <div className="notice warn"><Icon name="warning" /><p>{hata}</p></div>}
+      {d && d.kartlar.length === 0 && <div className="empty">Vega'da "{d.ara}" kodlu, numaralı ya da barkodlu kart yok.</div>}
+      {d?.kartlar.map((k) => (
+        <div key={k.id} style={{ marginTop: 12 }}>
+          <div><b>{k.ad}</b> <span className="mono muted">{k.kod} · kart {k.id}</span></div>
+          {k.kartNeden && <div className="notice warn" style={{ marginTop: 6 }}><Icon name="warning" /><p>{k.kartNeden}</p></div>}
+          {k.depolar.length === 0 ? (
+            <div className="empty">Bu kartın hiçbir depoda Vega stoku ya da raf stoku yok.</div>
+          ) : (
+            <table className="tbl" style={{ marginTop: 8 }}>
+              <thead><tr><th>Depo</th><th className="num">Vega stok</th><th className="num">Raflarda</th><th className="num">Belgede bekleyen</th><th className="num">Belgesiz</th></tr></thead>
+              <tbody>
+                {k.depolar.map((x) => (
+                  <tr key={x.depo}>
+                    <td><b>{x.depoAd}</b>{!x.kullaniliyor && <div className="code">kullanılan depolarda değil</div>}</td>
+                    <td className="num">{miktar(x.vegaStock)}</td>
+                    <td className="num">{miktar(x.raf)}</td>
+                    <td className="num">{x.bekleyen ? miktar(x.bekleyen) : ''}</td>
+                    <td className={`num ${x.belgesiz > 0 ? 'neg' : x.belgesiz < 0 ? 'pos' : 'muted'}`}>{miktar(x.belgesiz, true)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {k.girisler.length > 0 && (
+            <div className="tbl-scroll" style={{ marginTop: 8, maxHeight: 340 }}>
+              <table className="tbl">
+                <thead><tr><th>Giriş belgesi</th><th>Depo</th><th className="num">Miktar</th><th>Durum</th></tr></thead>
+                <tbody>
+                  {k.girisler.map((g) => (
+                    <tr key={`${g.depo}-${g.tip}-${g.belgeInd}`}>
+                      <td><span className="mono">{g.belgeNo}</span><div className="code">{g.tur} ({g.anahtar}) · {g.tarih}</div></td>
+                      <td className="muted">{g.depoAd}</td>
+                      <td className="num">{miktar(g.miktar)}</td>
+                      <td><Rozet tur={TANI_DURUM[g.durum][1]}>{TANI_DURUM[g.durum][0]}</Rozet><div className="small muted">{g.neden}</div></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {k.cikislar.length > 0 && (
+            <div className="small muted" style={{ marginTop: 6 }}>
+              Çıkışlar: {k.cikislar.map((c) => `${c.depoAd} · ${c.tur} ${c.adet} belge ${miktar(c.miktar)}`).join('; ')}
+            </div>
+          )}
+        </div>
+      ))}
+    </Modal>
   );
 }
 
@@ -208,6 +294,7 @@ export function UrunDetay({ id }) {
   const [tasi, setTasi] = useState(null);
   const [zimmetle, setZimmetle] = useState(false);
   const [etiket, setEtiket] = useState(false);
+  const [tani, setTani] = useState(false);
   // Raflar: miktarı olanlar + zimmetli olup rafta olmayanlar, tek listede.
   const raflar = [];
   if (d) {
@@ -231,6 +318,7 @@ export function UrunDetay({ id }) {
       {d && (
         <>
           <SayfaBaslik baslik={d.urun.name} alt={<span className="mono">{d.urun.code} · {d.urun.unit}</span>} geri={['/urunler', 'Ürün ve stok']}>
+            <Btn icon="search" onClick={() => setTani(true)}>Neden terminalde yok?</Btn>
             <Btn icon="barcode" onClick={() => setEtiket(true)}>Barkod etiketi</Btn>
             <Btn icon="mapPoint" onClick={() => setZimmetle(true)}>Rafa zimmetle</Btn>
             <Btn icon="plus" onClick={() => setDuzelt({})}>Rafa ekle / düzelt</Btn>
@@ -340,6 +428,7 @@ export function UrunDetay({ id }) {
             )}
           </div>
           {etiket && <EtiketPenceresi tur="urun" urunler={[d.urun.id]} kapat={() => setEtiket(false)} />}
+          {tani && <StokTani ilk={d.urun.code !== '?' ? d.urun.code : d.urun.id} kapat={() => setTani(false)} />}
           {duzelt && <Duzelt urun={d.urun} konum={duzelt.shelf ? duzelt : null} kapat={() => setDuzelt(null)} tamam={() => { setDuzelt(null); yukle(); }} />}
           {tasi && <Tasi urun={d.urun} kaynak={tasi} kapat={() => setTasi(null)} tamam={() => { setTasi(null); yukle(); }} />}
           {zimmetle && <Zimmetle urun={d.urun} kapat={() => setZimmetle(false)} tamam={() => { setZimmetle(false); yukle(); }} />}

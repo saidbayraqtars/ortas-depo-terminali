@@ -10,6 +10,8 @@ const fuzzy = require('./fuzzy');
 const kapsam = require('./kapsam');
 
 const EPS = 1e-9;
+// Depo hareket fişinden gelen belge türleri (ayarda "D37" gibi seçilir); vega.js ile aynı.
+const DEPO_BELGE_TIP = new Set([37, 128, 129]);
 const now = () => Date.now();
 const yuvarla = (x) => Math.round(Number(x) * 10000) / 10000;
 
@@ -670,6 +672,20 @@ function islemUygula(op, cihaz, kullanici) {
       terminalZimmet(depo, pid, to);
       return;
     }
+    case 'PICK': {
+      // Raftan alma (sevkiyat, üretim, satış için çıkan mal): raf stoku azalır, Vega'ya bir şey yazılmaz.
+      const qty = sayi(p.qty, 'Miktar');
+      if (qty <= 0) throw new Ret('Miktar sıfırdan büyük olmalı');
+      const pid = String(p.productId || '');
+      const shelf = rafKodu(p.shelf);
+      if (!pid || !shelf) throw new Ret('Eksik bilgi');
+      bilinen(pid);
+      const depo = depoCoz(p.depot);
+      // Sunucuda raftaki miktar terminalin gördüğünden azsa eksiye düşmez (miktarAyarla sıfırda keser).
+      miktarEkle(depo, pid, shelf, -qty, { ...h, kind: 'PICK', ref: String(p.note || '').slice(0, 120) || null });
+      if (miktar(depo, pid, shelf) <= EPS) terminalZimmetBosalt(depo, pid, shelf);
+      return;
+    }
     case 'COUNT_SUBMIT':
       sayimKaydet(op, p, { ...h, ts: now() }, ts);
       return;
@@ -1152,6 +1168,54 @@ function urunDetay(id) {
   };
 }
 
+/**
+ * "Vega'da var, terminalde neden yok?": kartın Vega'daki (canlı okunan) depo envanteri belge belge ve her girişin
+ * terminaldeki durumu. Belgeye girmeyen stok ("belgesiz") terminalde Rafa Kaldır › ürün okutarak kaldırılır.
+ */
+async function stokTani(ara) {
+  const cfg = config.load();
+  const v = await vega.stokTani(cfg, ara);
+  const kullanilan = new Set(depolar().map((d) => d.ind));
+  const secili = new Set((cfg.kabul.izahat || []).map(String));
+  const bas = cfg.kabul.baslangic || '';
+  const blg = new Map(belgeler().map((r) => [r.id, r]));
+  const vegaDepoAd = new Map(v.depolar.map((d) => [Number(d.ind), d.ad]));
+  const ad = (d) => vegaDepoAd.get(d) || depoAdi(d);
+  const kartlar = v.kartlar.map((k) => {
+    const p = urun(k.id);
+    const rafta = db.all('SELECT depo, SUM(qty) AS q FROM location WHERE product_id=? AND qty>0 GROUP BY depo', k.id);
+    const rafQ = new Map(rafta.map((r) => [r.depo, r.q]));
+    const kartNeden = k.suzgec.length ? k.suzgec.join(', ') : !p ? "Program bu kartı Vega görüntüsünde bulamadı (Vega'yı yenileyin)" : k.pasifAd && !rafQ.size ? 'Kart adında PASİF var: terminale yalnız bir rafta duruyorsa gider' : null;
+    const girisler = k.girisler.map((g) => {
+      const anahtar = DEPO_BELGE_TIP.has(g.tip) ? `D${g.tip}` : String(g.tip);
+      const sonuc = (durum, neden) => ({ ...g, depoAd: ad(g.depo), anahtar, durum, neden });
+      if (kartNeden) return sonuc('yok', kartNeden);
+      if (!kullanilan.has(g.depo)) return sonuc('yok', 'Depo kullanılan depolar arasında değil (Ayarlar › Vega)');
+      if (g.tip === 93) return sonuc('bilgi', 'Sayım fişi: sayılan mal zaten rafta sayılmıştır');
+      if (!secili.has(anahtar)) return sonuc('yok', `Belge türü seçili değil (Ayarlar › Mal kabul: ${anahtar})`);
+      if (bas && g.gun && g.gun < bas) return sonuc('yok', `Mal kabul başlangıç tarihinden (${bas}) eski`);
+      if (g.iade) return sonuc('yok', 'İade satırı');
+      if (g.iptal) return sonuc('yok', 'Belge iptal');
+      const r = blg.get(`${anahtar}-${g.belgeInd}-${g.depo}`);
+      if (!r) return sonuc('yok', "Programdaki Vega görüntüsünde yok (Vega'yı yenileyin; yenilendiyse bildirin)");
+      if (r.elleKapali) return sonuc('tamam', 'Belge yönetici programında elle kapatıldı');
+      const l = r.lines.find((x) => x.productId === k.id);
+      if (!l) return sonuc('yok', 'Belgede bu kalem yok');
+      if (l.shelved >= l.accepted - EPS) return sonuc('tamam', `Rafa kaldırıldı (${yuvarla(l.shelved)}/${yuvarla(l.accepted)})`);
+      return sonuc('terminalde', `Terminalde açık: ${r.docNo}, ${yuvarla(l.accepted - l.shelved)} rafa kaldırılacak`);
+    });
+    const depoSet = new Set([...Object.keys(k.stok).map(Number), ...rafQ.keys()]);
+    const depoOzet = [...depoSet].sort((a, b) => a - b).map((d) => {
+      const vs = Number(k.stok[String(d)] || 0);
+      const raf = Number(rafQ.get(d) || 0);
+      const bek = kullanilan.has(d) ? bekleyenKabul(d).get(k.id) || 0 : 0;
+      return { depo: d, depoAd: ad(d), kullaniliyor: kullanilan.has(d), vegaStock: yuvarla(vs), raf: yuvarla(raf), bekleyen: yuvarla(bek), belgesiz: yuvarla(vs - raf - bek) };
+    });
+    return { id: k.id, kod: k.kod, ad: k.ad, kartNeden, depolar: depoOzet, girisler, cikislar: k.cikislar.map((c) => ({ ...c, depoAd: ad(c.depo) })) };
+  });
+  return { ara: String(ara || '').trim(), baslangic: bas, kartlar };
+}
+
 function raflar(depo = null) {
   const ozet = new Map(
     db.all('SELECT depo, shelf, COUNT(*) AS n, SUM(qty) AS q, MAX(updated_at) AS u FROM location WHERE qty>0 GROUP BY depo, shelf').map((r) => [`${r.depo}|${r.shelf}`, r]),
@@ -1411,6 +1475,7 @@ module.exports = {
   master,
   urunListesi,
   urunDetay,
+  stokTani,
   raflar,
   rafDetay,
   urunAdi,

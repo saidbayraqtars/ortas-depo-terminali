@@ -14,6 +14,20 @@ Barkodu okunmayan ürün için her okutma alanının altında **İsimle ara** va
 olsa da yakın adlar listelenir. Ürün Sorgu ve Raf Sorgu ekranlarındaki **Etiket bas** düğmesi etiketi yönetici
 programının bilgisayarındaki etiket yazıcısından çıkarır.
 
+## Rafa kaldırma ve raftan alma (1.5.0+)
+
+- **Rafa Kaldır** listesi çalışılan deponun belgelerini gösterir ("Bütün depolar" ile hepsi). Okutma alanına belge
+  numarasının bir kısmı yazılınca liste süzülür: `2014`, `npe2014` ya da tedarikçi adı `NPE2026000002014`'ü bulur.
+  Tam numara ya da e-Fatura karekodu okutulursa belge açılır.
+- Aynı alana **ürün** okutulursa belge seçmeden rafa kaldırılır: ürün → miktar → raf. Miktar o depodaki açık belgelerden
+  (en eski önce) düşülür; belgede olmayan kısım **belgesiz** kalkar (Vega'da stok var ama mal kabul belgesi yok:
+  seçilmemiş belge türü, devir, başlangıç tarihinden eski giriş). En çok "belgede + belgesiz" kadar kaldırılır.
+- Belge içinden rafa kaldırma da ürün → miktar → raf sırasındadır.
+- **Raftan Al**: ürün → miktar → raf (okutulur ya da ürünün durduğu raflardan seçilir). Raf stoku azalır; Vega'daki çıkış
+  (fatura, sevk) ayrıca Vega'da yapılır.
+- Vega'da olup terminalde görünmeyen stok için yönetici programında Ürünler › **Neden terminalde yok?**: ürünün Vega
+  girişleri belge belge ve her birinin neden terminale gitmediği (tür seçili değil, başlangıçtan eski, iade, depo seçili değil…).
+
 ## Okuyucu ayarı
 
 Uygulama iki yolu da dinler; terminale göre biri seçilir.

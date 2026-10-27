@@ -40,6 +40,8 @@ import tr.arcteknik.depo.ui.screens.CountScreen
 import tr.arcteknik.depo.ui.screens.HomeScreen
 import tr.arcteknik.depo.ui.screens.LoginScreen
 import tr.arcteknik.depo.ui.screens.ProductQueryScreen
+import tr.arcteknik.depo.ui.screens.PickScreen
+import tr.arcteknik.depo.ui.screens.ProductPutAwayScreen
 import tr.arcteknik.depo.ui.screens.PutAwayScreen
 import tr.arcteknik.depo.ui.screens.QueueScreen
 import tr.arcteknik.depo.ui.screens.ReceiptListScreen
@@ -53,6 +55,8 @@ sealed interface Route {
     data object Home : Route
     data object Receipts : Route
     data class PutAway(val receiptId: String) : Route
+    data class PutAwayProduct(val productId: String) : Route
+    data object Pick : Route
     data class ProductQuery(val scan: String? = null) : Route
     data class ShelfQuery(val shelf: String? = null) : Route
     data class Transfer(val productId: String? = null, val from: String? = null) : Route
@@ -195,6 +199,8 @@ fun DepoApp(vm: AppVm) {
         Route.Home -> HomeScreen(vm, online, version)
         Route.Receipts -> ReceiptListScreen(vm, online, version)
         is Route.PutAway -> PutAwayScreen(vm, online, version, r.receiptId)
+        is Route.PutAwayProduct -> ProductPutAwayScreen(vm, online, version, r.productId)
+        Route.Pick -> PickScreen(vm, online, version)
         is Route.ProductQuery -> ProductQueryScreen(vm, online, version, r.scan)
         is Route.ShelfQuery -> ShelfQueryScreen(vm, online, version, r.shelf)
         is Route.Transfer -> TransferScreen(vm, online, version, r.productId, r.from)

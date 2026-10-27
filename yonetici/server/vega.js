@@ -210,16 +210,33 @@ async function goruntu(cfg) {
   const cariAd = cariKol.has('FIRMAADI')
     ? `COALESCE(NULLIF(LTRIM(RTRIM(C.FIRMAADI)),''), ${cariKol.has('UNVAN') ? 'C.UNVAN' : "''"}, '')`
     : cariKol.has('UNVAN') ? "ISNULL(C.UNVAN,'')" : "''";
+  // Belge numarası ve cari belgenin başlığından: Vega'da belge numarası/carisi değişince hareket satırlarındaki
+  // EVRAKNO kopyası güncellenmiyor (Ortaş D0020: alış faturasında 1, stok girişte 2 belge farklı). Başlığı olmayan
+  // türde (ya da başlık tablosu yoksa) hareketteki değerler kullanılır.
+  const basliklar = [];
+  for (const x of izahat) {
+    const t = BASLIK[x] ? FD + BASLIK[x] : null;
+    if (!t || !(await tabloVar(p, t))) continue;
+    const k = await kolonlar(p, t);
+    if (k.has('BELGENO')) basliklar.push({ x, t, a: `B${x}`, firma: k.has('FIRMANO'), iptal: k.has('IPTAL') });
+  }
+  const bNo = basliklar.map((b) => `NULLIF(LTRIM(RTRIM(${b.a}.BELGENO)),''), `).join('');
+  const bFirma = basliklar.filter((b) => b.firma).map((b) => `${b.a}.FIRMANO, `).join('');
   // Belge depo bazlı: bir belgenin satırları hangi depoya girdiyse o depoda rafa kaldırılır.
   const kabul = izahat.length
     ? await olc('kabul', () => p.request().input('bas', sql.DateTime, new Date(`${cfg.kabul.baslangic || '2000-01-01'}T00:00:00`)).query(`
-      SELECT H.IZAHAT, H.BELGENO, H.DEPO, MAX(H.EVRAKNO) AS EVRAKNO, H.STOKNO, SUM(H.GIREN) AS GIREN,
-             MIN(H.TARIH) AS TARIH, MAX(H.FIRMANO) AS FIRMANO, MAX(${cariAd}) AS CARI
-      FROM [${FD}TBLSTOKHAREKETLERI] H
-      LEFT JOIN [${F}TBLCARI] C ON C.IND = H.FIRMANO
-      WHERE H.IZAHAT IN (${izahat.map((x) => `'${x}'`).join(',')}) AND H.DEPO IN (${depoIn}) AND H.TARIH >= @bas
-        AND ISNULL(H.GIREN,0) > 0 AND ISNULL(H.IADE,0) = 0
-      GROUP BY H.IZAHAT, H.BELGENO, H.DEPO, H.STOKNO`))
+      WITH G AS (
+        SELECT H.IZAHAT, H.BELGENO, H.DEPO, MAX(H.EVRAKNO) AS EVRAKNO, H.STOKNO, SUM(H.GIREN) AS GIREN,
+               MIN(H.TARIH) AS TARIH, MAX(H.FIRMANO) AS FIRMANO
+        FROM [${FD}TBLSTOKHAREKETLERI] H
+        WHERE H.IZAHAT IN (${izahat.map((x) => `'${x}'`).join(',')}) AND H.DEPO IN (${depoIn}) AND H.TARIH >= @bas
+          AND ISNULL(H.GIREN,0) > 0 AND ISNULL(H.IADE,0) = 0
+        GROUP BY H.IZAHAT, H.BELGENO, H.DEPO, H.STOKNO)
+      SELECT G.IZAHAT, G.BELGENO, G.DEPO, COALESCE(${bNo}G.EVRAKNO) AS EVRAKNO, G.STOKNO, G.GIREN, G.TARIH, ${cariAd} AS CARI
+      FROM G
+      ${basliklar.map((b) => `LEFT JOIN [${b.t}] ${b.a} ON G.IZAHAT = '${b.x}' AND ${b.a}.IND = G.BELGENO`).join('\n      ')}
+      LEFT JOIN [${F}TBLCARI] C ON C.IND = COALESCE(${bFirma}G.FIRMANO)
+      ${basliklar.some((b) => b.iptal) ? `WHERE ${basliklar.filter((b) => b.iptal).map((b) => `ISNULL(${b.a}.IPTAL,0) = 0`).join(' AND ')}` : ''}`))
     : { recordset: [] };
 
   // Depolar arası mal girişi stok hareketine değil depo hareket fişine (TBLDEPOHARBASLIK) ve depo envanterine yazılır.
@@ -319,6 +336,109 @@ async function goruntu(cfg) {
     barcodes: Object.fromEntries(bk),
     receipts: belgeListe,
   };
+}
+
+// ---- Tanı: Vega stoku neden terminalde yok ----------------------------------------------------
+
+// Depo envanterindeki belge türleri (BELGETIPI; stok hareketlerinde aynı sayı IZAHAT). Bilinmeyenler numarasıyla gösterilir.
+const BELGE_TURU = {
+  20: 'Alış faturası', 21: 'Satış faturası', 22: 'Satış iade faturası', 23: 'Alış iade faturası', 26: 'Alış irsaliyesi',
+  27: 'Satış irsaliyesi', 28: 'İade irsaliyesi', 32: 'Stok giriş fişi', 33: 'Stok çıkış fişi', 37: 'Depolar arası transfer',
+  93: 'Sayım giriş fişi', 94: 'Sayım çıkış fişi', 101: 'Perakende satış', 102: 'Perakende satış iadesi', 103: 'Devir girişi',
+  104: 'Devir çıkışı', 128: 'Depo gönderimi', 129: 'Gönderim kabulü',
+};
+// Depo hareket fişinden (TBLDEPOHARBASLIK) gelen türler; ayarda "D37" gibi seçilir.
+const DEPO_BELGE = new Set([37, 128, 129]);
+// Stok hareketi türlerinin başlık tabloları (IND = hareketin BELGENO'su, BELGENO = belge numarası).
+const BASLIK = { 20: 'TBLALFATBASLIK', 26: 'TBLALIRSBASLIK', 32: 'TBLSTKGIRBASLIK', 93: 'TBLSAYIMGIRISBASLIK' };
+
+/**
+ * Bir kartın (stok kodu, kart no ya da barkod) Vega'daki depo envanteri, belge belge. Salt okunur.
+ * Girişler (artı) tek tek, çıkışlar depo ve tür başına toplanmış gelir; neden terminale gitmediğine depo.js karar verir.
+ */
+async function stokTani(cfg, ara) {
+  const { p, F, FD } = await baglam(cfg.vega);
+  const q = String(ara || '').trim();
+  if (!q) throw new Error('Stok kodu, kart no ya da barkod yazın');
+  const stokKol = await kolonlar(p, `${F}TBLSTOKLAR`);
+  const kol = (k, yedek = 'NULL') => (stokKol.has(k) ? `S.${k}` : yedek);
+  const kartlar = await p.request().input('q', sql.NVarChar, q).input('id', sql.Int, /^\d{1,9}$/.test(q) ? Number(q) : -1).query(`
+    SELECT TOP 5 S.IND, ISNULL(S.STOKKODU,'') AS KOD, ISNULL(S.MALINCINSI,'') AS AD, ISNULL(S.DELETED,0) AS DELETED,
+           ${kol('IPTAL', '0')} AS IPTAL, ${kol('KOD8', "''")} AS KOD8, ${kol('STOKTIPI', '0')} AS STOKTIPI
+    FROM [${F}TBLSTOKLAR] S
+    WHERE S.STOKKODU = @q OR S.IND = @id
+       OR S.IND IN (SELECT STOKNO FROM [${F}TBLBIRIMLEREX] WHERE LTRIM(RTRIM(BARCODE)) = @q)
+    ORDER BY CASE WHEN S.STOKKODU = @q THEN 0 ELSE 1 END, S.IND`);
+  const out = { kartlar: [], depolar: await depolar(cfg.vega, cfg.vega.firma) };
+  for (const k of kartlar.recordset) {
+    const suzgec = [];
+    if (k.DELETED) suzgec.push('Kart silinmiş');
+    if (k.IND < 100) suzgec.push('Sistem kartı (kart no 100\'den küçük)');
+    if (k.IPTAL) suzgec.push('Kart iptal');
+    if (String(k.KOD8 || '').trim().toLocaleUpperCase('tr') === 'PASİF') suzgec.push('Kart pasif (KOD8 = PASİF)');
+    if ([3, 7, 9].includes(Number(k.STOKTIPI))) suzgec.push(`Stok tipi ${k.STOKTIPI} (hizmet/masraf kartı)`);
+    const id = Number(k.IND);
+    const req = () => p.request().input('id', sql.Int, id);
+    const stok = await req().query(`
+      SELECT DEPO, SUM(ENVANTER) AS KALAN FROM [${FD}TBLDEPOENVANTER]
+      WHERE STOKNO=@id AND ISNULL(BELGETIPI,0)<>67 GROUP BY DEPO`);
+    // Envanterin HAREKETIND'i hareket satırına güvenilir bağlanmıyor; hareket belge+kart+depo+tür ile eşlenir.
+    const giris = await req().query(`
+      SELECT TOP 300 E.DEPO, E.BELGETIPI, E.BELGEIND, SUM(E.ENVANTER) AS MIKTAR, MIN(E.TARIH) AS TARIH,
+             MAX(CAST(ISNULL(H.IADE,0) AS int)) AS IADE, MIN(H.TARIH) AS HTARIH, MAX(H.EVRAKNO) AS EVRAKNO
+      FROM [${FD}TBLDEPOENVANTER] E
+      OUTER APPLY (SELECT TOP 1 X.IADE, X.TARIH, X.EVRAKNO FROM [${FD}TBLSTOKHAREKETLERI] X
+                   WHERE X.BELGENO = E.BELGEIND AND X.STOKNO = E.STOKNO AND X.DEPO = E.DEPO
+                     AND X.IZAHAT = CAST(E.BELGETIPI AS nvarchar(10)) AND ISNULL(X.GIREN,0) > 0) H
+      WHERE E.STOKNO=@id AND ISNULL(E.BELGETIPI,0)<>67
+      GROUP BY E.DEPO, E.BELGETIPI, E.BELGEIND HAVING SUM(E.ENVANTER) > 0.00001
+      ORDER BY MIN(E.TARIH) DESC`);
+    const cikis = await req().query(`
+      SELECT DEPO, BELGETIPI, COUNT(DISTINCT BELGEIND) AS ADET, SUM(ENVANTER) AS MIKTAR FROM [${FD}TBLDEPOENVANTER]
+      WHERE STOKNO=@id AND ISNULL(BELGETIPI,0)<>67 AND ENVANTER < 0 GROUP BY DEPO, BELGETIPI ORDER BY DEPO, BELGETIPI`);
+    // Belge numarası ve iptal başlıktan.
+    const baslik = new Map();
+    const tipler = new Map();
+    for (const g of giris.recordset) {
+      if (!tipler.has(g.BELGETIPI)) tipler.set(g.BELGETIPI, new Set());
+      tipler.get(g.BELGETIPI).add(Number(g.BELGEIND));
+    }
+    for (const [tip, indler] of tipler) {
+      const ad = DEPO_BELGE.has(tip) ? `${FD}TBLDEPOHARBASLIK` : BASLIK[tip] ? FD + BASLIK[tip] : null;
+      if (!ad || !(await tabloVar(p, ad))) continue;
+      const bk = await kolonlar(p, ad);
+      const r = await p.request().query(`
+        SELECT IND, ${bk.has('BELGENO') ? 'BELGENO' : 'NULL AS BELGENO'}, ${bk.has('IPTAL') ? 'ISNULL(IPTAL,0)' : '0'} AS IPTAL
+        FROM [${ad}] WHERE IND IN (${[...indler].join(',')})${DEPO_BELGE.has(tip) ? ` AND BELGETIPI = ${Number(tip)}` : ''}`);
+      for (const b of r.recordset) baslik.set(`${tip}-${b.IND}`, b);
+    }
+    out.kartlar.push({
+      id: String(id),
+      kod: String(k.KOD).trim(),
+      ad: String(k.AD).trim(),
+      suzgec,
+      pasifAd: PASIF_AD.test(String(k.AD)),
+      stok: Object.fromEntries(stok.recordset.map((s) => [String(s.DEPO), Number(s.KALAN)])),
+      girisler: giris.recordset.map((g) => {
+        const b = baslik.get(`${g.BELGETIPI}-${g.BELGEIND}`);
+        const tarih = g.HTARIH || g.TARIH;
+        return {
+          depo: Number(g.DEPO),
+          tip: Number(g.BELGETIPI),
+          tur: BELGE_TURU[g.BELGETIPI] || `Belge türü ${g.BELGETIPI}`,
+          belgeInd: Number(g.BELGEIND),
+          belgeNo: String((b && b.BELGENO) || g.EVRAKNO || g.BELGEIND).trim(),
+          tarih: tarihStr(tarih),
+          gun: tarih instanceof Date ? `${tarih.getFullYear()}-${String(tarih.getMonth() + 1).padStart(2, '0')}-${String(tarih.getDate()).padStart(2, '0')}` : '',
+          miktar: Number(g.MIKTAR),
+          iade: Boolean(g.IADE),
+          iptal: Boolean(b && b.IPTAL),
+        };
+      }),
+      cikislar: cikis.recordset.map((c) => ({ depo: Number(c.DEPO), tip: Number(c.BELGETIPI), tur: BELGE_TURU[c.BELGETIPI] || `Belge türü ${c.BELGETIPI}`, adet: c.ADET, miktar: Number(c.MIKTAR) })),
+    });
+  }
+  return out;
 }
 
 // ---- Stok kartı alanı yazma (raf adresi) ----------------------------------------------------
@@ -604,4 +724,4 @@ async function sayimGeriAl(cfg, docs) {
   }
 }
 
-module.exports = { kullanilanDepolar, dene, firmalar, donemler, depolar, donemCoz, hazirMi, goruntu, anlikStok, sayimYaz, sayimGeriAl, fisVarsayilanlari, PASIF_AD, kartAlanUzunluk, kartAlanYaz, kapat, oleTarih };
+module.exports = { kullanilanDepolar, dene, firmalar, donemler, depolar, donemCoz, hazirMi, goruntu, stokTani, BELGE_TURU, anlikStok, sayimYaz, sayimGeriAl, fisVarsayilanlari, PASIF_AD, kartAlanUzunluk, kartAlanYaz, kapat, oleTarih };
