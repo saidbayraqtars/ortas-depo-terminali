@@ -4,11 +4,15 @@
 //   Depo "hepsi": raf ve zimmet kullanılan bütün depolara yazılır (B2B'de depo yok, Vega'da raf depoya bağlı).
 //   Ürün + miktar → o rafa o miktar yazılır (ilk yerleşim, hareket türü IMPORT).
 //   Ürün, miktarsız → ürünün asıl rafı (rafa kaldırırken terminal önerir).
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { Readable } = require('stream');
 const ExcelJS = require('exceljs');
 const db = require('./db');
 const depo = require('./depo');
 const fuzzy = require('./fuzzy');
+const log = require('./log');
 
 const ALANLAR = {
   depo: ['depo', 'depo adı', 'depo adi', 'ambar', 'şube', 'sube', 'warehouse'],
@@ -233,6 +237,43 @@ function uygula(c, { miktarModu = 'ayarla' } = {}) {
   return { yeniRaf: raf, miktar, asilRaf: asil };
 }
 
+// ---- Güncellemeyle gelen liste ---------------------------------------------------------------
+// Pakete konan `ice-aktar/b2b-raf-listesi.tsv` (her satır: ürün kodu, sekme, raflar ";" ile; bkz. scripts/raf-listesi-hazirla.js)
+// Vega ilk okunduktan sonra, içeriği bir kez, kullanılan bütün depolara miktarsız (ürünün asıl rafı) aktarılır.
+// Aynı dosya ikinci kez aktarılmaz; yeni liste gelince (içerik değişince) yeniden aktarılır.
+
+const OTO_ANAHTAR = 'b2bOtoAktarim';
+let otoKontrol = null;
+
+function otomatikDosya() {
+  const adaylar = [];
+  if (process.resourcesPath) adaylar.push(path.join(process.resourcesPath, 'ice-aktar', 'b2b-raf-listesi.tsv'));
+  adaylar.push(path.join(__dirname, '..', 'ice-aktar', 'b2b-raf-listesi.tsv'));
+  return adaylar.find((f) => fs.existsSync(f)) || null;
+}
+
+/** Dönen: null (yapılacak iş yok) ya da { dosya, satir, hata, ...uygula sonucu }. */
+function otomatik({ dosya = process.versions.electron ? otomatikDosya() : null } = {}) {
+  if (!dosya || !depo.goruntu() || !depo.depolar().length) return null;
+  const st = fs.statSync(dosya);
+  const kisa = `${dosya}|${st.size}|${st.mtimeMs}`;
+  if (otoKontrol === kisa) return null;
+  const icerik = fs.readFileSync(dosya);
+  const imza = `${crypto.createHash('sha1').update(icerik).digest('hex').slice(0, 16)}:${icerik.length}`;
+  otoKontrol = kisa;
+  if (db.meta(OTO_ANAHTAR) === imza) return null;
+  const satirlar = icerik.toString('utf8').split(/\r?\n/).filter(Boolean).map((s) => s.split('\t'));
+  const c = coz({ satirlar, eslesme: { urun: 0, raf: 1 }, sabitDepo: HEPSI });
+  const bas = Date.now();
+  const sonuc = uygula(c);
+  const bulunamayan = c.hatalar.filter((h) => /Vega'da bulunamadı/.test(h.hata)).length;
+  const ozetSonuc = { dosya: path.basename(dosya), satir: satirlar.length, hata: c.hatalar.length, bulunamayan, ...sonuc, sureMs: Date.now() - bas, at: Date.now() };
+  db.set(OTO_ANAHTAR, imza);
+  db.set(`${OTO_ANAHTAR}Sonuc`, JSON.stringify(ozetSonuc));
+  log.bilgi(`Paketle gelen raf listesi aktarıldı: ${satirlar.length} ürün satırı, ${sonuc.asilRaf} adres, ${sonuc.yeniRaf} yeni raf, ${bulunamayan} ürün Vega'da yok, ${c.hatalar.length - bulunamayan} satır atlandı (${ozetSonuc.sureMs} ms)`);
+  return ozetSonuc;
+}
+
 /** Boş şablon. */
 async function sablon() {
   const wb = new ExcelJS.Workbook();
@@ -253,4 +294,4 @@ async function sablon() {
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
-module.exports = { oku, tahminEt, coz, ozet, uygula, sablon, depoEsle, sayiOku, ALANLAR, HEPSI };
+module.exports = { oku, tahminEt, coz, ozet, uygula, sablon, depoEsle, sayiOku, otomatik, ALANLAR, HEPSI };

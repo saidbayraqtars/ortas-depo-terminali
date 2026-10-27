@@ -18,6 +18,9 @@ data class Depot(val id: Int, val name: String)
 /** [assigned]: ürün bu rafa zimmetli; qty 0 ise rafta hiç sayılmamış (beklenen). */
 data class Location(val product: Product, val shelf: String, val qty: Double, val assigned: Boolean = false)
 
+/** Rafa kaldırmada seçenek: kind 0 = ürün bu rafta (qty), 1 = ürünün asıl rafı, 2 = ürün başka depoda burada (depotName). */
+data class ShelfOption(val shelf: String, val kind: Int, val qty: Double = 0.0, val depotName: String = "")
+
 data class Receipt(
     val id: String,
     val docNo: String,
@@ -89,4 +92,6 @@ object OpType {
     const val SHELF_ADD = "SHELF_ADD"
     /** Raftan alma (1.5.0+ sunucu). */
     const val PICK = "PICK"
+    /** Ürünün raf adresini (zimmet) siler; raf ve raftaki miktar değişmez (1.5.1+ sunucu). */
+    const val HOME_REMOVE = "HOME_REMOVE"
 }

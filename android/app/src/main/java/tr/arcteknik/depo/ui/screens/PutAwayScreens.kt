@@ -199,6 +199,7 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
     var qtyDone by remember { mutableStateOf(false) }
     var shelf by remember { mutableStateOf<String?>(null) }
     var conflict by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var typed by remember { mutableStateOf("") }
 
     val line = lines.firstOrNull { it.id == lineId }
     // Belge depo bazlı: raflar ve öneri belgenin deposundan. Rafta yoksa ürünün asıl rafı (Excel'den) önerilir.
@@ -281,8 +282,9 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
             } else {
                 QtyDoneRow(qty, line.product.unit) { qtyDone = false; shelf = null }
                 if (shelf == null) {
-                    ScanField("Raf okutun", suggested?.let { "Önerilen raf: $it" } ?: "Ürün henüz hiçbir rafta yok", true, vm.repo.prefs.cameraButton, ::onShelf)
+                    ScanField("Raf okutun", suggested?.let { "Önerilen raf: $it" } ?: "Ürün henüz hiçbir rafta yok", true, vm.repo.prefs.cameraButton, ::onShelf, onTextChange = { typed = it })
                     MessageBar(vm.message?.first, vm.message?.second == true)
+                    ShelfChoices(vm, line.product.id, rd, typed, ::onShelf)
                 } else {
                     ChosenShelf(shelf!!, shelf == suggested, db.qtyAt(line.product.id, shelf!!, rd) > 0) { shelf = null }
                 }
@@ -331,6 +333,7 @@ fun ProductPutAwayScreen(vm: AppVm, online: Boolean, version: Int, productId: St
     var qtyDone by remember { mutableStateOf(false) }
     var shelf by remember { mutableStateOf<String?>(null) }
     var conflict by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var typed by remember { mutableStateOf("") }
     val suggested = remember(version) { suggestedShelf(vm, productId, d) }
 
     fun onShelf(code: String) {
@@ -402,8 +405,9 @@ fun ProductPutAwayScreen(vm: AppVm, online: Boolean, version: Int, productId: St
         } else {
             QtyDoneRow(qty, product.unit) { qtyDone = false; shelf = null }
             if (shelf == null) {
-                ScanField("Raf okutun", suggested?.let { "Önerilen raf: $it" } ?: "Ürün henüz hiçbir rafta yok", true, vm.repo.prefs.cameraButton, ::onShelf)
+                ScanField("Raf okutun", suggested?.let { "Önerilen raf: $it" } ?: "Ürün henüz hiçbir rafta yok", true, vm.repo.prefs.cameraButton, ::onShelf, onTextChange = { typed = it })
                 MessageBar(vm.message?.first, vm.message?.second == true)
+                ShelfChoices(vm, productId, d, typed, ::onShelf)
             } else {
                 ChosenShelf(shelf!!, shelf == suggested, db.qtyAt(productId, shelf!!, d) > 0) { shelf = null }
             }
@@ -412,6 +416,49 @@ fun ProductPutAwayScreen(vm: AppVm, online: Boolean, version: Int, productId: St
 
     conflict?.let { (current, scanned) ->
         ShelfConflictDialog(vm, product, current, scanned, d, { shelf = it; conflict = null }, { conflict = null })
+    }
+}
+
+/**
+ * Raf adımında okutmanın yanında dokunulabilir seçenekler: alana bir şey yazılmadıysa ürünün bilinen rafları,
+ * yazıldıysa o metne uyan raflar. Dokunuş, rafı okutmakla aynı kontrollerden geçer.
+ */
+@Composable
+private fun ShelfChoices(vm: AppVm, productId: String, d: Int, typed: String, onPick: (String) -> Unit) {
+    val db = vm.repo.db
+    val known = remember(productId, d) { db.shelfOptions(productId, d) }
+    val found = remember(typed, d) { if (typed.isBlank()) emptyList() else db.searchShelves(typed, d) }
+    Card(padding = androidx.compose.foundation.layout.PaddingValues(start = 14.dp, end = 14.dp, top = 10.dp)) {
+        Caption(if (typed.isBlank()) "Ürünün rafları" else "Uyan raflar")
+        Column {
+            if (typed.isBlank()) {
+                if (known.isEmpty()) {
+                    Hint("Bu ürünün kayıtlı rafı yok. Raf etiketini okutun ya da raf kodunu yazmaya başlayın; uyan raflar burada listelenir.", Modifier.padding(vertical = 10.dp))
+                }
+                known.take(8).forEach { o ->
+                    val note = when (o.kind) {
+                        0 -> "rafta ${fmt(o.qty)}"
+                        1 -> "asıl raf"
+                        else -> "${o.depotName.ifBlank { "başka depo" }}${if (o.qty > 0) " · ${fmt(o.qty)}" else ""}"
+                    }
+                    ShelfChoiceRow(o.shelf, note, onPick)
+                }
+            } else {
+                if (found.isEmpty()) Hint("\"$typed\" ile başlayan ya da içeren raf yok.", Modifier.padding(vertical = 10.dp))
+                found.forEach { ShelfChoiceRow(it, "", onPick) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShelfChoiceRow(shelf: String, note: String, onPick: (String) -> Unit) {
+    Column(Modifier.focusProperties { canFocus = false }.clickable { onPick(shelf) }) {
+        Divider()
+        Row(Modifier.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            MonoText(shelf, size = 16, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            if (note.isNotBlank()) Hint(note)
+        }
     }
 }
 

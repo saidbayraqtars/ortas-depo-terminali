@@ -123,6 +123,12 @@ async function vegaYenile(tetik = 'elle') {
       );
       sonGoruntuOzet = ozet0;
     }
+    // Güncellemeyle gelen B2B raf listesi (varsa, bir kez): ürünlerin asıl rafları. Hata Vega okumasını bozmaz.
+    try {
+      require('./iceaktar').otomatik();
+    } catch (e) {
+      log.hata('Paketle gelen raf listesi aktarılamadı', e);
+    }
     // yaz açıksa program alanın sahibi: karttan okunmaz, zimmetler karta yazılır (Vega okumasını bekletmeden).
     let zimmetDegisti = false;
     if (cfg.rafAdresi?.yaz) rafYazTetikle(0);
@@ -493,8 +499,12 @@ async function rafYazCalistir(cfg) {
   // Alanın sahibi artık program: önceden karttan okunmuş zimmetler programdan yönetilir.
   db.run("UPDATE product_home SET source='ADMIN' WHERE source='VEGA'");
   const uz = (await vega.kartAlanUzunluk(cfg, alan)) || 50;
+  const tum = cfg.rafAdresi?.tumDepolar !== false;
   const raflar = new Map();
-  for (const z of db.all('SELECT product_id, shelf FROM product_home WHERE depo=? ORDER BY shelf', d)) {
+  const zimmetSatirlari = tum
+    ? db.all('SELECT DISTINCT product_id, shelf FROM product_home ORDER BY shelf')
+    : db.all('SELECT product_id, shelf FROM product_home WHERE depo=? ORDER BY shelf', d);
+  for (const z of zimmetSatirlari) {
     if (!raflar.has(z.product_id)) raflar.set(z.product_id, []);
     raflar.get(z.product_id).push(z.shelf);
   }
@@ -536,16 +546,19 @@ async function rafYazCalistir(cfg) {
       }
     });
   });
-  const toplam = db.get('SELECT COUNT(*) AS n, COUNT(DISTINCT product_id) AS u FROM product_home WHERE depo=?', d);
+  const toplam = tum
+    ? db.get('SELECT COUNT(DISTINCT product_id || shelf) AS n, COUNT(DISTINCT product_id) AS u FROM product_home')
+    : db.get('SELECT COUNT(*) AS n, COUNT(DISTINCT product_id) AS u FROM product_home WHERE depo=?', d);
   if (yazilacak.length) log.bilgi(`Raf adresleri Vega'ya yazıldı (${alan}): ${yazilacak.length} kart${elle ? `, ${elle} kartta Vega'daki elle değişiklik ezildi` : ''}`);
   if (sigmayan.length) log.uyari(`${alan} alanına sığmayan raf adresi: ${sigmayan.length} kart (ör. ${sigmayan.slice(0, 3).join(', ')}); ilk raflar yazıldı`);
-  const kullanilmiyor = !depolar().some((x) => x.ind === d);
-  // Kartta tek alan var: yalnız raf deposunun zimmetleri yazılır. Başka depodaki zimmetler görünür olsun.
-  const baska = db.get('SELECT COUNT(*) AS n, COUNT(DISTINCT product_id) AS u FROM product_home WHERE depo<>?', d);
+  const kullanilmiyor = !tum && !depolar().some((x) => x.ind === d);
+  // tumDepolar kapalıysa kartta yalnız raf deposunun zimmetleri olur; başka depodakiler sayılıp görünür kılınır.
+  const baska = tum ? { n: 0 } : db.get('SELECT COUNT(*) AS n, COUNT(DISTINCT product_id) AS u FROM product_home WHERE depo<>?', d);
   vegaDurum.rafAdresi = {
     alan,
     depo: d,
-    depoAd: depoAdi(d),
+    depoAd: tum ? 'bütün depolar' : depoAdi(d),
+    tumDepolar: tum,
     yaz: true,
     adres: toplam.n,
     urun: toplam.u,
@@ -684,6 +697,16 @@ function islemUygula(op, cihaz, kullanici) {
       // Sunucuda raftaki miktar terminalin gördüğünden azsa eksiye düşmez (miktarAyarla sıfırda keser).
       miktarEkle(depo, pid, shelf, -qty, { ...h, kind: 'PICK', ref: String(p.note || '').slice(0, 120) || null });
       if (miktar(depo, pid, shelf) <= EPS) terminalZimmetBosalt(depo, pid, shelf);
+      return;
+    }
+    case 'HOME_REMOVE': {
+      // Terminalden yalnız ürünün raf adresi (zimmet) silinir; raf ve raftaki miktar değişmez. Adres yoksa sessizce geçer.
+      const pid = String(p.productId || '');
+      const shelf = rafKodu(p.shelf);
+      if (!pid || !shelf) throw new Ret('Eksik bilgi');
+      bilinen(pid);
+      const d = depoCoz(p.depot);
+      if (zimmetSil(d, pid, shelf)) log.bilgi(`Raf adresi silindi: ${shelf} · ürün ${pid} (${depoAdi(d)}) · ${device} · ${user}`);
       return;
     }
     case 'COUNT_SUBMIT':

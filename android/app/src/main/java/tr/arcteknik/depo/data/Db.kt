@@ -531,6 +531,36 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 7) {
 
     fun homeShelf(productId: String, d: Int = depot): String? = homeShelves(productId, d).firstOrNull()
 
+    /**
+     * Rafa kaldırırken gösterilecek seçenekler: ürünün bu depoda durduğu raflar, asıl rafları, ardından başka depoda
+     * durduğu raflardan bu depoda da tanımlı olanlar. Aynı raf bir kez, en bilgilisiyle gelir.
+     */
+    fun shelfOptions(productId: String, d: Int = depot): List<ShelfOption> {
+        val out = LinkedHashMap<String, ShelfOption>()
+        query("SELECT shelf, qty FROM location WHERE depot=? AND product_id=? AND qty>0 ORDER BY qty DESC", d.toString(), productId) {
+            ShelfOption(it.getString(0), 0, it.getDouble(1))
+        }.forEach { out.putIfAbsent(it.shelf, it) }
+        homeShelves(productId, d).forEach { out.putIfAbsent(it, ShelfOption(it, 1)) }
+        query(
+            "SELECT s.shelf, COALESCE(dp.name, ''), s.qty FROM (" +
+                "SELECT depot, shelf, qty FROM location WHERE product_id=? AND depot<>? AND qty>0 " +
+                "UNION SELECT depot, shelf, 0 FROM home WHERE product_id=? AND depot<>?) s " +
+                "JOIN shelf sh ON sh.depot=? AND sh.code=s.shelf LEFT JOIN depot dp ON dp.id=s.depot ORDER BY s.qty DESC, s.shelf",
+            productId, d.toString(), productId, d.toString(), d.toString(),
+        ) { ShelfOption(it.getString(0), 2, it.getDouble(2), it.getString(1)) }.forEach { out.putIfAbsent(it.shelf, it) }
+        return out.values.toList()
+    }
+
+    /** Yazılan metne uyan, bu depoda tanımlı raflar; önce önek, sonra içinde geçenler. */
+    fun searchShelves(text: String, d: Int = depot, limit: Int = 8): List<String> {
+        val q = text.trim().uppercase().replace("%", "").replace("_", "")
+        if (q.isEmpty()) return emptyList()
+        return query(
+            "SELECT code FROM shelf WHERE depot=? AND code LIKE ? ORDER BY (code LIKE ?) DESC, code LIMIT ?",
+            d.toString(), "%$q%", "$q%", limit.toString(),
+        ) { it.getString(0) }
+    }
+
     /** Raftakiler + rafa zimmetli olup rafta olmayanlar (qty 0, sayılmayı bekliyor). */
     fun shelfContents(shelf: String, d: Int = depot): List<Location> {
         val s = shelf.uppercase()
@@ -671,6 +701,10 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 7) {
                 put("depot", d); put("product_id", productId); put("shelf", shelf); put("qty", qty); put("bucket", Buckets.of(productId))
             }, SQLiteDatabase.CONFLICT_REPLACE)
         }
+    }
+
+    fun removeHome(db: SQLiteDatabase, d: Int, productId: String, shelf: String) {
+        db.delete("home", "depot=? AND product_id=? AND shelf=?", arrayOf(d.toString(), productId, shelf))
     }
 
     fun ensureShelf(db: SQLiteDatabase, d: Int, shelf: String) {

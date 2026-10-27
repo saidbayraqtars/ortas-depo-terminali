@@ -25,6 +25,8 @@ yonetici/release/
 yonetici/client/dist/
 yonetici/apk/
 yonetici/veri/
+# Ortaş'tan gelen B2B raf listesi (müşteri verisi): scripts/raf-listesi-hazirla.js üretir, pakete extraResources ile girer
+yonetici/ice-aktar/
 
 # Hata toplayıcı anahtarı (araclar/hata-toplayici/KURULUM.md)
 yonetici/server/rapor.json

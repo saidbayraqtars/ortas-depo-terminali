@@ -316,7 +316,8 @@ export default function Ayarlar() {
                 <input className="inp mono" value={t.rafAdresi.alan || ''} placeholder="KOD10" onChange={(e) => setT('rafAdresi.alan', e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ''))} />
               </Alan>
               <Alan etiket="Raflar hangi depoda">
-                <select className="inp" value={t.rafAdresi.depo ?? ''} onChange={(e) => setT('rafAdresi.depo', e.target.value === '' ? null : Number(e.target.value))}>
+                <select className="inp" value={t.rafAdresi.yaz && t.rafAdresi.tumDepolar !== false ? 'hepsi' : t.rafAdresi.depo ?? ''} onChange={(e) => { const v = e.target.value; setT('rafAdresi.tumDepolar', v === 'hepsi'); if (v !== 'hepsi') setT('rafAdresi.depo', v === '' ? null : Number(v)); }}>
+                  {t.rafAdresi.yaz && <option value="hepsi">Bütün depolar (kartta hepsi)</option>}
                   <option value="">Varsayılan depo</option>
                   {(durum?.depolar || []).map((d) => <option key={d.ind} value={d.ind}>{d.ad}</option>)}
                 </select>

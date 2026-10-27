@@ -33,6 +33,10 @@
       {
         "from": "apk",
         "to": "apk"
+      },
+      {
+        "from": "ice-aktar",
+        "to": "ice-aktar"
       }
     ],
     "win": {

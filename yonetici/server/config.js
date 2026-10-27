@@ -30,7 +30,9 @@ const DEFAULTS = {
   // Varsayılan: yalnız programda tanımlı raf kodları alınır (alanda raf olmayan bilgi de olabilir).
   // yeniRafAc: tanımsız adres raf olarak açılsın (okuma). yaz: program alanın sahibi olur, zimmetleri karta yazar;
   // alandaki eski bilgi silinir (ilk değer vega_alan tablosunda saklanır). Ortaş: KOD10, yaz açık.
-  rafAdresi: { alan: '', depo: null, yeniRafAc: false, yaz: false },
+  // tumDepolar: yazarken bütün depoların zimmetleri karta birlikte yazılır (terminal hangi depoda çalışırsa çalışsın
+  // kartta görünür); kapalıysa yalnız `depo` deposununkiler.
+  rafAdresi: { alan: '', depo: null, yeniRafAc: false, yaz: false, tumDepolar: true },
   // Terminale giden ürün listesi: 'aktif' = stoklu, son N günde hareketli ya da rafta olan kartlar.
   urun: { kapsam: 'aktif', gun: 365 },
   sayim: {

@@ -6,7 +6,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -50,6 +52,8 @@ fun PickScreen(vm: AppVm, online: Boolean, version: Int) {
     val product = remember(version, productId) { productId?.let { db.productById(it) } }
     val locations = remember(version, productId) { productId?.let { db.locationsOf(it) } ?: emptyList() }
     val total = locations.sumOf { it.qty }
+    val homes = remember(version, productId) { productId?.let { db.homeShelves(it) } ?: emptyList() }
+    var removing by remember { mutableStateOf<String?>(null) }
 
     fun reset() {
         productId = null; qty = 1.0; qtyDone = false; shelf = null
@@ -71,7 +75,7 @@ fun PickScreen(vm: AppVm, online: Boolean, version: Int) {
     Screen(
         "Raftan Al", sub = db.depotName(db.depot).ifBlank { null }, online = online, onBack = { vm.back() },
         footer = when {
-            product != null && !qtyDone -> ({
+            product != null && !qtyDone && total > 0 -> ({
                 MessageBar(vm.message?.first, vm.message?.second == true)
                 PrimaryButton("Miktarı onayla", { qtyDone = true }, enabled = qty > 0 && qty <= total + 1e-9)
             })
@@ -93,7 +97,7 @@ fun PickScreen(vm: AppVm, online: Boolean, version: Int) {
         }
         if (product == null) {
             ProductScanField(vm, "Ürün okutun", "Raftan alınacak ürünün barkodu ya da listeden seçin", { p ->
-                if (db.shelvedTotal(p.id) <= 0) vm.error("${p.name} bu depoda hiçbir rafta görünmüyor")
+                if (db.shelvedTotal(p.id) <= 0 && db.homeShelves(p.id).isEmpty()) vm.error("${p.name} bu depoda hiçbir rafta görünmüyor, raf adresi de yok")
                 else { productId = p.id; qty = 1.0; vm.ok(p.name) }
             })
             MessageBar(vm.message?.first, vm.message?.second == true)
@@ -104,9 +108,32 @@ fun PickScreen(vm: AppVm, online: Boolean, version: Int) {
                 Text(product.name, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
                 MonoText(listOfNotNull(product.code, product.barcode).joinToString(" · "), size = 13, weight = FontWeight.Medium, color = C.Muted)
             }
-            Hint("Raflarda toplam ${fmt(total)} ${product.unit.lowercase()}, ${locations.size} raf")
+            Hint(if (total > 0) "Raflarda toplam ${fmt(total)} ${product.unit.lowercase()}, ${locations.size} raf" else "Bu depoda rafta stok yok; yalnız raf adresi silinebilir.")
         }
-        if (!qtyDone) {
+        if (homes.isNotEmpty() && shelf == null) {
+            Card(padding = androidx.compose.foundation.layout.PaddingValues(start = 14.dp, end = 14.dp, top = 10.dp)) {
+                Caption("Ürünün raf adresleri")
+                homes.forEach { h ->
+                    Column {
+                        Divider()
+                        Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                MonoText(h, size = 16)
+                                val here = db.qtyAt(product.id, h)
+                                if (here > 0) Hint("rafta ${fmt(here)} ${product.unit.lowercase()}")
+                            }
+                            Text(
+                                "Adresi sil", color = C.Err, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
+                                modifier = Modifier.focusProperties { canFocus = false }.clickable { removing = h }.padding(10.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        if (total <= 0) {
+            SecondaryButton("Başka ürün seç", { reset() })
+        } else if (!qtyDone) {
             QtyRow(qty, { qty = it }, product.unit, total)
             SecondaryButton("Başka ürün seç", { reset() })
         } else {
@@ -139,6 +166,25 @@ fun PickScreen(vm: AppVm, online: Boolean, version: Int) {
                     }
                 }
             }
+        }
+    }
+    removing?.let { h ->
+        val p = product
+        if (p != null) {
+            AlertDialog(
+                onDismissRequest = { removing = null },
+                title = { Text("Raf adresi silinsin mi?") },
+                text = { Text("${p.name} ürününün $h raf adresi silinir. Raf ve raftaki miktar değişmez; yönetici programında ve Vega kartında da kalkar.") },
+                confirmButton = {
+                    TextButton({
+                        vm.repo.removeHome(p, h, vm.userName)
+                        removing = null
+                        vm.saved("${p.code}: $h adresi silindi")
+                        if (db.homeShelves(p.id).none { it != h } && total <= 0) reset()
+                    }) { Text("Sil", color = C.Err, fontWeight = FontWeight.Bold) }
+                },
+                dismissButton = { TextButton({ removing = null }) { Text("Vazgeç") } },
+            )
         }
     }
 }

@@ -382,6 +382,7 @@ function yoneticiApi() {
         }
         if ('yeniRafAc' in b.rafAdresi) yeni.rafAdresi.yeniRafAc = Boolean(b.rafAdresi.yeniRafAc);
         if ('yaz' in b.rafAdresi) yeni.rafAdresi.yaz = Boolean(b.rafAdresi.yaz);
+        if ('tumDepolar' in b.rafAdresi) yeni.rafAdresi.tumDepolar = Boolean(b.rafAdresi.tumDepolar);
         if ('depo' in b.rafAdresi) yeni.rafAdresi.depo = b.rafAdresi.depo === '' || b.rafAdresi.depo === null ? null : Number(b.rafAdresi.depo);
       }
       if (b.urun) {

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Alan, api, Ara, Btn, Durum, HAREKET, Icon, indir, miktar, Modal, Rozet, SayfaBaslik, Secim, tarihSaat, useApp, useDepo, useOnay, useVeri } from '../lib.jsx';
 import EtiketPenceresi from './Etiket.jsx';
 import { Tasi } from './Urunler.jsx';
@@ -296,6 +296,8 @@ function IceAktar({ kapat, tamam }) {
   );
 }
 
+const SAYFA_BOYU = 200;
+
 export default function Raflar() {
   const { toast } = useApp();
   const { depo, qs, cok } = useDepo();
@@ -311,6 +313,12 @@ export default function Raflar() {
     const a = q.trim().toUpperCase();
     return (veri || []).filter((r) => (!a || r.code.includes(a) || r.note.toUpperCase().includes(a)) && (!bolge || r.zone === bolge) && (dolu === 'hepsi' || (dolu === 'dolu' ? r.cesit > 0 : dolu === 'bekleyen' ? r.bekleyen > 0 : r.cesit === 0)));
   }, [veri, q, bolge, dolu]);
+  // 12 bin raflık listeyi tek seferde çizmek tarayıcıyı şişiriyor; sayfa sayfa göster.
+  const [sayfa, setSayfa] = useState(0);
+  useEffect(() => setSayfa(0), [q, bolge, dolu, depo]);
+  const sayfaSayisi = Math.max(1, Math.ceil(liste.length / SAYFA_BOYU));
+  const sayfaNo = Math.min(sayfa, sayfaSayisi - 1);
+  const gorunen = useMemo(() => liste.slice(sayfaNo * SAYFA_BOYU, (sayfaNo + 1) * SAYFA_BOYU), [liste, sayfaNo]);
   const hepsiSecili = liste.length > 0 && liste.every((r) => secili.has(anahtar(r)));
   const tumunuSec = () => setSecili(hepsiSecili ? new Set() : new Set(liste.map(anahtar)));
   const sec = (c) => setSecili((s) => {
@@ -350,7 +358,7 @@ export default function Raflar() {
                 </tr>
               </thead>
               <tbody>
-                {liste.map((r) => (
+                {gorunen.map((r) => (
                   <tr key={anahtar(r)} className="click" onClick={() => (window.location.hash = `/raf/${r.depo}/${encodeURIComponent(r.code)}`)}>
                     <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={secili.has(anahtar(r))} onChange={() => sec(anahtar(r))} /></td>
                     {depoSutun && <td className="muted">{r.depoAd}</td>}
@@ -366,6 +374,15 @@ export default function Raflar() {
               </tbody>
             </table>
           </div>
+          {liste.length > SAYFA_BOYU && (
+            <div className="toolbar" style={{ borderTop: '1px solid var(--line-soft)', borderBottom: 0 }}>
+              <span className="muted small">{sayfaNo * SAYFA_BOYU + 1}–{Math.min(liste.length, (sayfaNo + 1) * SAYFA_BOYU)} / {liste.length} raf</span>
+              <div className="grow" />
+              <Btn size="sm" disabled={sayfaNo === 0} onClick={() => setSayfa(sayfaNo - 1)}>Önceki</Btn>
+              <span className="small">{sayfaNo + 1} / {sayfaSayisi}</span>
+              <Btn size="sm" disabled={sayfaNo >= sayfaSayisi - 1} onClick={() => setSayfa(sayfaNo + 1)}>Sonraki</Btn>
+            </div>
+          )}
         </Durum>
       </div>
       {pencere === 'toplu' && <TopluOlustur kapat={() => setPencere(null)} tamam={(k) => { setPencere(null); setSecili(new Set(k)); yukle(); }} />}

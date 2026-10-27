@@ -525,14 +525,22 @@ test('raf adresi yazma ayarı eksikse sessiz kalmaz: durumda açık hata, başka
     db.run('DELETE FROM product_home');
     depo.zimmetEkle(1, '101', 'A-01-01');
     depo.zimmetEkle(2, '101', 'A-01-01');
+    config.update({ rafAdresi: { tumDepolar: false } });
     const t = await depo.vegaRafYaz();
     assert.strictEqual(t.hata, undefined);
     assert.strictEqual(t.baskaDepo, 1);
     assert.strictEqual(t.depoAd, 'MERKEZ');
+    // Varsayılan: bütün depoların zimmetleri karta birlikte yazılır (aynı raf bir kez).
+    depo.zimmetEkle(2, '101', 'B-02-02');
+    config.update({ rafAdresi: { tumDepolar: true } });
+    const h = await depo.vegaRafYaz();
+    assert.strictEqual(h.baskaDepo, 0);
+    assert.strictEqual(h.adres, 2);
+    assert.strictEqual(depo.goruntu().products.find((x) => x.id === '101').raf, 'A-01-01, B-02-02');
   } finally {
     vega.kartAlanYaz = eskiYaz;
     vega.kartAlanUzunluk = eskiUz;
-    config.update({ rafAdresi: { alan: '', yaz: false } });
+    config.update({ rafAdresi: { alan: '', yaz: false, tumDepolar: true } });
     depo.goruntu().rafAlan = null;
     db.run('DELETE FROM product_home');
   }
@@ -640,6 +648,46 @@ test('raftan alma raf stokunu azaltır, eksiye düşürmez; boşalan raftan term
   assert.ok(!depo.zimmetler(1, '103').some((z) => z.shelf === 'B-01-01'));
   const ret = depo.islemler('TRM-01', 'ali', [op('PICK', { productId: '103', shelf: 'B-01-01', qty: 0, depot: 1 })]);
   assert.strictEqual(ret[0].ok, false);
+});
+
+test('terminalden ürünün raf adresi silinir: raf ve raftaki miktar kalır, adres yoksa hata vermez, Vega kartı adresi kaynaklıysa reddeder', () => {
+  db.run('DELETE FROM product_home');
+  depo.islemler('TRM-01', 'ali', [op('PUTAWAY', { productId: '103', shelf: 'B-01-01', qty: 4, depot: 1 })]);
+  assert.ok(depo.zimmetler(1, '103').some((z) => z.shelf === 'B-01-01'));
+  const r = depo.islemler('TRM-01', 'ali', [op('HOME_REMOVE', { productId: '103', shelf: 'b-01-01', depot: 1 })]);
+  assert.ok(r[0].ok);
+  assert.ok(!depo.zimmetler(1, '103').some((z) => z.shelf === 'B-01-01'));
+  assert.strictEqual(depo.miktar(1, '103', 'B-01-01'), 4);
+  assert.ok(depo.rafVarMi(1, 'B-01-01'));
+  // Aynı işlem yeniden gelirse (adres zaten yok) hata değildir.
+  assert.ok(depo.islemler('TRM-01', 'ali', [op('HOME_REMOVE', { productId: '103', shelf: 'B-01-01', depot: 1 })])[0].ok);
+  assert.strictEqual(depo.islemler('TRM-01', 'ali', [op('HOME_REMOVE', { productId: '103', depot: 1 })])[0].ok, false);
+  // Excel/yönetici zimmeti de terminalden silinebilir; Vega kartından gelen silinemez.
+  depo.zimmetEkle(1, '103', 'A-01-02', 'IMPORT');
+  assert.ok(depo.islemler('TRM-01', 'ali', [op('HOME_REMOVE', { productId: '103', shelf: 'A-01-02', depot: 1 })])[0].ok);
+  assert.ok(!depo.zimmetler(1, '103').some((z) => z.shelf === 'A-01-02'));
+  db.run("INSERT INTO product_home(depo, product_id, shelf, source, updated_at) VALUES(1,'103','A-01-01','VEGA',1)");
+  assert.strictEqual(depo.islemler('TRM-01', 'ali', [op('HOME_REMOVE', { productId: '103', shelf: 'A-01-01', depot: 1 })])[0].ok, false);
+  db.run('DELETE FROM product_home');
+});
+
+test('güncellemeyle gelen raf listesi bir kez aktarılır: ürünün asıl rafı bütün kullanılan depolara, bilinmeyen ürün atlanır', () => {
+  db.run('DELETE FROM product_home');
+  const dosya = path.join(dir, 'b2b.tsv');
+  fs.writeFileSync(dosya, 'YF-1042\tA-01-01;Z-09-09\nYOK-1\tA-01-02\nHF-0310\tB-01-01\n');
+  const r = iceaktar.otomatik({ dosya });
+  assert.strictEqual(r.satir, 3);
+  assert.strictEqual(r.bulunamayan, 1);
+  assert.strictEqual(r.asilRaf, 6); // 3 adres × 2 depo
+  assert.deepStrictEqual(depo.zimmetler(2, '101').map((z) => z.shelf), ['A-01-01', 'Z-09-09']);
+  assert.ok(depo.rafVarMi(1, 'Z-09-09') && depo.rafVarMi(2, 'Z-09-09'));
+  assert.strictEqual(iceaktar.otomatik({ dosya }), null);
+  // Elle silinen adres aynı dosyayla geri gelmez; içerik değişince yeniden aktarılır.
+  db.run("DELETE FROM product_home WHERE shelf='Z-09-09'");
+  assert.strictEqual(iceaktar.otomatik({ dosya }), null);
+  fs.writeFileSync(dosya, 'AN-0040\tB-01-01\n');
+  assert.strictEqual(iceaktar.otomatik({ dosya }).asilRaf, 2);
+  db.run('DELETE FROM product_home');
 });
 
 test('tanı: Vega girişlerinin terminaldeki durumu (seçili değil, eski, iade, terminalde, belgesiz)', async () => {

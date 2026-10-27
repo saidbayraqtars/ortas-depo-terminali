@@ -155,6 +155,27 @@ class Repo(val db: Db, val prefs: Prefs) {
         changed()
     }
 
+    /** Ürünün raf adresi silinir (raf ve raftaki miktar kalır); yönetici programında ve Vega kartında da kalkar. */
+    fun removeHome(product: Product, shelf: String, user: String) {
+        val s = shelf.uppercase()
+        val d = db.depot
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            db.removeHome(w, d, product.id, s)
+            db.addMovement(w, product.id, "Raf adresi silindi · $s", 0.0)
+            db.insertOp(w, op(
+                OpType.HOME_REMOVE,
+                JSONObject().put("productId", product.id).put("shelf", s).put("depot", d).put("user", user),
+                "Raf adresi silindi|${product.code} ✕ $s",
+            ))
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+        changed()
+    }
+
     // ---- Raf ----------------------------------------------------------------------------
 
     /** Tanımsız raf etiketi terminalden raf olarak eklenir; yönetici programında da açılır. */
