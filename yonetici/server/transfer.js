@@ -234,6 +234,14 @@ function kabulUygula(op, p, h, { Ret, bilinen }) {
       'INSERT INTO transfer_line(transfer_id, product_id, qty, shelf) VALUES(?,?,?,?) ON CONFLICT(transfer_id, product_id, shelf) DO UPDATE SET qty = qty + excluded.qty',
       op.id, l.pid, l.qty, l.shelf,
     );
+    // Rafla birlikte alınan miktar baştan yerleşmiş sayılır; rafsız alınan, rafa kaldırılacak belgede (programKabulFisleri) bekler.
+    if (l.shelf) {
+      db.run(
+        `INSERT INTO receipt_shelved(line_id, receipt_id, product_id, shelved, updated_at) VALUES(?,?,?,?,?)
+         ON CONFLICT(line_id) DO UPDATE SET shelved = shelved + excluded.shelved, updated_at = excluded.updated_at`,
+        `TRF-${op.id}-${l.pid}`, `TRF-${op.id}`, l.pid, l.qty, now(),
+      );
+    }
   }
   // Gelmeyen miktar kayıtlı kalır; gönderim terminallerde kapanır (belge açık kalmaz).
   for (const [pid, beklenen] of acik) {
@@ -247,6 +255,7 @@ function kabulUygula(op, p, h, { Ret, bilinen }) {
     }
   }
   db.run('INSERT INTO transfer_kapali(sevk_ind, transfer_id, at) VALUES(?,?,?)', sevk.ind, op.id, now());
+  fisOnbellek.surum = -1;
   gorunum.sevkler = gorunum.sevkler.filter((s) => s.ind !== sevk.ind);
 }
 
@@ -334,6 +343,44 @@ function programKabulBelgeleri() {
   );
 }
 
+/**
+ * Terminalden kabul edilen transferin rafa kaldırılacak belgesi. Mal kabul belgeleriyle aynı biçimde (vega.js goruntu.receipts);
+ * satır miktarı alınan miktardır, rafla alınan kısım receipt_shelved'a yerleşmiş yazılır. Son 60 gün; sürüm sayacına göre saklanır.
+ */
+let fisOnbellek = { surum: -1, liste: [] };
+function programKabulFisleri() {
+  const sv = depo().surum();
+  if (fisOnbellek.surum === sv) return fisOnbellek.liste;
+  const bas = now() - 60 * 86400000;
+  const satirlar = db.all(
+    `SELECT t.id, t.from_depo, t.to_depo, t.sevk_no, t.belge_no, t.created_at, l.product_id, SUM(l.qty) AS q
+     FROM transfer t JOIN transfer_line l ON l.transfer_id = t.id
+     WHERE t.kind = 'RECEIVE' AND t.created_at >= ?
+     GROUP BY t.id, l.product_id ORDER BY t.created_at, t.id, l.product_id`,
+    bas,
+  );
+  const m = new Map();
+  for (const r of satirlar) {
+    if (!m.has(r.id)) {
+      m.set(r.id, {
+        id: `TRF-${r.id}`,
+        izahat: 'D129',
+        tur: 'Gönderim kabulü',
+        docNo: String(r.belge_no || r.sevk_no || 'Gönderim').trim(),
+        supplier: `${depo().depoAdi(r.from_depo)} deposundan`,
+        date: tarihStr(new Date(r.created_at)),
+        ts: r.created_at,
+        depo: r.to_depo,
+        depoAd: depo().depoAdi(r.to_depo),
+        lines: [],
+      });
+    }
+    m.get(r.id).lines.push({ id: `TRF-${r.id}-${r.product_id}`, productId: String(r.product_id), accepted: yuvarla(r.q) });
+  }
+  fisOnbellek = { surum: sv, liste: [...m.values()] };
+  return fisOnbellek.liste;
+}
+
 // ---- Yönetici ekranı --------------------------------------------------------------------------
 
 function liste(limit = 200) {
@@ -418,6 +465,7 @@ function acikKapat(ind, kim) {
 }
 
 module.exports = {
+  programKabulFisleri,
   acikKapat,
   uygula, yaz, yaziciTetikle, yenile, terminalGorunumu, programKabulBelgeleri, liste, yenidenDene, farkCoz, farkAc,
   yoldaDepo, tumDepolar,

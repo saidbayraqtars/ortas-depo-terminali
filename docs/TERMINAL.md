@@ -33,10 +33,13 @@ programının bilgisayarındaki etiket yazıcısından çıkarır.
 
 Yönetici programında Ayarlar › Depolar arası transfer açıksa ana menüde iki kutu çıkar.
 
-- **Depoya Gönder:** önce hangi depodan çıkacağı, sonra hangi depoya gideceği sorulur. Ürün okutulur, miktar girilir, raf okutulursa
-  (ya da listeden seçilirse) mal o raftan düşer. **Gönder** deyince yönetici programı Vega'ya *depo gönderim fişi* (128) yazar.
-- **Gönderim Kabul:** çalışılan depoya gelen gönderimler listelenir. Gelen ürünler okutulur, rafa konur, **Kabulü bitir** deyince
-  Vega'ya *gönderim kabul fişi* (129) yazılır. Gönderimde olup gelmeyen mal kabulde "eksik" olarak kaydedilir: belge açık kalmaz,
+Raf adımı yoktur: gönderirken de kabul ederken de ürün okutulur, **her okutma 1 adet ekler**, miktar satırdaki +/− ile düzeltilir.
+
+- **Depoya Gönder:** önce hangi depodan çıkacağı, sonra hangi depoya gideceği sorulur. Ürünler okutulur. **Gönder** deyince yönetici
+  programı Vega'ya *depo gönderim fişi* (128) yazar. (Raf belirtilmediği için gönderen deponun raf stoku değişmez; sayımla düzelir.)
+- **Gönderim Kabul:** çalışılan depoya gelen gönderimler listelenir. Gelen ürünler okutulur, **Kabulü bitir** deyince Vega'ya
+  *gönderim kabul fişi* (129) yazılır. Alınan mal **Rafa Kaldır'da belge olarak bekler**; çalışan oradan girip rafa yerleştirir
+  (belgeden ürün → miktar → raf). Gönderimde olup gelmeyen mal kabulde "eksik" olarak kaydedilir: belge açık kalmaz,
   ama yönetici programı Depo transferi › Eksikler'de gönderen depo, ürün ve miktarı gösterir; mal bulununca ya da kayıp
   sayılınca çözüldü işaretlenir.
 

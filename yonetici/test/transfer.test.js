@@ -201,3 +201,31 @@ test('yönetici açık gönderimi kapatır: kalan miktar kayıp eksik olur, gön
   assert.ok(db.get('SELECT 1 FROM transfer_kapali WHERE sevk_ind=950'));
   assert.strictEqual(transfer.terminalGorunumu().incoming.length, 0);
 });
+
+test('rafsız kabul: mal rafa kaldırılacak belge olarak bekler, rafla alınan kısım yerleşmiş sayılır, belgeden rafa kaldırılır', () => {
+  hazir([{ ind: 710, no: 'A0000710', tarih: new Date('2026-10-28T00:00:00'), kaynak: 1, hedef: 108, kalemler: [], satirlar: [
+    { productId: '101', sent: 4, open: 4 },
+    { productId: '103', sent: 2, open: 2 },
+  ] }]);
+  const o = op('TRANSFER_RECEIVE', { sevkId: '710', lines: [{ productId: '101', qty: 3, shelf: '' }, { productId: '101', qty: 1, shelf: 'T-01-01' }, { productId: '103', qty: 2 }] });
+  const r = depo.islemler('TRM-02', 'veli', [o]);
+  assert.ok(r[0].ok, JSON.stringify(r));
+
+  const fis = depo.belgeler().find((b) => b.id === `TRF-${o.id}`);
+  assert.ok(fis, 'kabul belgesi rafa kaldırılacaklar arasında');
+  assert.deepStrictEqual([fis.depo, fis.izahat, fis.supplier, fis.acik, fis.kalan], [108, 'D129', 'MERKEZ deposundan', true, 5]);
+  assert.deepStrictEqual(fis.lines.map((l) => [l.productId, l.accepted, l.shelved]), [['101', 4, 1], ['103', 2, 0]]);
+  assert.strictEqual(depo.bekleyenKabul(108).get('101'), 3);
+  const m = JSON.parse(depo.master().json);
+  assert.ok(m.receipts.some((x) => x.id === fis.id && x.depot === 108 && x.lines.length === 2));
+
+  // Rafa kaldır: belge satırı üzerinden (terminal PUTAWAY).
+  const satir = fis.lines.find((l) => l.productId === '101');
+  const p = depo.islemler('TRM-02', 'veli', [op('PUTAWAY', { receiptId: fis.id, lineId: satir.id, productId: '101', shelf: 'T-01-02', qty: 3, depot: 108 })]);
+  assert.ok(p[0].ok, JSON.stringify(p));
+  assert.strictEqual(depo.miktar(108, '101', 'T-01-02'), 3);
+  const son = depo.belgeler().find((b) => b.id === fis.id);
+  assert.deepStrictEqual(son.lines.map((l) => [l.productId, l.shelved]), [['101', 4], ['103', 0]]);
+  assert.strictEqual(son.kalan, 2);
+  assert.strictEqual(depo.bekleyenKabul(108).get('101'), undefined);
+});

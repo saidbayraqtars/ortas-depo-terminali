@@ -879,7 +879,9 @@ function belgeler({ shelved, kapali } = kabulDurumu()) {
   if (!goruntu) return [];
   // Terminalden kabul edilip program tarafından yazılan 129 fişi (transfer.js): mal kabulde ikinci kez çıkmaz.
   const programKabul = require('./transfer').programKabulBelgeleri();
-  return goruntu.receipts.map((r) => {
+  // Terminalden kabul edilen transferler rafa kaldırılacak belge olarak da gelir (raf belirtmeden alınan mal burada bekler).
+  const tumu = [...goruntu.receipts, ...require('./transfer').programKabulFisleri()].sort((a, b) => b.ts - a.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return tumu.map((r) => {
     const lines = r.lines.map((l) => ({ ...l, shelved: Number(shelved.get(l.id) || 0) }));
     const kalan = lines.reduce((t, l) => t + Math.max(0, l.accepted - l.shelved), 0);
     const st = kapali.get(r.id);
@@ -898,7 +900,8 @@ function belgeler({ shelved, kapali } = kabulDurumu()) {
 }
 
 function receiptById(id) {
-  return goruntu ? goruntu.receipts.find((r) => r.id === id) || null : null;
+  if (!goruntu) return null;
+  return goruntu.receipts.find((r) => r.id === id) || require('./transfer').programKabulFisleri().find((r) => r.id === id) || null;
 }
 
 /** Açık belgelerde rafa kaldırılmayı bekleyen miktar, ürün başına (depo verilirse o depoda). Vega stoku bunu içerir. */
