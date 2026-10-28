@@ -391,7 +391,8 @@ function yoneticiApi() {
       if (b.transfer) {
         const t = yeni.transfer || (yeni.transfer = {});
         if ('aktif' in b.transfer) t.aktif = Boolean(b.transfer.aktif);
-        const sayiyaCevir = (x) => (x === '' || x === null || x === undefined ? null : Number(x));
+        // 0 da "ayarlanmadı" demektir (eski arayüz boş alanı null yerine 0 gönderiyordu).
+        const sayiyaCevir = (x) => (x === '' || x === null || x === undefined || Number(x) === 0 ? null : Number(x));
         if ('yoldaDepo' in b.transfer) {
           const n = sayiyaCevir(b.transfer.yoldaDepo);
           if (n !== null && !(Number.isInteger(n) && n > 0)) throw Object.assign(new Error('Yoldaki depo geçersiz'), { status: 400 });

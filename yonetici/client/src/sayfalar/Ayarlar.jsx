@@ -37,9 +37,11 @@ function TransferAyari({ a, kaydet }) {
   const d = (k) => (e) => setT((x) => ({ ...x, [k]: e.target.value }));
   const depolar = veri?.depolar || [];
   const bos = (x) => (x === null || x === undefined ? '' : String(x));
+  // Ayardaki null ('otomatik' / boş) Number(null) = 0 olup sunucuda geçersiz sayılmasın.
+  const sayi = (x) => (x === '' || x === null || x === undefined ? null : Number(x));
   return (
     <Bolum ikon="truck" baslik="Depolar arası transfer" aciklama="Terminalden depoya gönder ve gönderim kabul: program Vega'ya depo gönderim fişi (128) ve gönderim kabul fişi (129) yazar. Kabulde gelmeyen mal kayıtlı kalır (Depo transferi sayfası)."
-      alt={<Btn kind="primary" onClick={() => kaydet({ transfer: { aktif: Boolean(t.aktif), yoldaDepo: t.yoldaDepo === '' ? null : Number(t.yoldaDepo), userno: t.userno === '' ? null : Number(t.userno), onek: t.onek, gun: Number(t.gun) || 45 } }, 'Transfer ayarı kaydedildi')}>Kaydet</Btn>}>
+      alt={<Btn kind="primary" onClick={() => kaydet({ transfer: { aktif: Boolean(t.aktif), yoldaDepo: sayi(t.yoldaDepo), userno: sayi(t.userno), onek: t.onek, gun: Number(t.gun) || 45 } }, 'Transfer ayarı kaydedildi')}>Kaydet</Btn>}>
       <label className="check"><input type="checkbox" checked={Boolean(t.aktif)} onChange={(e) => setT((x) => ({ ...x, aktif: e.target.checked }))} /><span><b>Depolar arası transfer açık</b><br /><span className="muted small">Kapalıyken terminalde "Depoya Gönder" ve "Gönderim Kabul" görünmez. Önce Vega kopyasında denenmelidir.</span></span></label>
       <div className="grid g2">
         <Alan etiket="Yoldaki depo" ipucu="Mal gönderimle kabul arasında bu depoda durur (Ortaş: TRANSFER)">
