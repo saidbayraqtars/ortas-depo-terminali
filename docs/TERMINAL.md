@@ -29,6 +29,20 @@ programının bilgisayarındaki etiket yazıcısından çıkarır.
 - Vega'da olup terminalde görünmeyen stok için yönetici programında Ürünler › **Neden terminalde yok?**: ürünün Vega
   girişleri belge belge ve her birinin neden terminale gitmediği (tür seçili değil, başlangıçtan eski, iade, depo seçili değil…).
 
+## Depolar arası transfer (1.6.0+)
+
+Yönetici programında Ayarlar › Depolar arası transfer açıksa ana menüde iki kutu çıkar.
+
+- **Depoya Gönder:** önce hangi depodan çıkacağı, sonra hangi depoya gideceği sorulur. Ürün okutulur, miktar girilir, raf okutulursa
+  (ya da listeden seçilirse) mal o raftan düşer. **Gönder** deyince yönetici programı Vega'ya *depo gönderim fişi* (128) yazar.
+- **Gönderim Kabul:** çalışılan depoya gelen gönderimler listelenir. Gelen ürünler okutulur, rafa konur, **Kabulü bitir** deyince
+  Vega'ya *gönderim kabul fişi* (129) yazılır. Gönderimde olup gelmeyen mal kabulde "eksik" olarak kaydedilir: belge açık kalmaz,
+  ama yönetici programı Depo transferi › Eksikler'de gönderen depo, ürün ve miktarı gösterir; mal bulununca ya da kayıp
+  sayılınca çözüldü işaretlenir.
+
+Fişler terminali beklemeden arka planda yazılır; Vega'ya ulaşılamazsa yönetici programı yeniden dener, 5 denemeden sonra
+Depo transferi › Gönderim ve kabuller'de "Yeniden dene" görünür.
+
 ## Okuyucu ayarı
 
 Uygulama iki yolu da dinler; terminale göre biri seçilir.

@@ -29,6 +29,33 @@ function Bolum({ ikon, baslik, aciklama, children, alt }) {
   );
 }
 
+
+/** Depolar arası transfer: terminalden Vega'ya depo gönderim (128) ve kabul (129) fişi yazma. */
+function TransferAyari({ a, kaydet }) {
+  const { veri } = useVeri('/transfer');
+  const [t, setT] = useState({ aktif: false, yoldaDepo: '', userno: '', onek: 'A', gun: 45, ...(a.transfer || {}) });
+  const d = (k) => (e) => setT((x) => ({ ...x, [k]: e.target.value }));
+  const depolar = veri?.depolar || [];
+  const bos = (x) => (x === null || x === undefined ? '' : String(x));
+  return (
+    <Bolum ikon="truck" baslik="Depolar arası transfer" aciklama="Terminalden depoya gönder ve gönderim kabul: program Vega'ya depo gönderim fişi (128) ve gönderim kabul fişi (129) yazar. Kabulde gelmeyen mal kayıtlı kalır (Depo transferi sayfası)."
+      alt={<Btn kind="primary" onClick={() => kaydet({ transfer: { aktif: Boolean(t.aktif), yoldaDepo: t.yoldaDepo === '' ? null : Number(t.yoldaDepo), userno: t.userno === '' ? null : Number(t.userno), onek: t.onek, gun: Number(t.gun) || 45 } }, 'Transfer ayarı kaydedildi')}>Kaydet</Btn>}>
+      <label className="check"><input type="checkbox" checked={Boolean(t.aktif)} onChange={(e) => setT((x) => ({ ...x, aktif: e.target.checked }))} /><span><b>Depolar arası transfer açık</b><br /><span className="muted small">Kapalıyken terminalde "Depoya Gönder" ve "Gönderim Kabul" görünmez. Önce Vega kopyasında denenmelidir.</span></span></label>
+      <div className="grid g2">
+        <Alan etiket="Yoldaki depo" ipucu="Mal gönderimle kabul arasında bu depoda durur (Ortaş: TRANSFER)">
+          <select className="inp" value={bos(t.yoldaDepo)} onChange={d('yoldaDepo')}>
+            <option value="">{veri?.yolda ? `Otomatik: ${veri.yoldaAd}` : 'Otomatik (adı TRANSFER olan depo)'}</option>
+            {depolar.map((x) => <option key={x.ind} value={x.ind}>{x.ad}</option>)}
+          </select>
+        </Alan>
+        <Alan etiket="Belge no öneki" ipucu="Vega'daki seri: A0000575"><input className="inp mono" value={t.onek || ''} onChange={(e) => setT((x) => ({ ...x, onek: e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3) }))} /></Alan>
+        <Alan etiket="Vega kullanıcı no (USERNO)" ipucu="Boşsa aynı türde en çok kullanılan"><input className="inp mono" value={bos(t.userno)} onChange={(e) => setT((x) => ({ ...x, userno: e.target.value.replace(/D/g, '') }))} /></Alan>
+        <Alan etiket="Açık gönderim süresi (gün)" ipucu="Kabul bekleyen gönderim için kaç gün geriye bakılır"><input className="inp mono" value={bos(t.gun)} onChange={(e) => setT((x) => ({ ...x, gun: e.target.value.replace(/D/g, '') }))} /></Alan>
+      </div>
+    </Bolum>
+  );
+}
+
 function VegaAyari({ a, kaydet }) {
   const { toast } = useApp();
   const [v, setV] = useState({ ...a.vega, password: '' });
@@ -364,6 +391,8 @@ export default function Ayarlar() {
             )}
           </Bolum>
         </div>
+
+        <TransferAyari a={a} kaydet={kaydet} />
 
         {/* Kurulumda bir kez bakılır; varsayılanlar çoğu firmada doğru. */}
         <details className="card gelismis">

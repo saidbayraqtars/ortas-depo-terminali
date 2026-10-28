@@ -5,6 +5,7 @@ import Kabul, { KabulDetay } from './sayfalar/Kabul.jsx';
 import Urunler, { UrunDetay } from './sayfalar/Urunler.jsx';
 import Raflar, { RafDetay } from './sayfalar/Raflar.jsx';
 import Sayimlar, { SayimDetay } from './sayfalar/Sayimlar.jsx';
+import Transferler from './sayfalar/Transferler.jsx';
 import Hareketler from './sayfalar/Hareketler.jsx';
 import Kullanicilar from './sayfalar/Kullanicilar.jsx';
 import Cihazlar from './sayfalar/Cihazlar.jsx';
@@ -16,6 +17,7 @@ const MENU = [
   ['/urunler', 'box', 'Ürün ve stok'],
   ['/raflar', 'layers', 'Raflar'],
   ['/sayimlar', 'count', 'Sayımlar', (d) => d?.sayilar.onayBekleyen],
+  ['/transfer', 'truck', 'Depo transferi', (d) => d?.sayilar.transferDikkat],
   ['/hareketler', 'history', 'Hareketler'],
   ['/kullanicilar', 'users', 'Kullanıcılar'],
   ['/cihazlar', 'mobile', 'Cihazlar'],
@@ -40,6 +42,8 @@ function Sayfa({ yol }) {
       return <Sayimlar />;
     case 'sayim':
       return <SayimDetay id={p} />;
+    case 'transfer':
+      return <Transferler />;
     case 'hareketler':
       return <Hareketler />;
     case 'kullanicilar':

@@ -375,7 +375,7 @@ test('eski tek depolu veritabanı göçü: raflar ve stok varsayılan depoya ba�
   db.open(f, { varsayilanDepo: 7 });
   assert.strictEqual(db.get("SELECT depo FROM shelf WHERE code='X-1'").depo, 7);
   assert.strictEqual(db.get("SELECT depo, qty FROM location WHERE product_id='9'").depo, 7);
-  assert.strictEqual(db.meta('surum'), '5');
+  assert.strictEqual(db.meta('surum'), '6');
   db.close();
   db.open(path.join(dir, 'depo.db'), { varsayilanDepo: 1 });
 });

@@ -84,6 +84,8 @@ export const HAREKET = {
   TRANSFER_IN: ['Transfer giriş', 'b-info'],
   TRANSFER_OUT: ['Transfer çıkış', 'b-info'],
   PICK: ['Raftan alma', 'b-warn'],
+  TRANSFER_OUT_DEPO: ['Depoya gönderim', 'b-info'],
+  TRANSFER_IN_DEPO: ['Depodan kabul', 'b-ok'],
   COUNT: ['Sayım', 'b-acc'],
   IMPORT: ['Excel', 'b-mute'],
   ADJUST: ['Düzeltme', 'b-warn'],

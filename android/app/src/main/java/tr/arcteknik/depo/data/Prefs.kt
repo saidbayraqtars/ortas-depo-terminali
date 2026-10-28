@@ -68,8 +68,27 @@ class Prefs(context: Context) {
         get() = sp.getString("updatePath", "/apk") ?: "/apk"
         set(v) = sp.edit().putString("updatePath", v).apply()
 
+    /** Ana veriyle gelen depolar arası transfer bölümü (JSON); sunucu eskiyse ya da özellik kapalıysa boş. */
+    var transferJson: String
+        get() = sp.getString("transferJson", "") ?: ""
+        set(v) = sp.edit().putString("transferJson", v).apply()
+
+    /** Bu terminalde kabulü bitirilip sunucuya henüz işlenmemiş gönderimler; liste yenilenene kadar tekrar görünmesin. */
+    var transferClosed: Set<String>
+        get() = sp.getStringSet("transferClosed", emptySet()) ?: emptySet()
+        set(v) = sp.edit().putStringSet("transferClosed", v.toSet()).apply()
+
     /** Ana veriyle gelen depo adı ve uygulama sürümü bilgisini saklar. */
     fun applyMaster(json: JSONObject) {
+        // Yalnız head parçasında gelir; sunucu bilmiyorsa (eski) alan hiç yoktur.
+        val tr = json.optJSONObject("transfer")
+        transferJson = tr?.toString() ?: ""
+        if (tr != null) {
+            val ids = mutableSetOf<String>()
+            val inc = tr.optJSONArray("incoming")
+            for (i in 0 until (inc?.length() ?: 0)) ids += inc!!.getJSONObject(i).getString("id")
+            transferClosed = transferClosed.filter { it in ids }.toSet()
+        } else transferClosed = emptySet()
         json.optString("warehouse").takeIf { it.isNotBlank() }?.let { warehouse = it }
         val app = json.optJSONObject("app")
         if (app != null) {

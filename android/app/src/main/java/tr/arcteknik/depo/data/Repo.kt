@@ -156,9 +156,8 @@ class Repo(val db: Db, val prefs: Prefs) {
     }
 
     /** Ürünün raf adresi silinir (raf ve raftaki miktar kalır); yönetici programında ve Vega kartında da kalkar. */
-    fun removeHome(product: Product, shelf: String, user: String) {
+    fun removeHome(product: Product, shelf: String, user: String, d: Int = db.depot) {
         val s = shelf.uppercase()
-        val d = db.depot
         val w = db.writableDatabase
         w.beginTransaction()
         try {
@@ -173,6 +172,99 @@ class Repo(val db: Db, val prefs: Prefs) {
         } finally {
             w.endTransaction()
         }
+        changed()
+    }
+
+    // ---- Depolar arası transfer ----------------------------------------------------------
+
+    /** Ana veriyle gelen transfer bölümü; özellik kapalıysa ya da sunucu eskiyse [TransferInfo.on] false. */
+    fun transferInfo(): TransferInfo {
+        val off = TransferInfo(false, 0, emptyList(), emptyList())
+        val raw = prefs.transferJson
+        if (raw.isBlank()) return off
+        return try {
+            val j = JSONObject(raw)
+            if (!j.optBoolean("on", false)) return off
+            val closed = prefs.transferClosed
+            val depots = j.optJSONArray("depots")
+            val inc = j.optJSONArray("incoming")
+            TransferInfo(
+                true,
+                j.optInt("yolda", 0),
+                (0 until (depots?.length() ?: 0)).map { depots!!.getJSONObject(it).let { d -> Depot(d.getInt("id"), d.optString("name", d.getInt("id").toString())) } },
+                (0 until (inc?.length() ?: 0)).map { inc!!.getJSONObject(it) }.filter { it.getString("id") !in closed }.map { x ->
+                    val ls = x.optJSONArray("lines")
+                    Incoming(
+                        x.getString("id"), x.optString("no", ""), x.optString("date", ""),
+                        x.getInt("from"), x.optString("fromName", ""), x.getInt("to"), x.optString("toName", ""),
+                        (0 until (ls?.length() ?: 0)).map { ls!!.getJSONObject(it) }.map { l -> IncomingLine(l.getString("productId"), l.optDouble("sent", 0.0), l.optDouble("open", 0.0)) },
+                    )
+                },
+            )
+        } catch (e: Exception) {
+            off
+        }
+    }
+
+    /**
+     * Depoya gönder: [from] deposundaki raflardan düşülür (raf verilmediyse raf stoku değişmez), tek işlem kuyruğa yazılır.
+     * Sunucu Vega'ya depo gönderim fişi (128) yazar; terminal beklemez.
+     */
+    fun sendTransfer(from: Int, to: Int, lines: List<TransferLine>, user: String) {
+        require(lines.isNotEmpty()) { "Satır yok" }
+        val toName = db.depotName(to).ifBlank { transferInfo().depots.firstOrNull { it.id == to }?.name ?: to.toString() }
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            val arr = JSONArray()
+            for (l in lines) {
+                if (l.shelf.isNotBlank()) {
+                    db.addQty(w, from, l.productId, l.shelf, -l.qty)
+                    db.addMovement(w, l.productId, "Depoya gönderim → $toName · ${l.shelf}", -l.qty)
+                } else db.addMovement(w, l.productId, "Depoya gönderim → $toName", 0.0)
+                arr.put(JSONObject().put("productId", l.productId).put("qty", l.qty).put("shelf", l.shelf))
+            }
+            val total = lines.sumOf { it.qty }
+            db.insertOp(w, op(
+                OpType.TRANSFER_SEND,
+                JSONObject().put("from", from).put("to", to).put("lines", arr).put("user", user),
+                "Depoya gönderim · ${lines.size} kalem|${db.depotName(from).ifBlank { from.toString() }} → $toName · toplam ${fmt(total)}",
+            ))
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+        changed()
+    }
+
+    /**
+     * Gönderim kabulü: gelen miktar alan depoda rafa girer ([lines]'ta raf varsa). Gönderimde olup gelmeyen miktar sunucuda
+     * eksik olarak kayıtlı kalır; gönderim bu terminalde ve sunucuda kapanır. Sunucu Vega'ya kabul fişi (129) yazar.
+     */
+    fun receiveTransfer(sevk: Incoming, lines: List<TransferLine>, user: String) {
+        require(lines.isNotEmpty()) { "Satır yok" }
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            val arr = JSONArray()
+            for (l in lines) {
+                if (l.shelf.isNotBlank()) {
+                    db.ensureShelf(w, sevk.to, l.shelf)
+                    db.addQty(w, sevk.to, l.productId, l.shelf, l.qty)
+                    db.addMovement(w, l.productId, "Depodan kabul ← ${sevk.fromName} · ${l.shelf}", l.qty)
+                } else db.addMovement(w, l.productId, "Depodan kabul ← ${sevk.fromName}", 0.0)
+                arr.put(JSONObject().put("productId", l.productId).put("qty", l.qty).put("shelf", l.shelf))
+            }
+            db.insertOp(w, op(
+                OpType.TRANSFER_RECEIVE,
+                JSONObject().put("sevkId", sevk.id).put("lines", arr).put("depot", sevk.to).put("user", user),
+                "Gönderim kabulü · ${lines.size} kalem|${sevk.no} ← ${sevk.fromName} · toplam ${fmt(lines.sumOf { it.qty })}",
+            ))
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+        prefs.transferClosed = prefs.transferClosed + sevk.id
         changed()
     }
 

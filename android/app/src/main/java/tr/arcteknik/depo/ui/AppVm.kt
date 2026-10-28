@@ -31,6 +31,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import tr.arcteknik.depo.App
 import tr.arcteknik.depo.data.Repo
+import tr.arcteknik.depo.data.TransferLine
 import tr.arcteknik.depo.data.User
 import tr.arcteknik.depo.diag.Diag
 import tr.arcteknik.depo.sync.UserActivity
@@ -44,6 +45,9 @@ import tr.arcteknik.depo.ui.screens.PickScreen
 import tr.arcteknik.depo.ui.screens.ProductPutAwayScreen
 import tr.arcteknik.depo.ui.screens.PutAwayScreen
 import tr.arcteknik.depo.ui.screens.QueueScreen
+import tr.arcteknik.depo.ui.screens.ReceiveDocScreen
+import tr.arcteknik.depo.ui.screens.ReceiveListScreen
+import tr.arcteknik.depo.ui.screens.SendDepotScreen
 import tr.arcteknik.depo.ui.screens.ReceiptListScreen
 import tr.arcteknik.depo.ui.screens.SettingsScreen
 import tr.arcteknik.depo.ui.screens.ShelfQueryScreen
@@ -64,6 +68,26 @@ sealed interface Route {
     data class Count(val sessionId: String) : Route
     data class CountDiff(val sessionId: String) : Route
     data object Queue : Route
+    /** Depolar arası transfer: depoya gönder ve gönderim kabul (1.6.0+ sunucu). */
+    data object SendDepot : Route
+    data object ReceiveList : Route
+    data class ReceiveDoc(val sevkId: String) : Route
+}
+
+/** Depoya gönder taslağı: ekrandan çıkılsa da (başka ekrana gidilse de) uygulama açık olduğu sürece kaybolmaz. */
+class SendDraft {
+    var from by mutableStateOf(0)
+    var to by mutableStateOf(0)
+
+    /** Çıkış deposu bu gönderim için sorulup seçildi mi (her gönderimde yeniden sorulur). */
+    var fromConfirmed by mutableStateOf(false)
+    val lines = mutableStateListOf<TransferLine>()
+
+    fun clear() {
+        to = 0
+        fromConfirmed = false
+        lines.clear()
+    }
 }
 
 /** Okutulan tanımsız raf etiketi: kullanıcıya raf olarak eklensin mi diye sorulur. */
@@ -77,6 +101,16 @@ class AppVm(app: Application) : AndroidViewModel(app) {
 
     var user by mutableStateOf<User?>(null)
         private set
+
+    val sendDraft = SendDraft()
+    private val receiveDrafts = HashMap<String, androidx.compose.runtime.snapshots.SnapshotStateList<TransferLine>>()
+
+    /** Gönderim kabulünde okutulanlar; kabul bitene ya da vazgeçilene kadar saklanır. */
+    fun receiveDraft(sevkId: String) = receiveDrafts.getOrPut(sevkId) { mutableStateListOf() }
+
+    fun dropReceiveDraft(sevkId: String) {
+        receiveDrafts.remove(sevkId)
+    }
 
     val stack = mutableStateListOf<Route>(Route.Login)
     val route: Route get() = stack.last()
@@ -208,6 +242,9 @@ fun DepoApp(vm: AppVm) {
         is Route.Count -> CountScreen(vm, online, version, r.sessionId)
         is Route.CountDiff -> CountDiffScreen(vm, online, version, r.sessionId)
         Route.Queue -> QueueScreen(vm, online, version)
+        Route.SendDepot -> SendDepotScreen(vm, online, version)
+        Route.ReceiveList -> ReceiveListScreen(vm, online, version)
+        is Route.ReceiveDoc -> ReceiveDocScreen(vm, online, version, r.sevkId)
     }
     }
     }

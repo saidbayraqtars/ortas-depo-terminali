@@ -31,7 +31,8 @@ export default function Hareketler() {
             <select className="inp" style={{ width: 170 }} value={f.tur} onChange={d('tur')}>
               <option value="">Tüm türler</option>
               <option value="PUTAWAY">Rafa kaldırma</option>
-              <option value="TRANSFER_IN,TRANSFER_OUT">Transfer</option>
+              <option value="TRANSFER_IN,TRANSFER_OUT">Transfer (raftan rafa)</option>
+              <option value="TRANSFER_OUT_DEPO,TRANSFER_IN_DEPO">Depolar arası transfer</option>
               <option value="COUNT">Sayım</option>
               <option value="ADJUST">Düzeltme</option>
             </select>

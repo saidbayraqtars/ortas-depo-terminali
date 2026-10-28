@@ -14,8 +14,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -426,7 +428,10 @@ fun ProductPutAwayScreen(vm: AppVm, online: Boolean, version: Int, productId: St
 @Composable
 private fun ShelfChoices(vm: AppVm, productId: String, d: Int, typed: String, onPick: (String) -> Unit) {
     val db = vm.repo.db
-    val known = remember(productId, d) { db.shelfOptions(productId, d) }
+    var refresh by remember { mutableStateOf(0) }
+    var removing by remember { mutableStateOf<String?>(null) }
+    val known = remember(productId, d, refresh) { db.shelfOptions(productId, d) }
+    val homes = remember(productId, d, refresh) { db.homeShelves(productId, d).toSet() }
     val found = remember(typed, d) { if (typed.isBlank()) emptyList() else db.searchShelves(typed, d) }
     Card(padding = androidx.compose.foundation.layout.PaddingValues(start = 14.dp, end = 14.dp, top = 10.dp)) {
         Caption(if (typed.isBlank()) "Ürünün rafları" else "Uyan raflar")
@@ -441,7 +446,7 @@ private fun ShelfChoices(vm: AppVm, productId: String, d: Int, typed: String, on
                         1 -> "asıl raf"
                         else -> "${o.depotName.ifBlank { "başka depo" }}${if (o.qty > 0) " · ${fmt(o.qty)}" else ""}"
                     }
-                    ShelfChoiceRow(o.shelf, note, onPick)
+                    ShelfChoiceRow(o.shelf, note, onPick, if (o.shelf in homes) ({ removing = o.shelf }) else null)
                 }
             } else {
                 if (found.isEmpty()) Hint("\"$typed\" ile başlayan ya da içeren raf yok.", Modifier.padding(vertical = 10.dp))
@@ -449,15 +454,40 @@ private fun ShelfChoices(vm: AppVm, productId: String, d: Int, typed: String, on
             }
         }
     }
+    removing?.let { h ->
+        val p = db.productById(productId)
+        if (p != null) {
+            AlertDialog(
+                onDismissRequest = { removing = null },
+                title = { Text("Raf adresi silinsin mi?") },
+                text = { Text("${p.name} ürününün $h raf adresi silinir. Raf ve raftaki miktar değişmez; yönetici programında ve Vega kartında da kalkar.") },
+                confirmButton = {
+                    TextButton({
+                        vm.repo.removeHome(p, h, vm.userName, d)
+                        removing = null
+                        refresh++
+                        vm.saved("${p.code}: $h adresi silindi")
+                    }) { Text("Sil", color = C.Err, fontWeight = FontWeight.Bold) }
+                },
+                dismissButton = { TextButton({ removing = null }) { Text("Vazgeç") } },
+            )
+        }
+    }
 }
 
 @Composable
-private fun ShelfChoiceRow(shelf: String, note: String, onPick: (String) -> Unit) {
+private fun ShelfChoiceRow(shelf: String, note: String, onPick: (String) -> Unit, onRemove: (() -> Unit)? = null) {
     Column(Modifier.focusProperties { canFocus = false }.clickable { onPick(shelf) }) {
         Divider()
-        Row(Modifier.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             MonoText(shelf, size = 16, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             if (note.isNotBlank()) Hint(note)
+            if (onRemove != null) {
+                Text(
+                    "Sil", color = C.Err, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
+                    modifier = Modifier.focusProperties { canFocus = false }.clickable { onRemove() }.padding(10.dp),
+                )
+            } else Box(Modifier.height(36.dp))
         }
     }
 }

@@ -21,6 +21,7 @@ const etiket = require('./etiket');
 const iceaktar = require('./iceaktar');
 const rapor = require('./rapor');
 const kapsam = require('./kapsam');
+const transfer = require('./transfer');
 
 const SURUM = require('../package.json').version;
 let yedekKlasoru = null;
@@ -343,6 +344,7 @@ function yoneticiApi() {
           onayBekleyen: db.get("SELECT COUNT(*) AS n FROM count_session WHERE status='CLOSED'").n,
           kullanici: db.get('SELECT COUNT(*) AS n FROM app_user WHERE active=1').n,
           hataliIslem: db.get('SELECT COUNT(*) AS n FROM op WHERE ok=0 AND received_at >= ?', bugun.getTime()).n,
+          transferDikkat: db.get("SELECT (SELECT COUNT(*) FROM transfer_fark WHERE durum='ACIK') + (SELECT COUNT(*) FROM transfer WHERE durum='HATA') AS n").n,
         },
         bugun: islem,
         cihazlar,
@@ -384,6 +386,28 @@ function yoneticiApi() {
         if ('yaz' in b.rafAdresi) yeni.rafAdresi.yaz = Boolean(b.rafAdresi.yaz);
         if ('tumDepolar' in b.rafAdresi) yeni.rafAdresi.tumDepolar = Boolean(b.rafAdresi.tumDepolar);
         if ('depo' in b.rafAdresi) yeni.rafAdresi.depo = b.rafAdresi.depo === '' || b.rafAdresi.depo === null ? null : Number(b.rafAdresi.depo);
+        if (yeni.rafAdresi.yaz && !yeni.rafAdresi.alan) throw Object.assign(new Error('"Program bu alana yazsın" için stok kartı alanı gerekli (Ortaş: KOD10)'), { status: 400 });
+      }
+      if (b.transfer) {
+        const t = yeni.transfer || (yeni.transfer = {});
+        if ('aktif' in b.transfer) t.aktif = Boolean(b.transfer.aktif);
+        const sayiyaCevir = (x) => (x === '' || x === null || x === undefined ? null : Number(x));
+        if ('yoldaDepo' in b.transfer) {
+          const n = sayiyaCevir(b.transfer.yoldaDepo);
+          if (n !== null && !(Number.isInteger(n) && n > 0)) throw Object.assign(new Error('Yoldaki depo geçersiz'), { status: 400 });
+          t.yoldaDepo = n;
+        }
+        if ('userno' in b.transfer) {
+          const n = sayiyaCevir(b.transfer.userno);
+          if (n !== null && !(Number.isInteger(n) && n > 0)) throw Object.assign(new Error('Vega kullanıcı numarası geçersiz'), { status: 400 });
+          t.userno = n;
+        }
+        if ('onek' in b.transfer) {
+          const o = String(b.transfer.onek || '').trim().toUpperCase();
+          if (!/^[A-Z]{1,3}$/.test(o)) throw Object.assign(new Error('Belge numarası öneki 1-3 harf olmalı'), { status: 400 });
+          t.onek = o;
+        }
+        if ('gun' in b.transfer) t.gun = Math.max(1, Math.min(365, Number(b.transfer.gun) || 45));
       }
       if (b.urun) {
         if (['aktif', 'tum'].includes(b.urun.kapsam)) yeni.urun.kapsam = b.urun.kapsam;
@@ -411,7 +435,7 @@ function yoneticiApi() {
       config.save(yeni);
       log.bilgi('Ayarlar kaydedildi');
       depo.vegaZamanla();
-      const vegaDegisti = ['vega', 'kabul', 'rafAdresi'].some((k) => JSON.stringify(cfg[k]) !== JSON.stringify(yeni[k]));
+      const vegaDegisti = ['vega', 'kabul', 'rafAdresi', 'transfer'].some((k) => JSON.stringify(cfg[k]) !== JSON.stringify(yeni[k]));
       if (vegaDegisti) await depo.vegaYenile('ayar');
       else depo.degisti();
       return { ...config.publicView(), portDegisti: yeni.port !== cfg.port };
@@ -522,6 +546,29 @@ function yoneticiApi() {
     const s = depo.tasi(depo.depoCoz(b.depo), String(b.productId), b.from, b.to, b.qty ?? null, { zimmetTasi: Boolean(b.zimmetTasi) });
     depo.degisti();
     return s;
+  }));
+
+  // Depolar arası transfer (transfer.js)
+  r.get('/transfer', sar(() => transfer.liste()));
+  r.post('/transfer/yenile', sar(async () => {
+    await transfer.yenile();
+    return transfer.liste();
+  }));
+  r.post('/transfer/:id/yeniden', sar((req) => {
+    if (!transfer.yenidenDene(req.params.id)) throw Object.assign(new Error('Kayıt bulunamadı ya da zaten yazıldı'), { status: 404 });
+    return { ok: true };
+  }));
+  r.post('/transfer/acik/:ind/kapat', sar((req) => {
+    if (!transfer.acikKapat(req.params.ind, 'yönetici')) throw Object.assign(new Error('Gönderim açık görünmüyor'), { status: 404 });
+    return { ok: true };
+  }));
+  r.post('/transfer/fark/:id/coz', sar((req) => {
+    if (!transfer.farkCoz(req.params.id, String(req.body?.cozum || ''), req.body?.not, 'yönetici')) throw Object.assign(new Error('Fark kaydı bulunamadı'), { status: 404 });
+    return { ok: true };
+  }));
+  r.post('/transfer/fark/:id/ac', sar((req) => {
+    if (!transfer.farkAc(req.params.id)) throw Object.assign(new Error('Fark kaydı bulunamadı'), { status: 404 });
+    return { ok: true };
   }));
 
   // Mal kabul
@@ -880,6 +927,8 @@ async function baslat({ veriKlasoru, apkKlasoru, arayuz, host = '0.0.0.0', port 
   depo.goruntuYukleOnbellek();
   depo.vegaYenile('açılış').catch(() => {});
   depo.vegaZamanla();
+  // Önceki oturumdan Vega'ya yazılmamış transferler varsa Vega okumasından sonra yazılır.
+  transfer.yaziciTetikle(8000);
   yedekZamanla();
 
   const p = port ?? config.load().port;

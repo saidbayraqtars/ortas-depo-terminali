@@ -54,6 +54,7 @@ fun HomeScreen(vm: AppVm, online: Boolean, version: Int) {
     val openReceipts = remember(version) { db.receipts(true).size }
     val openCounts = remember(version) { db.countSessions().size }
     val pending = remember(version) { db.pendingOpCount() }
+    val transfer = remember(version) { vm.repo.transferInfo() }
     val lastSync = vm.repo.prefs.lastSync
 
     Column(Modifier.fillMaxSize().background(C.Ground)) {
@@ -108,6 +109,13 @@ fun HomeScreen(vm: AppVm, online: Boolean, version: Int) {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Tile("Ürün Sorgu", "Hangi rafta, kaç adet", Ic.Search, 0, Modifier.weight(1f)) { vm.go(Route.ProductQuery()) }
                 Tile("Raf Sorgu", "Rafta neler var", Ic.Pin, 0, Modifier.weight(1f)) { vm.go(Route.ShelfQuery()) }
+            }
+            if (transfer.on) {
+                val waiting = transfer.incoming.count { it.to == db.depot }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Tile("Depoya Gönder", "Başka depoya mal", Ic.Truck, 0, Modifier.weight(1f)) { vm.go(Route.SendDepot) }
+                    Tile("Gönderim Kabul", "Gelen mal", Ic.Inbox, waiting, Modifier.weight(1f)) { vm.go(Route.ReceiveList) }
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Tile("Kuyruk", "Bekleyen işlemler", Ic.CloudUp, pending, Modifier.weight(1f)) { vm.go(Route.Queue) }

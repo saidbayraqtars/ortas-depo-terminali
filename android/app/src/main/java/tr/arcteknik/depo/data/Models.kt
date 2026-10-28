@@ -76,6 +76,26 @@ data class Op(
     val error: String?,
 )
 
+/** Depolar arası transfer, sunucunun ana veriyle gönderdiği bölüm (1.6.0+ sunucu). [on] kapalıysa ekranlar görünmez. */
+data class TransferInfo(val on: Boolean, val yolda: Int, val depots: List<Depot>, val incoming: List<Incoming>)
+
+/** Kabul bekleyen gönderim (Vega depo gönderim fişi): [open] hâlâ alınmamış miktar, [sent] gönderilen. */
+data class Incoming(
+    val id: String,
+    val no: String,
+    val date: String,
+    val from: Int,
+    val fromName: String,
+    val to: Int,
+    val toName: String,
+    val lines: List<IncomingLine>,
+)
+
+data class IncomingLine(val productId: String, val sent: Double, val open: Double)
+
+/** Transfer satırı: [shelf] boşsa raf belirtilmemiştir (raf stoku değişmez). */
+data class TransferLine(val productId: String, val qty: Double, val shelf: String = "")
+
 data class Movement(val ts: Long, val text: String, val qty: Double)
 
 data class User(val username: String, val name: String, val pinHash: String, val salt: String)
@@ -94,4 +114,8 @@ object OpType {
     const val PICK = "PICK"
     /** Ürünün raf adresini (zimmet) siler; raf ve raftaki miktar değişmez (1.5.1+ sunucu). */
     const val HOME_REMOVE = "HOME_REMOVE"
+    /** Depolar arası gönderim: gönderen depoda raf düşer, sunucu Vega'ya depo gönderim fişi (128) yazar (1.6.0+ sunucu). */
+    const val TRANSFER_SEND = "TRANSFER_SEND"
+    /** Gönderim kabulü: alan depoda rafa girer, sunucu Vega'ya gönderim kabul fişi (129) yazar, eksik kayıtlı kalır. */
+    const val TRANSFER_RECEIVE = "TRANSFER_RECEIVE"
 }

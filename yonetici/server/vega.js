@@ -724,4 +724,240 @@ async function sayimGeriAl(cfg, docs) {
   }
 }
 
-module.exports = { kullanilanDepolar, dene, firmalar, donemler, depolar, donemCoz, hazirMi, goruntu, stokTani, BELGE_TURU, anlikStok, sayimYaz, sayimGeriAl, fisVarsayilanlari, PASIF_AD, kartAlanUzunluk, kartAlanYaz, kapat, oleTarih };
+// ---- Depolar arası transfer: depo gönderim (128) ve gönderim kabul (129) fişi -----------------------
+// Gerçek Ortaş kaydından (VEGADBortas F0101D0020, 2026-10-23, 128: A0000575, 129: A0006795):
+//   128: başlık DEPO = gönderen, HAREKETDEPOSU = varış, GIRIS = 1; satır DEPO = yoldaki TRANSFER deposu;
+//        envanter: gönderen −q, yoldaki depo +q.
+//   129: başlık DEPO = alan, HAREKETDEPOSU = gönderen, GIRIS = 0; satır DEPO = yoldaki depo;
+//        envanter: alan +q, yoldaki depo −q.
+// Stok hareketine (TBLSTOKHAREKETLERI) yazılmaz; iki tür için belge numarası serisi ayrıdır (A + 7 hane).
+// Tabloda IND dışında NOT NULL sütun yok; ama Vega ekranının açabilmesi için aşağıdaki sütunlar fişte dolu olmalı:
+// yazımdan sonra aynı işlemde okunup doğrulanır, eksik varsa hiçbir şey yazılmaz.
+
+const TRANSFER_ZORUNLU = {
+  baslik: ['BELGENO', 'TARIH', 'ODEMETARIHI', 'DEPO', 'HAREKETDEPOSU', 'BELGETIPI', 'GIRIS', 'USERNO', 'OZELKOD1', 'OZELKOD2',
+    'TUTAR', 'ARATOPLAM', 'CREDATE', 'LADATE', 'UID', 'PARABIRIMI', 'KUR'],
+  satir: ['TARIH', 'EVRAKNO', 'STOKNO', 'MALINCINSI', 'STOKKODU', 'MIKTAR', 'BIRIMMIKTAR', 'BIRIM', 'BIRIMEX', 'KDV',
+    'AFIYATI', 'FIYATI', 'GERCEKTOPLAM', 'DEPO', 'ENVANTER', 'SATISKOSULU', 'SERIMIKTAR', 'GRUPMIKTAR', 'PARABIRIMI', 'KUR', 'GK'],
+  envanter: ['TARIH', 'STOKNO', 'DEPO', 'ENVANTER', 'BELGETIPI', 'BELGEIND', 'SIRALAMATARIHI', 'SIRALAMATARIHIEX', 'HAREKETIND'],
+};
+
+async function transferNo(t, tablo, tip, onek) {
+  const r = await new sql.Request(t)
+    .input('tip', sql.SmallInt, tip)
+    .input('p', sql.NVarChar, onek + '%')
+    .query(`SELECT BELGENO FROM [${tablo}] WITH (UPDLOCK, HOLDLOCK) WHERE BELGETIPI=@tip AND BELGENO LIKE @p`);
+  const re = new RegExp(`^${onek}(\\d+)$`);
+  let max = 0;
+  for (const x of r.recordset) {
+    const m = re.exec(String(x.BELGENO || '').trim());
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return onek + String(max + 1).padStart(7, '0');
+}
+
+/** Fişe yazılacak Vega kullanıcı numarası: ayarda varsa o; yoksa aynı türde bu depodan en çok kullanılan; yoksa genel varsayılan. */
+async function transferUserNo(t, tablo, tip, depo, cfg) {
+  const ayar = Number(cfg.transfer?.userno);
+  if (Number.isInteger(ayar) && ayar > 0) return ayar;
+  for (const depoSart of ['AND DEPO=@depo', '']) {
+    const r = await new sql.Request(t).input('tip', sql.SmallInt, tip).input('depo', sql.Int, depo)
+      .query(`SELECT TOP 1 USERNO FROM [${tablo}] WHERE BELGETIPI=@tip AND USERNO IS NOT NULL ${depoSart} GROUP BY USERNO ORDER BY COUNT(*) DESC`);
+    if (r.recordset.length) return Number(r.recordset[0].USERNO);
+  }
+  return (await fisVarsayilanlari(cfg)).userno;
+}
+
+/**
+ * Depo hareket fişi yazar. `tip`: 128 gönderim / 129 kabul. `depo`: fişin deposu (128'de gönderen, 129'da alan),
+ * `karsi`: karşı depo (HAREKETDEPOSU), `yolda`: yoldaki depo. `kalemler`: [{stokno, miktar}]. Tek SQL işlemi;
+ * başlık, satır ve envanter satırları yazılıp zorunlu alanlar ve toplamlar doğrulanır, tutmazsa geri alınır.
+ * Dönen: { ind, belgeNo, kalem, tutar, userno, negatif }. `negatif`: gönderen depoda stoğu yetmeyen kart sayısı (128).
+ */
+async function transferYaz(cfg, { tip, depo, karsi, yolda, kalemler, aciklama = '' }) {
+  if (![128, 129].includes(tip)) throw new Error('Geçersiz transfer belge türü');
+  const ids = [depo, karsi, yolda].map(Number);
+  if (!ids.every(Number.isInteger)) throw new Error('Transfer depoları belli değil');
+  if (new Set(ids).size !== 3) throw new Error('Gönderen, alan ve yoldaki depo farklı olmalı');
+  const birlesik = new Map();
+  for (const k of kalemler || []) {
+    const s = Number(k.stokno);
+    const m = Math.round(Number(k.miktar) * 10000) / 10000;
+    if (!Number.isInteger(s) || !(m > 0)) throw new Error('Transfer satırında ürün ya da miktar geçersiz');
+    birlesik.set(s, Math.round(((birlesik.get(s) || 0) + m) * 10000) / 10000);
+  }
+  if (!birlesik.size) throw new Error('Transferde satır yok');
+
+  const v = cfg.vega;
+  const { p, F, FD } = await baglam(v);
+  const tB = `${FD}TBLDEPOHARBASLIK`, tH = `${FD}TBLDEPOHARHAREKET`, tE = `${FD}TBLDEPOENVANTER`;
+  for (const t of [tB, tH, tE]) if (!(await tabloVar(p, t))) throw new Error(`Vega'da ${t} tablosu yok`);
+  const kol = { [tB]: await kolonlar(p, tB), [tH]: await kolonlar(p, tH), [tE]: await kolonlar(p, tE) };
+  const eksikKolon = [
+    ...TRANSFER_ZORUNLU.baslik.filter((c) => !kol[tB].has(c)).map((c) => `${tB}.${c}`),
+    ...TRANSFER_ZORUNLU.satir.filter((c) => !kol[tH].has(c)).map((c) => `${tH}.${c}`),
+    ...TRANSFER_ZORUNLU.envanter.filter((c) => !kol[tE].has(c)).map((c) => `${tE}.${c}`),
+  ];
+  if (eksikKolon.length) throw new Error(`Vega şeması beklenenden farklı, sütun yok: ${eksikKolon.slice(0, 4).join(', ')}`);
+
+  const depoAd = new Map((await depolar(v, v.firma)).map((d) => [Number(d.ind), d.ad]));
+  for (const d of ids) if (!depoAd.has(d)) throw new Error(`Vega'da ${d} numaralı depo yok`);
+  const onekHam = String(cfg.transfer?.onek || 'A').trim().toUpperCase();
+  const onek = /^[A-Z]{1,3}$/.test(onekHam) ? onekHam : 'A';
+
+  // Kart bilgisi (kod, ad, tip, maliyet, varsayılan birim ve KDV, barkod). Kartı ya da birimi olmayan ürün yazılmaz.
+  const stoknolar = [...birlesik.keys()];
+  const kart = new Map();
+  for (let i = 0; i < stoknolar.length; i += 500) {
+    const parca = stoknolar.slice(i, i + 500);
+    const r = await p.request().query(`
+      SELECT S.IND, S.STOKKODU, S.MALINCINSI, ISNULL(S.STOKTIPI,0) AS STOKTIPI,
+             ISNULL(NULLIF(S.MALIYET,0), ISNULL(A.FIYAT, ISNULL(S.ALISFIYATI,0))) AS MALIYET,
+             B.IND AS BIRIMEX, ISNULL(B.BIRIMADI,'') AS BIRIM, ISNULL(B.KDV,0) AS KDV, LTRIM(RTRIM(ISNULL(B.BARCODE,''))) AS BARKOD
+      FROM [${F}TBLSTOKLAR] S
+      OUTER APPLY (SELECT TOP 1 X.IND, X.BIRIMADI, X.KDV, X.BARCODE FROM [${F}TBLBIRIMLEREX] X WHERE X.STOKNO=S.IND ORDER BY X.VARSAYILAN DESC, X.ANABIRIM DESC, X.IND) B
+      OUTER APPLY (SELECT TOP 1 H.BIRIMFIYAT AS FIYAT FROM [${FD}TBLSTOKHAREKETLERI] H WHERE H.STOKNO=S.IND AND H.IZAHAT='20' AND ISNULL(H.BIRIMFIYAT,0)>0 ORDER BY H.TARIH DESC, H.IND DESC) A
+      WHERE S.IND IN (${parca.join(',')})`);
+    for (const x of r.recordset) kart.set(Number(x.IND), x);
+  }
+  for (const s of stoknolar) {
+    const c = kart.get(s);
+    if (!c) throw new Error(`Vega'da ${s} numaralı stok kartı yok`);
+    if (!String(c.STOKKODU || '').trim() || !String(c.MALINCINSI || '').trim()) throw new Error(`${s} numaralı kartta stok kodu ya da ad boş`);
+    if (c.BIRIMEX === null || c.BIRIMEX === undefined || !String(c.BIRIM || '').trim()) throw new Error(`${String(c.STOKKODU).trim()} kartında birim tanımlı değil`);
+  }
+
+  const t = new sql.Transaction(p);
+  await t.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+  try {
+    const belgeNo = await transferNo(t, tB, tip, onek);
+    const userno = await transferUserNo(t, tB, tip, depo, cfg);
+    // Gönderen depoda stok yetmiyorsa fiş yine yazılır (Vega'da eksi bakiye olabilir) ama bildirilir.
+    let negatif = 0;
+    if (tip === 128) {
+      const simdi = await anlikStok(cfg, stoknolar, depo, () => new sql.Request(t));
+      for (const [s, m] of birlesik) if ((simdi.get(s) || 0) + 1e-9 < m) negatif++;
+    }
+
+    const bugun = new Date();
+    const tarih = new Date(bugun.getFullYear(), bugun.getMonth(), bugun.getDate());
+    const anlik = new Date();
+    anlik.setMilliseconds(0);
+    const kalemTutar = (c, m) => Math.round(Number(c.MALIYET || 0) * m * 100) / 100;
+
+    let araToplam = 0, tutar = 0;
+    for (const [s, m] of birlesik) {
+      const c = kart.get(s);
+      const toplam = kalemTutar(c, m);
+      araToplam += toplam;
+      tutar += toplam * (1 + (Number(c.KDV) || 0) / 100);
+    }
+    araToplam = Math.round(araToplam * 100) / 100;
+    tutar = Math.round(tutar * 100) / 100;
+
+    const ad = depoAd.get(depo);
+    const baslikInd = await ekle(t, tB, {
+      TUTAR: tutar, BELGENO: belgeNo, TARIH: tarih, KDV: false, AK: false, ODEMETARIHI: tarih, ODMODIFIED: false,
+      ALT1: 0, ALT2: 0, ALT3: 0, ALT4: 0, DEPO: depo, ALTNOT: aciklama || undefined, OZELKOD1: ad, OZELKOD2: ad,
+      IADE: false, IPTAL: false, CONVERTED: false, CREDATE: anlik, LADATE: anlik, PARABIRIMI: 'TL', KUR: 1,
+      YUVARLAMA: 0, ALLOWYUVARLAMA: false, ODENEN: 0, GIRIS: tip === 128, BELGETIPI: tip, EKBELGETIPI: 0,
+      MASRAF1: 0, MASRAF2: 0, MASRAF3: 0, MASRAF4: 0, MASRAFKDV1: 0, MASRAFKDV2: 0, MASRAFKDV3: 0, MASRAFKDV4: 0,
+      ENTEGRE: 0, USERNO: userno, ARATOPLAM: araToplam, YURTDISI: false, MUHASEBELESMEYECEK: false,
+      HAREKETDEPOSU: karsi, KAYNAK: 0, STOKHAREKETEYAZ: false, CARIHAREKETEYAZ: false,
+      UID: `{${crypto.randomUUID().toUpperCase()}}`,
+    }, kol[tB]);
+
+    // Gönderimde gönderen −q ve yoldaki depo +q; kabulde alan +q ve yoldaki depo −q (gerçek fişteki satır sırası).
+    const [ilkDepo, ikinciDepo, ilkIsaret] = tip === 128 ? [depo, yolda, -1] : [depo, yolda, 1];
+    let sira = 0;
+    for (const [s, m] of birlesik) {
+      const c = kart.get(s);
+      const maliyet = Number(c.MALIYET) || 0;
+      const satirInd = await ekle(t, tH, {
+        TARIH: tarih, DETAY: 0, EVRAKNO: baslikInd, STOKNO: s, MALINCINSI: String(c.MALINCINSI).trim(), STOKKODU: String(c.STOKKODU).trim(),
+        STOKTIPI: Number(c.STOKTIPI) || 0, MIKTAR: m, BIRIMMIKTAR: 1, BIRIM: String(c.BIRIM).trim(), BIRIMEX: c.BIRIMEX, KDV: Number(c.KDV) || 0,
+        ISK1: 0, ISK2: 0, ISK3: 0, ISK4: 0, ISK5: 0, ISK6: 0, AFIYATI: maliyet, FIYATI: maliyet, GERCEKTOPLAM: kalemTutar(c, m),
+        DEPO: yolda, PERSONEL: 0, PIRIM: 0, OPSIYON: 0, PROMOSYON: 0, SATISKOSULU: 1, SERIMIKTAR: 1, GRUPMIKTAR: 1, ENVANTER: m,
+        PARABIRIMI: 'TL', KUR: 1, BARKOD: String(c.BARKOD || ''), MASRAF: 0, OIV: 0, INDIRIM: 0, OTV: 0, GK: gk(),
+      }, kol[tH]);
+      const an = new Date();
+      an.setMilliseconds(0);
+      for (const [d, isaret] of [[ilkDepo, ilkIsaret], [ikinciDepo, -ilkIsaret]]) {
+        const ex = Math.round((oleTarih(new Date()) + sira++ * 1e-8) * 1e8) / 1e8;
+        await ekle(t, tE, {
+          TARIH: tarih, STOKNO: s, DEPO: d, ENVANTER: isaret * m, BELGETIPI: tip, BELGEIND: baslikInd,
+          SIRALAMATARIHI: an, SIRALAMATARIHIEX: ex, HAREKETIND: satirInd,
+        }, kol[tE]);
+      }
+    }
+
+    // Doğrulama: zorunlu alanlar dolu, satır ve envanter sayısı ve toplamları tutuyor.
+    const bos = (liste, tablo, ad) => liste.filter((c) => kol[tablo].has(c)).map((c) => `SUM(CASE WHEN [${c}] IS NULL THEN 1 ELSE 0 END) AS [${ad}_${c}]`).join(', ');
+    const rq = () => new sql.Request(t).input('b', sql.Int, baslikInd).input('tip', sql.SmallInt, tip);
+    const bk = (await rq().query(`SELECT ${bos(TRANSFER_ZORUNLU.baslik, tB, 'B')}, COUNT(*) AS N FROM [${tB}] WHERE IND=@b AND BELGETIPI=@tip`)).recordset[0];
+    const hk = (await rq().query(`SELECT ${bos(TRANSFER_ZORUNLU.satir, tH, 'H')}, COUNT(*) AS N, SUM(MIKTAR) AS Q, SUM(GERCEKTOPLAM) AS T FROM [${tH}] WHERE EVRAKNO=@b`)).recordset[0];
+    const ek = (await rq().query(`SELECT ${bos(TRANSFER_ZORUNLU.envanter, tE, 'E')}, COUNT(*) AS N, SUM(ENVANTER) AS TOPLAM,
+      SUM(CASE WHEN DEPO=${depo} THEN ENVANTER ELSE 0 END) AS D1, SUM(CASE WHEN DEPO=${yolda} THEN ENVANTER ELSE 0 END) AS D2
+      FROM [${tE}] WHERE BELGEIND=@b AND BELGETIPI=@tip`)).recordset[0];
+    const hatalar = [];
+    if (bk.N !== 1) hatalar.push('başlık yazılmadı');
+    if (hk.N !== birlesik.size) hatalar.push(`satır sayısı ${hk.N}/${birlesik.size}`);
+    if (ek.N !== birlesik.size * 2) hatalar.push(`envanter satırı ${ek.N}/${birlesik.size * 2}`);
+    const toplamQ = [...birlesik.values()].reduce((a, b) => a + b, 0);
+    if (Math.abs(Number(hk.Q) - toplamQ) > 0.0001) hatalar.push('satır miktarı tutmuyor');
+    if (Math.abs(Number(ek.TOPLAM)) > 0.0001) hatalar.push('envanter toplamı sıfır değil');
+    if (Math.abs(Number(ek.D1) - (tip === 128 ? -toplamQ : toplamQ)) > 0.0001) hatalar.push('gönderen/alan depo envanteri tutmuyor');
+    if (Math.abs(Number(ek.D2) + (tip === 128 ? -toplamQ : toplamQ)) > 0.0001) hatalar.push('yoldaki depo envanteri tutmuyor');
+    for (const [k, n] of Object.entries({ ...bk, ...hk, ...ek })) if (/^[BHE]_/.test(k) && Number(n) > 0) hatalar.push(`${k.slice(2)} boş`);
+    if (hatalar.length) throw new Error(`Vega fişi doğrulanamadı (${hatalar.join('; ')}); hiçbir şey yazılmadı`);
+
+    await t.commit();
+    return { ind: baslikInd, belgeNo, kalem: birlesik.size, tutar, userno, negatif, firmaDonem: FD };
+  } catch (e) {
+    await t.rollback().catch(() => {});
+    throw e;
+  }
+}
+
+/**
+ * Açık gönderimlerin Vega'daki durumu. Gönderim (128) ile kabul (129) arasında belge bağı yoktur, ikisi de yoldaki
+ * depo üzerinden gider; bu yüzden her (gönderen, alan, ürün) için toplam gönderilen ve toplam alınan döner, hangi
+ * gönderimin açık olduğu depo tarafında bu toplamlardan çıkarılır. `bas`: bu tarihten sonraki belgeler,
+ * `alanlar`: alan depoları (terminalin kullandığı depolar).
+ */
+async function transferOku(cfg, { bas, alanlar }) {
+  const ids = (alanlar || []).map(Number).filter(Number.isInteger);
+  if (!ids.length) return { sevkler: [], havuz: [] };
+  const { p, FD } = await baglam(cfg.vega);
+  const tB = `${FD}TBLDEPOHARBASLIK`, tH = `${FD}TBLDEPOHARHAREKET`;
+  if (!(await tabloVar(p, tB)) || !(await tabloVar(p, tH))) return { sevkler: [], havuz: [] };
+  const iptal = (await kolonlar(p, tB)).has('IPTAL') ? 'AND ISNULL(B.IPTAL,0)=0' : '';
+  const q = () => p.request().input('bas', sql.DateTime, bas);
+  const sev = await q().query(`
+    SELECT B.IND, B.BELGENO, B.TARIH, B.DEPO, B.HAREKETDEPOSU, H.STOKNO, SUM(H.MIKTAR) AS MIKTAR
+    FROM [${tB}] B JOIN [${tH}] H ON H.EVRAKNO = B.IND
+    WHERE B.BELGETIPI = 128 ${iptal} AND B.TARIH >= @bas AND B.HAREKETDEPOSU IN (${ids.join(',')})
+    GROUP BY B.IND, B.BELGENO, B.TARIH, B.DEPO, B.HAREKETDEPOSU, H.STOKNO`);
+  const hav = await q().query(`
+    SELECT B.BELGETIPI, CASE WHEN B.BELGETIPI = 128 THEN B.DEPO ELSE B.HAREKETDEPOSU END AS KAYNAK,
+           CASE WHEN B.BELGETIPI = 128 THEN B.HAREKETDEPOSU ELSE B.DEPO END AS HEDEF, H.STOKNO, SUM(H.MIKTAR) AS Q
+    FROM [${tB}] B JOIN [${tH}] H ON H.EVRAKNO = B.IND
+    WHERE B.BELGETIPI IN (128, 129) ${iptal} AND B.TARIH >= @bas
+      AND (CASE WHEN B.BELGETIPI = 128 THEN B.HAREKETDEPOSU ELSE B.DEPO END) IN (${ids.join(',')})
+    GROUP BY B.BELGETIPI, CASE WHEN B.BELGETIPI = 128 THEN B.DEPO ELSE B.HAREKETDEPOSU END,
+             CASE WHEN B.BELGETIPI = 128 THEN B.HAREKETDEPOSU ELSE B.DEPO END, H.STOKNO`);
+  const belgeler = new Map();
+  for (const r of sev.recordset) {
+    if (!belgeler.has(r.IND)) belgeler.set(r.IND, { ind: Number(r.IND), no: String(r.BELGENO || '').trim(), tarih: r.TARIH, kaynak: Number(r.DEPO), hedef: Number(r.HAREKETDEPOSU), kalemler: [] });
+    belgeler.get(r.IND).kalemler.push({ stokno: String(r.STOKNO), miktar: Number(r.MIKTAR) });
+  }
+  const havuz = new Map();
+  for (const r of hav.recordset) {
+    const k = `${r.KAYNAK}|${r.HEDEF}|${r.STOKNO}`;
+    if (!havuz.has(k)) havuz.set(k, { kaynak: Number(r.KAYNAK), hedef: Number(r.HEDEF), stokno: String(r.STOKNO), gonderilen: 0, alinan: 0 });
+    havuz.get(k)[r.BELGETIPI === 128 ? 'gonderilen' : 'alinan'] += Number(r.Q);
+  }
+  return { sevkler: [...belgeler.values()], havuz: [...havuz.values()] };
+}
+
+module.exports = { transferYaz, transferOku, kullanilanDepolar, dene, firmalar, donemler, depolar, donemCoz, hazirMi, goruntu, stokTani, BELGE_TURU, anlikStok, sayimYaz, sayimGeriAl, fisVarsayilanlari, PASIF_AD, kartAlanUzunluk, kartAlanYaz, kapat, oleTarih };

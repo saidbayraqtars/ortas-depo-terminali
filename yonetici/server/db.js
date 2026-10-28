@@ -225,6 +225,64 @@ function migrate() {
     }
     set('surum', '5');
   }
+  if (Number(get("SELECT value FROM meta WHERE key='surum'")?.value) < 6) {
+    // 6: depolar arası transfer. transfer: terminalden gelen gönderim (SEND, Vega 128) ve kabul (RECEIVE, Vega 129);
+    // durum: BEKLIYOR (Vega'ya yazılacak) / YAZILDI / HATA. transfer_line: satırlar. transfer_fark: kabulde gelmeyen
+    // (eksik) miktar, çözülene kadar kayıtlı kalır. transfer_kapali: kabulü bitirilen gönderim (terminallerde açık görünmez).
+    db.exec(`
+      CREATE TABLE transfer(
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        from_depo INTEGER NOT NULL,
+        to_depo INTEGER NOT NULL,
+        sevk_ind INTEGER,
+        sevk_no TEXT,
+        durum TEXT NOT NULL DEFAULT 'BEKLIYOR',
+        hata TEXT,
+        deneme INTEGER NOT NULL DEFAULT 0,
+        vega_ind INTEGER,
+        belge_no TEXT,
+        user TEXT,
+        device TEXT,
+        created_at INTEGER NOT NULL,
+        yazildi_at INTEGER
+      );
+      CREATE INDEX ix_transfer_durum ON transfer(durum);
+      CREATE TABLE transfer_line(
+        transfer_id TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        qty REAL NOT NULL,
+        shelf TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY(transfer_id, product_id, shelf)
+      );
+      CREATE TABLE transfer_fark(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        transfer_id TEXT NOT NULL,
+        sevk_ind INTEGER NOT NULL,
+        sevk_no TEXT,
+        from_depo INTEGER NOT NULL,
+        to_depo INTEGER NOT NULL,
+        product_id TEXT NOT NULL,
+        sent REAL NOT NULL,
+        received REAL NOT NULL,
+        eksik REAL NOT NULL,
+        user TEXT,
+        device TEXT,
+        created_at INTEGER NOT NULL,
+        durum TEXT NOT NULL DEFAULT 'ACIK',
+        cozum TEXT,
+        cozum_at INTEGER,
+        cozum_user TEXT
+      );
+      CREATE INDEX ix_transfer_fark_durum ON transfer_fark(durum, from_depo, to_depo, product_id);
+      CREATE TABLE transfer_kapali(
+        sevk_ind INTEGER PRIMARY KEY,
+        transfer_id TEXT NOT NULL,
+        at INTEGER NOT NULL
+      );
+    `);
+    set('surum', '6');
+  }
 }
 
 function get(sql, ...args) {

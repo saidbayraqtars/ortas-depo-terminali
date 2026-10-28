@@ -82,6 +82,21 @@ Terminal her parçayı ayrı kısa işlemle yazar (kovanın eski satırlarını 
 yalnız ilgili ürünün kovasını (ve belge ilerlemesi için `head`'i) değiştirir. Sunucu işlemi reddederse terminal
 bütün özetleri unutur (sonraki tur hepsi yeniden iner). Sıra sabittir; Vega yenilemesi içerik değişmeden özet değiştirmez.
 
+### Depolar arası transfer, `transfer` (1.6.0+)
+
+`head` parçasında gelir. Özellik ayarda kapalıysa `{"on": false}`:
+
+```json
+{"on": true, "yolda": 3,
+ "depots": [{"id": 1, "name": "MERKEZ"}],
+ "incoming": [{"id": "2631", "no": "A0000576", "date": "28.10.2026", "from": 1, "fromName": "MERKEZ", "to": 108, "toName": "TOYBELEN SANAYİ",
+               "lines": [{"productId": "7058", "sent": 1, "open": 1}]}]}
+```
+
+`depots`: gönderim hedefi olabilecek bütün Vega depoları (yoldaki hariç). `incoming`: kabul bekleyen gönderimler; `open` hâlâ alınmamış
+miktar. Gönderim (128) ile kabul (129) arasında Vega'da belge bağı yoktur; açık miktar (gönderen, alan, ürün) bazında toplam
+gönderilen − toplam alınan − kayıtlı eksik olarak hesaplanıp en yeni gönderimden geriye dağıtılır (`yonetici/server/transfer.js`).
+
 ### Stok parçaları, `v: 2` (1.5.0+)
 
 Vega'da satış olunca stok her tur değişir; stok kovanın içindeyken bütün kovalar yeniden iniyordu. İstekte `"v": 2`
@@ -143,6 +158,8 @@ Cevap: her işlem için bir satır.
 | `PICK` (1.5.0+) | `productId, shelf, qty, depot, user, device` | Raftan alma: `locations[productId, shelf] -= qty` (eksiye düşmez), hareket `PICK`. Raf boşalırsa terminal zimmeti kalkar. Vega'ya yazılmaz. |
 | `TRANSFER` | `productId, from, to, qty, user, device` | `from -= qty`, `to += qty` |
 | `COUNT_SUBMIT` | `sessionId, no, title, shelves[], lines[{shelf, productId, system, counted}], user, device` | Sayımı onay bekleyen olarak kaydet. Raf miktarları sayılan değere çekilir. Vega'ya sayım fişi yönetici onayıyla yazılır. `shelves` boş sayılan rafları da içerir. |
+| `TRANSFER_SEND` (1.6.0+) | `from, to, lines[{productId, qty, shelf}], user, device` | Depolar arası gönderim. `shelf` boş olabilir (raf stoku değişmez). Gönderen depoda raf stoku düşer (eksiye düşmez), kayıt `transfer` tablosunda bekler; sunucu arka planda Vega'ya **depo gönderim fişi (128)** yazar. `to` yoldaki depo olamaz; özellik ayarda kapalıysa kalıcı ret. |
+| `TRANSFER_RECEIVE` (1.6.0+) | `sevkId, lines[{productId, qty, shelf}], depot, user, device` | Gönderim kabulü. `sevkId` ana verideki `transfer.incoming[].id` (Vega 128 başlık IND'i). Alan depoda raf stoku artar; gönderilenden fazla ya da gönderimde olmayan ürün kalıcı ret. Gönderimde olup gelmeyen miktar `transfer_fark`'a **eksik** olarak yazılır, gönderim kapanır; sunucu Vega'ya **gönderim kabul fişi (129)** yazar. |
 | `SHELF_ADD` (1.4.0+) | `code, depot, user, device` | Terminalde okutulan tanımsız raf etiketini o depoda raf olarak aç (kaynak `TERMINAL`). |
 
 `sessionId` `LOCAL-` ile başlıyorsa terminalde başlatılmış serbest sayımdır; sunucuda karşılığı yoktur,

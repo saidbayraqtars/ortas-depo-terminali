@@ -142,6 +142,8 @@ async function vegaYenile(tetik = 'elle') {
     const yavas = sureMs > 5000 ? ` [${Object.entries(sureler).map(([k, v]) => `${k} ${sn1(v)}`).join(', ')}]` : '';
     log.bilgi(`Vega okundu (${tetik}): ${g.products.length} kart, ${ayni ? 'değişiklik yok' : 'değişti'}, ${sn1(sureMs)} sn${yavas}`);
     if (!ayni || zimmetDegisti) degisti();
+    // Açık gönderimler ayrı okunur (transfer.js); hata Vega okumasını bozmaz.
+    require('./transfer').yenile().catch(() => {});
   } catch (e) {
     if (tur !== vegaTurNo) return vegaDurum;
     vegaDurum.ardisikHata++;
@@ -489,7 +491,7 @@ async function rafYazCalistir(cfg) {
   if (!alan) {
     // Sessiz kalmasın: Ayarlar ve Özet'te görünür.
     const ad = String(cfg.rafAdresi?.alan || '').trim();
-    const hata = ad ? `${ad} alanı Vega stok kartlarında bulunamadı` : 'Raf adresi yazılsın seçili ama stok kartı alanı boş (Ortaş: KOD10)';
+    const hata = ad ? `${ad} alanı Vega stok kartlarında bulunamadı` : 'Raf adresi yazılsın seçili ama stok kartı alanı boş. "Stok kartı alanı" kutusuna KOD10 yazıp Kaydet\'e basın (Ortaş: KOD10)';
     if (vegaDurum.rafAdresi?.hata !== hata) log.uyari(`Raf adresi Vega'ya yazılamıyor: ${hata}`);
     vegaDurum.rafAdresi = { alan: ad || null, yaz: true, hata, at: now() };
     return vegaDurum.rafAdresi;
@@ -723,6 +725,11 @@ function islemUygula(op, cihaz, kullanici) {
       }
       return;
     }
+    case 'TRANSFER_SEND':
+    case 'TRANSFER_RECEIVE':
+      // Depolar arası transfer: raf stoku burada, Vega'ya 128/129 fişi arka planda yazılır (transfer.js).
+      require('./transfer').uygula(op, p, h, { Ret, bilinen });
+      return;
     default:
       throw new Ret(`Bilinmeyen işlem türü: ${op.type}`);
   }
@@ -813,6 +820,7 @@ function sayimKaydet(op, p, h, olusturma) {
 function islemler(cihaz, kullanici, ops) {
   const sonuc = [];
   let degisiklik = false;
+  let transferVar = false;
   for (const op of Array.isArray(ops) ? ops : []) {
     const id = String((op && op.id) || '');
     if (!id) continue;
@@ -841,6 +849,7 @@ function islemler(cihaz, kullanici, ops) {
       });
       sonuc.push({ id, ok: true });
       degisiklik = true;
+      if (op.type === 'TRANSFER_SEND' || op.type === 'TRANSFER_RECEIVE') transferVar = true;
     } catch (e) {
       if (e instanceof Ret) {
         kayit(false, e.message);
@@ -853,6 +862,8 @@ function islemler(cihaz, kullanici, ops) {
     }
   }
   if (degisiklik) degisti();
+  // Kabul edilen transfer işlemleri Vega'ya yazılmak üzere kuyrukta (transfer tablosu); yazıcı hemen çalışsın.
+  if (transferVar) require('./transfer').yaziciTetikle();
   return sonuc;
 }
 
@@ -866,11 +877,13 @@ function kabulDurumu() {
 
 function belgeler({ shelved, kapali } = kabulDurumu()) {
   if (!goruntu) return [];
+  // Terminalden kabul edilip program tarafından yazılan 129 fişi (transfer.js): mal kabulde ikinci kez çıkmaz.
+  const programKabul = require('./transfer').programKabulBelgeleri();
   return goruntu.receipts.map((r) => {
     const lines = r.lines.map((l) => ({ ...l, shelved: Number(shelved.get(l.id) || 0) }));
     const kalan = lines.reduce((t, l) => t + Math.max(0, l.accepted - l.shelved), 0);
     const st = kapali.get(r.id);
-    const elleKapali = Boolean(st && st.closed);
+    const elleKapali = Boolean((st && st.closed) || programKabul.has(r.id));
     return {
       ...r,
       lines,
@@ -974,6 +987,8 @@ function masterGovde() {
       .filter((r) => r.lines.length),
     counts,
     users,
+    // Depolar arası transfer: açık gönderimler ve hedef depo listesi (kapalıyken { on: false }).
+    transfer: require('./transfer').terminalGorunumu(),
   };
   const apk = require('./apk').bilgi();
   if (apk) govde.app = { versionName: apk.versionName, versionCode: apk.versionCode, path: '/apk' };
@@ -1492,6 +1507,9 @@ module.exports = {
   rafVarMi,
   miktar,
   miktarAyarla,
+  miktarEkle,
+  terminalZimmet,
+  terminalZimmetBosalt,
   islemler,
   belgeler,
   bekleyenKabul,

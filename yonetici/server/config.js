@@ -33,6 +33,11 @@ const DEFAULTS = {
   // tumDepolar: yazarken bütün depoların zimmetleri karta birlikte yazılır (terminal hangi depoda çalışırsa çalışsın
   // kartta görünür); kapalıysa yalnız `depo` deposununkiler.
   rafAdresi: { alan: '', depo: null, yeniRafAc: false, yaz: false, tumDepolar: true },
+  // Depolar arası transfer (terminalden Vega'ya depo gönderim 128 / gönderim kabul 129 fişi yazılır).
+  // aktif: ayar anahtarı, kapalıyken terminalde ekran görünmez ve işlem reddedilir. yoldaDepo: malın gönderimle kabul
+  // arasında durduğu Vega deposu (Ortaş: 3 TRANSFER); boşsa adı TRANSFER olan depo. userno: fişe yazılan Vega kullanıcı
+  // numarası; boşsa aynı türde en çok kullanılan. onek: belge numarası öneki (Ortaş: A0000575). gun: açık gönderim kaç gün geriye bakılır.
+  transfer: { aktif: false, yoldaDepo: null, userno: null, onek: 'A', gun: 45 },
   // Terminale giden ürün listesi: 'aktif' = stoklu, son N günde hareketli ya da rafta olan kartlar.
   urun: { kapsam: 'aktif', gun: 365 },
   sayim: {

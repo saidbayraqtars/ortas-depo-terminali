@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Icon
@@ -204,13 +205,21 @@ fun LabelDialog(title: String, sub: String, onPrint: (Int) -> Unit, onDismiss: (
 }
 /** Çalışılan depoyu seçme. Mal kabul belgeleri her depodan görünür; transfer, sayım ve sorgu seçili depoda. */
 @Composable
-fun DepotDialog(depots: List<tr.arcteknik.depo.data.Depot>, current: Int, onPick: (Int) -> Unit, onDismiss: () -> Unit) {
+fun DepotDialog(
+    depots: List<tr.arcteknik.depo.data.Depot>,
+    current: Int,
+    onPick: (Int) -> Unit,
+    onDismiss: () -> Unit,
+    title: String = "Çalışılan depo",
+    note: String? = "Raf transferi, sayım ve sorgu seçilen depoda yapılır. Rafa kaldırma her zaman belgenin deposunda.",
+) {
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Çalışılan depo") },
+        title = { Text(title) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Hint("Raf transferi, sayım ve sorgu seçilen depoda yapılır. Rafa kaldırma her zaman belgenin deposunda.")
+            // Hedef depo listesi 15 depoyu bulabilir (Ortaş); sığmazsa kayar.
+            Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (note != null) Hint(note)
                 depots.forEach { d ->
                     val on = d.id == current
                     Row(
