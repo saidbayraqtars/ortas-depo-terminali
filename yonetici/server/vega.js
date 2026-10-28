@@ -925,9 +925,13 @@ async function transferYaz(cfg, { tip, depo, karsi, yolda, kalemler, aciklama = 
  * gönderimin açık olduğu depo tarafında bu toplamlardan çıkarılır. `bas`: bu tarihten sonraki belgeler,
  * `alanlar`: alan depoları (terminalin kullandığı depolar).
  */
-async function transferOku(cfg, { bas, alanlar }) {
+async function transferOku(cfg, { bas, alanlar, kaynaklar }) {
   const ids = (alanlar || []).map(Number).filter(Number.isInteger);
   if (!ids.length) return { sevkler: [], havuz: [] };
+  // `kaynaklar` verilirse gönderen depo da bu listeden olmalı (transfer çifti dışındaki depolar okunmaz).
+  const kay = (kaynaklar || []).map(Number).filter(Number.isInteger);
+  const kayB = kay.length ? `AND B.DEPO IN (${kay.join(',')})` : '';
+  const kayH = kay.length ? `AND (CASE WHEN B.BELGETIPI = 128 THEN B.DEPO ELSE B.HAREKETDEPOSU END) IN (${kay.join(',')})` : '';
   const { p, FD } = await baglam(cfg.vega);
   const tB = `${FD}TBLDEPOHARBASLIK`, tH = `${FD}TBLDEPOHARHAREKET`;
   if (!(await tabloVar(p, tB)) || !(await tabloVar(p, tH))) return { sevkler: [], havuz: [] };
@@ -936,14 +940,14 @@ async function transferOku(cfg, { bas, alanlar }) {
   const sev = await q().query(`
     SELECT B.IND, B.BELGENO, B.TARIH, B.DEPO, B.HAREKETDEPOSU, H.STOKNO, SUM(H.MIKTAR) AS MIKTAR
     FROM [${tB}] B JOIN [${tH}] H ON H.EVRAKNO = B.IND
-    WHERE B.BELGETIPI = 128 ${iptal} AND B.TARIH >= @bas AND B.HAREKETDEPOSU IN (${ids.join(',')})
+    WHERE B.BELGETIPI = 128 ${iptal} AND B.TARIH >= @bas AND B.HAREKETDEPOSU IN (${ids.join(',')}) ${kayB}
     GROUP BY B.IND, B.BELGENO, B.TARIH, B.DEPO, B.HAREKETDEPOSU, H.STOKNO`);
   const hav = await q().query(`
     SELECT B.BELGETIPI, CASE WHEN B.BELGETIPI = 128 THEN B.DEPO ELSE B.HAREKETDEPOSU END AS KAYNAK,
            CASE WHEN B.BELGETIPI = 128 THEN B.HAREKETDEPOSU ELSE B.DEPO END AS HEDEF, H.STOKNO, SUM(H.MIKTAR) AS Q
     FROM [${tB}] B JOIN [${tH}] H ON H.EVRAKNO = B.IND
     WHERE B.BELGETIPI IN (128, 129) ${iptal} AND B.TARIH >= @bas
-      AND (CASE WHEN B.BELGETIPI = 128 THEN B.HAREKETDEPOSU ELSE B.DEPO END) IN (${ids.join(',')})
+      AND (CASE WHEN B.BELGETIPI = 128 THEN B.HAREKETDEPOSU ELSE B.DEPO END) IN (${ids.join(',')}) ${kayH}
     GROUP BY B.BELGETIPI, CASE WHEN B.BELGETIPI = 128 THEN B.DEPO ELSE B.HAREKETDEPOSU END,
              CASE WHEN B.BELGETIPI = 128 THEN B.HAREKETDEPOSU ELSE B.DEPO END, H.STOKNO`);
   const belgeler = new Map();

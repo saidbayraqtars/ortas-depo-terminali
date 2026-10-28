@@ -37,7 +37,9 @@ const DEFAULTS = {
   // aktif: ayar anahtarı, kapalıyken terminalde ekran görünmez ve işlem reddedilir. yoldaDepo: malın gönderimle kabul
   // arasında durduğu Vega deposu (Ortaş: 3 TRANSFER); boşsa adı TRANSFER olan depo. userno: fişe yazılan Vega kullanıcı
   // numarası; boşsa aynı türde en çok kullanılan. onek: belge numarası öneki (Ortaş: A0000575). gun: açık gönderim kaç gün geriye bakılır.
-  transfer: { aktif: false, yoldaDepo: null, userno: null, onek: 'A', gun: 45 },
+  // cift: transfer yapılabilen iki depo (Ortaş: [1, 108] Merkez ↔ Toybelen). Sunucu bu çift dışındaki gönderim ve kabulü
+  // reddeder, açık gönderimleri yalnız bu çiftten okur; boşken özellik çalışmaz.
+  transfer: { aktif: false, yoldaDepo: null, userno: null, onek: 'A', gun: 45, cift: [] },
   // Terminale giden ürün listesi: 'aktif' = stoklu, son N günde hareketli ya da rafta olan kartlar.
   urun: { kapsam: 'aktif', gun: 365 },
   sayim: {

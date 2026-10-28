@@ -92,7 +92,7 @@ function IslemSatiri({ t, yukle }) {
     <>
       <tr className="click" onClick={() => setAc((x) => !x)}>
         <td className="muted">{tarihSaat(t.created_at)}</td>
-        <td>{gonder ? 'Gönderim (128)' : 'Kabul (129)'}</td>
+        <td>{gonder ? 'Gönderim (128)' : 'Kabul (129)'}{t.kismi ? <div><Rozet tur="b-info">kısmi kabul</Rozet></div> : null}</td>
         <td>{t.fromAd} <span className="muted">→</span> {t.toAd}</td>
         <td className="num">{t.satirlar.length} kalem · {miktar(t.toplam)}</td>
         <td className="muted">{t.user} · {t.device}</td>
@@ -114,7 +114,7 @@ function IslemSatiri({ t, yukle }) {
                 {t.satirlar.map((l, i) => (
                   <tr key={i}>
                     <td><div className="name">{l.ad}</div><div className="code">{l.kod}</div></td>
-                    <td className="mono">{l.shelf || '—'}</td>
+                    <td className="mono">{l.shelf || (gonder ? 'rafsız' : '—')}{l.otomatik ? <div className="muted small">raf otomatik seçildi</div> : null}</td>
                     <td className="num">{miktar(l.qty)}</td>
                   </tr>
                 ))}

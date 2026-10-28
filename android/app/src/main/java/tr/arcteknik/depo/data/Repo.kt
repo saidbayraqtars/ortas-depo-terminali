@@ -188,18 +188,31 @@ class Repo(val db: Db, val prefs: Prefs) {
             val closed = prefs.transferClosed
             val depots = j.optJSONArray("depots")
             val inc = j.optJSONArray("incoming")
+            // Kısmi kabul sunucuya henüz gitmediyse alınan miktar açık miktardan düşülür; ana veri yenilenince sunucu zaten düşmüş verir.
+            val partial = HashMap<String, HashMap<String, Double>>()
+            for (o in db.ops()) {
+                if (o.type != OpType.TRANSFER_RECEIVE || o.status != OpStatus.PENDING) continue
+                val p = runCatching { JSONObject(o.payload) }.getOrNull() ?: continue
+                if (!p.optBoolean("partial", false)) continue
+                val ls = p.optJSONArray("lines") ?: continue
+                val m = partial.getOrPut(p.optString("sevkId")) { HashMap() }
+                for (i in 0 until ls.length()) ls.getJSONObject(i).let { l -> m[l.getString("productId")] = (m[l.getString("productId")] ?: 0.0) + l.optDouble("qty", 0.0) }
+            }
             TransferInfo(
                 true,
                 j.optInt("yolda", 0),
                 (0 until (depots?.length() ?: 0)).map { depots!!.getJSONObject(it).let { d -> Depot(d.getInt("id"), d.optString("name", d.getInt("id").toString())) } },
                 (0 until (inc?.length() ?: 0)).map { inc!!.getJSONObject(it) }.filter { it.getString("id") !in closed }.map { x ->
                     val ls = x.optJSONArray("lines")
+                    val got = partial[x.getString("id")]
                     Incoming(
                         x.getString("id"), x.optString("no", ""), x.optString("date", ""),
                         x.getInt("from"), x.optString("fromName", ""), x.getInt("to"), x.optString("toName", ""),
-                        (0 until (ls?.length() ?: 0)).map { ls!!.getJSONObject(it) }.map { l -> IncomingLine(l.getString("productId"), l.optDouble("sent", 0.0), l.optDouble("open", 0.0)) },
+                        (0 until (ls?.length() ?: 0)).map { ls!!.getJSONObject(it) }
+                            .map { l -> IncomingLine(l.getString("productId"), l.optDouble("sent", 0.0), l.optDouble("open", 0.0) - (got?.get(l.getString("productId")) ?: 0.0)) }
+                            .filter { l -> l.open > 1e-9 },
                     )
-                },
+                }.filter { it.lines.isNotEmpty() },
             )
         } catch (e: Exception) {
             off
@@ -238,11 +251,13 @@ class Repo(val db: Db, val prefs: Prefs) {
     }
 
     /**
-     * Gönderim kabulü: gelen miktar alan depoda rafa girer ([lines]'ta raf varsa). Gönderimde olup gelmeyen miktar sunucuda
-     * eksik olarak kayıtlı kalır; gönderim bu terminalde ve sunucuda kapanır. Sunucu Vega'ya kabul fişi (129) yazar.
+     * Gönderim kabulü: gelen miktar alan depoda rafa girer ([lines]'ta raf varsa). [partial] ise okutulanlar kısmi kabul olarak
+     * gider: gönderim açık kalır, eksik kaydı açılmaz. Değilse ("Kabulü bitir") gönderimde olup gelmeyen miktar sunucuda eksik
+     * olarak kayıtlı kalır, gönderim bu terminalde ve sunucuda kapanır; daha önce kısmi alınmışsa [lines] boş olabilir.
+     * Sunucu Vega'ya kabul fişi (129) yazar.
      */
-    fun receiveTransfer(sevk: Incoming, lines: List<TransferLine>, user: String) {
-        require(lines.isNotEmpty()) { "Satır yok" }
+    fun receiveTransfer(sevk: Incoming, lines: List<TransferLine>, user: String, partial: Boolean = false) {
+        require(lines.isNotEmpty() || !partial) { "Satır yok" }
         val w = db.writableDatabase
         w.beginTransaction()
         try {
@@ -257,14 +272,14 @@ class Repo(val db: Db, val prefs: Prefs) {
             }
             db.insertOp(w, op(
                 OpType.TRANSFER_RECEIVE,
-                JSONObject().put("sevkId", sevk.id).put("lines", arr).put("depot", sevk.to).put("user", user),
-                "Gönderim kabulü · ${lines.size} kalem|${sevk.no} ← ${sevk.fromName} · toplam ${fmt(lines.sumOf { it.qty })}",
+                JSONObject().put("sevkId", sevk.id).put("lines", arr).put("depot", sevk.to).put("user", user).put("partial", partial),
+                (if (partial) "Gönderim kabulü (kısmi) · " else "Gönderim kabulü · ") + "${lines.size} kalem|${sevk.no} ← ${sevk.fromName} · toplam ${fmt(lines.sumOf { it.qty })}",
             ))
             w.setTransactionSuccessful()
         } finally {
             w.endTransaction()
         }
-        prefs.transferClosed = prefs.transferClosed + sevk.id
+        if (!partial) prefs.transferClosed = prefs.transferClosed + sevk.id
         changed()
     }
 

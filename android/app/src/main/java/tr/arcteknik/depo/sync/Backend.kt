@@ -18,6 +18,16 @@ import java.util.concurrent.TimeUnit
 /** Bir işlemin sunucudaki sonucu. `ok=false` kalıcı ret demek; işlem kuyrukta hata olarak kalır. */
 data class OpResult(val id: String, val ok: Boolean, val error: String?)
 
+/**
+ * Belge kilidi cevabı (1.8.0+ sunucu, docs/API.md "Belge kilidi"). [supported] false: sunucu kilidi bilmiyor (eski yönetici
+ * programı), belge kilitsiz açılır. [ok] false ise [holder] "Ahmet (TRM-03) kullanıyor" gibi tutan kişiyi, nabızda [reason]
+ * kilidin neden gittiğini söyler (yonetici: yönetici açtı, baska: başka terminal aldı, yok: kayıt yok).
+ */
+data class LockReply(val supported: Boolean = true, val ok: Boolean = false, val token: String = "", val holder: String = "", val reason: String = "")
+
+/** Şu an tutulan bir belge ([id] terminalin kilitlerken kullandığı kimlik). */
+data class LockInfo(val id: String, val user: String, val device: String)
+
 /** Terminalin konuştuğu sunucu. Sözleşme: `docs/API.md`. */
 interface Backend {
     /**
@@ -48,6 +58,18 @@ interface Backend {
      * Dönen: kullanıcıya gösterilecek metin. Ulaşılamazsa IOException.
      */
     fun printLabel(type: String, id: String, copies: Int, user: String, depot: Int): String
+
+    /** Belgeyi kilitler (`POST /api/lock`). Ulaşılamazsa IOException. */
+    fun lock(docId: String, kind: String, docNo: String, user: String): LockReply
+
+    /** Tutan terminalin nabzı (`POST /api/lock/ping`), 30 sn'de bir. Ulaşılamazsa IOException. */
+    fun lockPing(docId: String, token: String): LockReply
+
+    /** Kilidi bırakır (`POST /api/lock/release`); en iyi çaba, hata yutulur. */
+    fun lockRelease(docId: String, token: String)
+
+    /** Şu an tutulan belgeler (`GET /api/locks`); listelerde kilit simgesi için. Sunucu bilmiyorsa null. */
+    fun locks(): List<LockInfo>?
 }
 
 /**
@@ -82,6 +104,14 @@ class DemoBackend(private val context: Context, private val online: () -> Boolea
 
     override fun printLabel(type: String, id: String, copies: Int, user: String, depot: Int): String =
         throw IOException("Demo modunda etiket basılmaz")
+
+    override fun lock(docId: String, kind: String, docNo: String, user: String) = LockReply(supported = false)
+
+    override fun lockPing(docId: String, token: String) = LockReply(supported = false)
+
+    override fun lockRelease(docId: String, token: String) = Unit
+
+    override fun locks(): List<LockInfo>? = null
 }
 
 class HttpBackend(private val baseUrl: String, private val deviceKey: String, private val deviceName: String) : Backend {
@@ -157,6 +187,42 @@ class HttpBackend(private val baseUrl: String, private val deviceKey: String, pr
             if (!r.isSuccessful) throw IOException(errorText(r.code, r.body?.string()))
             val o = JSONObject(r.body!!.string())
             return "${o.optInt("etiket", copies)} etiket ${o.optString("yazici", "yazıcıya")} yazıcısına gönderildi"
+        }
+    }
+
+    private fun lockCall(path: String, body: JSONObject): LockReply {
+        client.newCall(request(path).post(body.put("device", deviceName).toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()).execute().use { r ->
+            if (r.code == 404) return LockReply(supported = false)
+            if (!r.isSuccessful) throw IOException(errorText(r.code, r.body?.string()))
+            val o = JSONObject(r.body!!.string())
+            return LockReply(
+                ok = o.optBoolean("ok", false),
+                token = o.optString("token"),
+                holder = o.optJSONObject("holder")?.optString("mesaj").orEmpty(),
+                reason = o.optString("neden"),
+            ).let { if (it.holder.isBlank() && o.optJSONObject("holder") != null) it.copy(holder = "Başka bir terminal kullanıyor") else it }
+        }
+    }
+
+    override fun lock(docId: String, kind: String, docNo: String, user: String) =
+        lockCall("/api/lock", JSONObject().put("docId", docId).put("kind", kind).put("docNo", docNo).put("user", user))
+
+    override fun lockPing(docId: String, token: String) =
+        lockCall("/api/lock/ping", JSONObject().put("docId", docId).put("token", token)).let {
+            // Nabızda "başka" cevabı tutanı da taşır; mesaj olarak da kullanılır.
+            if (!it.ok && it.reason == "baska" && it.holder.isBlank()) it.copy(holder = "Başka bir terminal aldı") else it
+        }
+
+    override fun lockRelease(docId: String, token: String) {
+        runCatching { lockCall("/api/lock/release", JSONObject().put("docId", docId).put("token", token)) }
+    }
+
+    override fun locks(): List<LockInfo>? {
+        client.newCall(request("/api/locks").get().build()).execute().use { r ->
+            if (r.code == 404) return null
+            if (!r.isSuccessful) throw IOException(errorText(r.code, r.body?.string()))
+            val a = JSONObject(r.body!!.string()).optJSONArray("locks") ?: return emptyList()
+            return (0 until a.length()).map { a.getJSONObject(it) }.map { LockInfo(it.getString("id"), it.optString("user"), it.optString("device")) }
         }
     }
 

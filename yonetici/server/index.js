@@ -22,6 +22,7 @@ const iceaktar = require('./iceaktar');
 const rapor = require('./rapor');
 const kapsam = require('./kapsam');
 const transfer = require('./transfer');
+const kilit = require('./kilit');
 
 const SURUM = require('../package.json').version;
 let yedekKlasoru = null;
@@ -176,7 +177,8 @@ function cihazDogrula(req, res, next) {
   db.run(
     'UPDATE device SET last_seen=?, last_ip=?, last_name=?, app_version=COALESCE(?, app_version) WHERE id=?',
     Date.now(),
-    String(req.socket.remoteAddress || '').replace('::ffff:', ''),
+    // Köprü arkasındaki terminalin gerçek adresi X-Forwarded-For'un ilk değeridir (yalnız görüntü için).
+    (req.get('X-Kopru') && String(req.get('X-Forwarded-For') || '').split(',')[0].trim()) || String(req.socket.remoteAddress || '').replace('::ffff:', ''),
     String(req.get('X-Device-Name') || c.name).slice(0, 60),
     req.get('X-App-Version') || null,
     c.id,
@@ -184,8 +186,49 @@ function cihazDogrula(req, res, next) {
   next();
 }
 
+// Toybelen köprüsü (kopru.js) kendini X-Kopru başlığıyla tanıtır: ping ve iletilen her istekte gelir. Özet'te "bağlı / son görülme"
+// ve cihaz QR'ında adres seçimi için son görülme bellekte (ve açılışta gösterilsin diye veritabanında) tutulur.
+const kopruler = new Map(); // ad → { ad, ip, adresler, surum, son }
+
+function kopruGor(req) {
+  const ad = String(req.get('X-Kopru') || '').trim().slice(0, 40);
+  if (!ad) return;
+  const adresler = String(req.get('X-Kopru-Adresler') || '').split(',').map((x) => x.trim()).filter((x) => /^https?:\/\/[\w.\-:]+$/.test(x)).slice(0, 8);
+  const eski = kopruler.get(ad) || {};
+  const k = {
+    ad,
+    ip: String(req.socket.remoteAddress || '').replace('::ffff:', ''),
+    adresler: adresler.length ? adresler : eski.adresler || [],
+    surum: req.get('X-Kopru-Surum') || eski.surum || '',
+    son: Date.now(),
+  };
+  kopruler.set(ad, k);
+  // Veritabanına en çok dakikada bir (her istekte yazılmasın).
+  if (!eski.kayit || k.son - eski.kayit > 60000) {
+    k.kayit = k.son;
+    try { db.set(`kopru:${ad}`, JSON.stringify({ ip: k.ip, adresler: k.adresler, surum: k.surum, son: k.son })); } catch { /* kapanırken */ }
+  }
+}
+
+function kopruListesi() {
+  const kayitli = new Map(kopruler);
+  try {
+    for (const m of db.all("SELECT key, value FROM meta WHERE key LIKE 'kopru:%'")) {
+      const ad = m.key.slice(6);
+      if (!kayitli.has(ad)) kayitli.set(ad, { ad, ...JSON.parse(m.value) });
+    }
+  } catch { /* bozuk kayıt */ }
+  return [...kayitli.values()].map((k) => ({ ad: k.ad, ip: k.ip, adresler: k.adresler || [], surum: k.surum || '', son: k.son, bagli: Date.now() - k.son < 45000 })).sort((a, b) => b.son - a.son);
+}
+
 function terminalApi() {
   const r = express.Router();
+  r.use((req, res, next) => {
+    kopruGor(req);
+    next();
+  });
+  // Kimlik gerektirmeyen sağlık denetimi: köprünün "Merkez'e ulaşılıyor mu, gecikme kaç ms" sınaması.
+  r.get('/ping', (req, res) => res.json({ ok: true, surum: SURUM, zaman: Date.now() }));
   r.use(cihazDogrula);
   r.get(
     '/master',
@@ -231,6 +274,12 @@ function terminalApi() {
       birak();
     });
   });
+  // 1.8.0+ terminal: belge kilidi (kilit.js). Arayüz koruması; işlemleri reddetmez.
+  const kilitKimlik = (req) => ({ user: String(req.body?.user || ''), device: String(req.body?.device || req.cihaz.name) });
+  r.post('/lock', sar((req) => kilit.al({ ...kilitKimlik(req), belgeId: req.body?.docId, tur: req.body?.kind, belgeNo: req.body?.docNo })));
+  r.post('/lock/ping', sar((req) => kilit.nabiz({ belgeId: req.body?.docId, token: req.body?.token })));
+  r.post('/lock/release', sar((req) => kilit.birak({ belgeId: req.body?.docId, token: req.body?.token })));
+  r.get('/locks', sar(() => ({ locks: kilit.liste() })));
   // Terminalin çökme/donma raporu (Diag.kt): günlüğe yazılır, destek sunucusuna iletilir.
   r.post(
     '/rapor',
@@ -354,6 +403,7 @@ function yoneticiApi() {
         apk: ap ? { versionName: ap.versionName, versionCode: ap.versionCode, boyut: ap.boyut } : null,
         sonYedek: Number(db.meta('sonYedek', 0)) || null,
         masaustu: Boolean(masaustu.klasorAc),
+        kopruler: kopruListesi(),
       };
     }),
   );
@@ -409,6 +459,12 @@ function yoneticiApi() {
           t.onek = o;
         }
         if ('gun' in b.transfer) t.gun = Math.max(1, Math.min(365, Number(b.transfer.gun) || 45));
+        if ('cift' in b.transfer) {
+          const c = Array.isArray(b.transfer.cift) ? b.transfer.cift.map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
+          if (c.length && (c.length !== 2 || c[0] === c[1])) throw Object.assign(new Error('Transfer için birbirinden farklı iki depo seçin'), { status: 400 });
+          t.cift = c;
+        }
+        if (t.aktif && t.cift?.length === 2 && t.cift.includes(Number(t.yoldaDepo))) throw Object.assign(new Error('Yoldaki depo transfer yapılacak depolardan biri olamaz'), { status: 400 });
       }
       if (b.urun) {
         if (['aktif', 'tum'].includes(b.urun.kapsam)) yeni.urun.kapsam = b.urun.kapsam;
@@ -571,6 +627,23 @@ function yoneticiApi() {
     if (!transfer.farkAc(req.params.id)) throw Object.assign(new Error('Fark kaydı bulunamadı'), { status: 404 });
     return { ok: true };
   }));
+
+  // Belge kilitleri (kilit.js): açık belgeler tablosu, tek kilidi aç, hepsini sıfırla
+  r.get('/kilitler', sar(() => {
+    const belgeler = new Map(depo.belgeler().map((b) => [b.id, b]));
+    return {
+      sureSn: kilit.SURE / 1000,
+      liste: kilit.yoneticiListesi((k) => {
+        const b = belgeler.get(k.id);
+        return { firma: b?.supplier || '', depoAd: b?.depoAd || '', belgeNo: b?.docNo || k.no || k.id };
+      }),
+    };
+  }));
+  r.post('/kilitler/ac', sar((req) => {
+    if (!kilit.yoneticiAc(req.body?.belgeId, 'yönetici')) throw Object.assign(new Error('Kilit bulunamadı (süresi dolmuş ya da bırakılmış olabilir)'), { status: 404 });
+    return { ok: true };
+  }));
+  r.post('/kilitler/sifirla', sar(() => ({ ok: true, sifirlanan: kilit.yoneticiSifirla('yönetici') })));
 
   // Mal kabul
   r.get('/kabul', sar((req) => {
@@ -800,8 +873,11 @@ function yoneticiApi() {
   r.get('/cihaz/:id/qr', sar(async (req) => {
     const c = db.get('SELECT * FROM device WHERE id=?', Number(req.params.id));
     if (!c) throw Object.assign(new Error('Cihaz yok'), { status: 404 });
+    // url: köprü gibi başka bir bağlantı adresi (kopruler'den seçilir); ip: bu bilgisayarın adreslerinden biri.
     const ip = String(req.query.ip || adresler()[0]?.ip || '127.0.0.1');
-    const url = `http://${ip}:${config.load().port}`;
+    const verilen = String(req.query.url || '');
+    if (verilen && !/^https?:\/\/[\w.\-]+(:\d{2,5})?$/.test(verilen)) throw Object.assign(new Error('Bağlantı adresi geçersiz'), { status: 400 });
+    const url = verilen || `http://${ip}:${config.load().port}`;
     // Terminal Ayarlar › "QR ile kur" bu metni okur.
     const metin = `ORTASDEPO|${url}|${c.key}|${c.name}`;
     return { url, metin, qr: await QRCode.toDataURL(metin, { margin: 1, width: 320, errorCorrectionLevel: 'M' }), apkQr: await QRCode.toDataURL(`${url}/kur`, { margin: 1, width: 320 }) };

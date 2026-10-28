@@ -12,7 +12,7 @@ const vega = require('../server/vega');
 const depo = require('../server/depo');
 const transfer = require('../server/transfer');
 config.init(path.join(dir, 'config.json'));
-config.update({ vega: { depo: 1 }, transfer: { aktif: true } });
+config.update({ vega: { depo: 1 }, transfer: { aktif: true, cift: [1, 108] } });
 db.open(path.join(dir, 'depo.db'), { varsayilanDepo: 1 });
 
 const DEPOLAR = [{ ind: 1, ad: 'MERKEZ' }, { ind: 2, ad: 'ŞUBE' }, { ind: 3, ad: 'TRANSFER' }, { ind: 108, ad: 'TOYBELEN' }];
@@ -185,7 +185,8 @@ test('ana veri: transfer bölümü hedef depoları (yoldaki hariç) ve açık g�
   const m = JSON.parse(depo.master().json).transfer;
   assert.strictEqual(m.on, true);
   assert.strictEqual(m.yolda, 3);
-  assert.deepStrictEqual(m.depots.map((d) => d.id), [1, 2, 108]);
+  assert.deepStrictEqual(m.depots.map((d) => d.id), [1, 108], 'yalnız ayardaki çift');
+  assert.deepStrictEqual(m.pair, [1, 108]);
   assert.deepStrictEqual(m.incoming[0], { id: '800', no: 'A0000800', date: '28.10.2026', from: 108, fromName: 'TOYBELEN', to: 1, toName: 'MERKEZ', lines: [{ productId: '101', sent: 2, open: 2 }] });
   config.update({ transfer: { aktif: false } });
   assert.deepStrictEqual(transfer.terminalGorunumu(), { on: false });
@@ -228,4 +229,125 @@ test('rafsız kabul: mal rafa kaldırılacak belge olarak bekler, rafla alınan 
   assert.deepStrictEqual(son.lines.map((l) => [l.productId, l.shelved]), [['101', 4], ['103', 0]]);
   assert.strictEqual(son.kalan, 2);
   assert.strictEqual(depo.bekleyenKabul(108).get('101'), undefined);
+});
+
+test('çift kısıtı: ayardaki iki depo dışındaki gönderim ve kabul reddedilir', () => {
+  hazir();
+  assert.deepStrictEqual(transfer.cift(), [1, 108]);
+  const r = depo.islemler('TRM-01', 'ali', [
+    op('TRANSFER_SEND', { from: 1, to: 2, lines: [{ productId: '101', qty: 1 }] }),
+    op('TRANSFER_SEND', { from: 2, to: 108, lines: [{ productId: '101', qty: 1 }] }),
+  ]);
+  assert.ok(r.every((x) => x.ok === false && /yalnız/.test(x.error)), JSON.stringify(r));
+
+  hazir([{ ind: 760, no: 'A0000760', tarih: new Date('2026-10-28T00:00:00'), kaynak: 2, hedef: 108, kalemler: [], satirlar: [{ productId: '101', sent: 1, open: 1 }] }]);
+  const k = depo.islemler('TRM-02', 'veli', [op('TRANSFER_RECEIVE', { sevkId: '760', lines: [{ productId: '101', qty: 1 }] })]);
+  assert.strictEqual(k[0].ok, false);
+  assert.match(k[0].error, /yalnız/);
+
+  // Çift seçilmemişse hiçbir transfer kabul edilmez; ana veride özellik kapalı görünür.
+  config.update({ transfer: { cift: [] } });
+  const bos = depo.islemler('TRM-01', 'ali', [op('TRANSFER_SEND', { from: 1, to: 108, lines: [{ productId: '101', qty: 1 }] })]);
+  assert.match(bos[0].error, /iki depo seçilmemiş/);
+  assert.strictEqual(transfer.terminalGorunumu().on, false);
+  config.update({ transfer: { cift: [1, 108] } });
+});
+
+test('gönderimde raf: seçilen raftan düşer, rafsız satırda sunucu rafta stok varsa kendisi düşer, stok yetmezse sıfırlar ve geçer', () => {
+  hazir();
+  const fisler = () => db.all('SELECT shelf, qty, otomatik FROM transfer_line WHERE transfer_id=? ORDER BY shelf', `t-${n}`);
+  depo.miktarAyarla(1, '102', 'A-01-01', 3, { ts: 1, kind: 'PUTAWAY' });
+  depo.miktarAyarla(1, '102', 'A-01-02', 5, { ts: 1, kind: 'PUTAWAY' });
+  depo.zimmetEkle(1, '102', 'A-01-02', 'ADMIN');
+
+  // Terminal raf seçti: yalnız o raf düşer, otomatik işaretlenmez.
+  let r = depo.islemler('TRM-01', 'ali', [op('TRANSFER_SEND', { from: 1, to: 108, lines: [{ productId: '102', qty: 2, shelf: 'A-01-01' }] })]);
+  assert.ok(r[0].ok, JSON.stringify(r));
+  assert.strictEqual(depo.miktar(1, '102', 'A-01-01'), 1);
+  assert.deepStrictEqual(fisler().map((l) => [l.shelf, l.qty, l.otomatik]), [['A-01-01', 2, 0]]);
+
+  // Eski/çevrimdışı terminal rafsız yolladı ama rafta stok var: önce ürünün asıl rafı (zimmet), sonra en çok stoklu raf.
+  r = depo.islemler('TRM-01', 'ali', [op('TRANSFER_SEND', { from: 1, to: 108, lines: [{ productId: '102', qty: 4 }] })]);
+  assert.ok(r[0].ok, JSON.stringify(r));
+  assert.strictEqual(depo.miktar(1, '102', 'A-01-02'), 1);
+  assert.strictEqual(depo.miktar(1, '102', 'A-01-01'), 1);
+  assert.deepStrictEqual(fisler().map((l) => [l.shelf, l.qty, l.otomatik]), [['A-01-02', 4, 1]]);
+  assert.match(db.get("SELECT ref FROM movement WHERE kind='TRANSFER_OUT_DEPO' AND op_id=?", `t-${n}`).ref, /raf otomatik seçildi/);
+
+  // Raf stoku yetmiyor (kalan 2): raflar sıfıra iner, işlem reddedilmez, kalan rafsız geçer ve hareket notlanır.
+  r = depo.islemler('TRM-01', 'ali', [op('TRANSFER_SEND', { from: 1, to: 108, lines: [{ productId: '102', qty: 5 }] })]);
+  assert.ok(r[0].ok, JSON.stringify(r));
+  assert.strictEqual(depo.miktar(1, '102', 'A-01-01') + depo.miktar(1, '102', 'A-01-02'), 0);
+  assert.deepStrictEqual(fisler().map((l) => [l.shelf, l.qty, l.otomatik]), [['', 3, 0], ['A-01-01', 1, 1], ['A-01-02', 1, 1]]);
+  assert.ok(db.all('SELECT ref FROM movement WHERE op_id=?', `t-${n}`).some((m) => /raf stoku yetmedi, 3 rafsız/.test(m.ref)));
+
+  // Rafta stoku olmayan ürün rafsız geçer; hareket de raf stoku de yoktur.
+  const once = db.get('SELECT COUNT(*) AS n FROM movement').n;
+  r = depo.islemler('TRM-01', 'ali', [op('TRANSFER_SEND', { from: 1, to: 108, lines: [{ productId: '102', qty: 2 }] })]);
+  assert.ok(r[0].ok, JSON.stringify(r));
+  assert.strictEqual(db.get('SELECT COUNT(*) AS n FROM movement').n, once);
+  assert.deepStrictEqual(fisler().map((l) => [l.shelf, l.qty, l.otomatik]), [['', 2, 0]]);
+
+  // Seçilen rafta olandan fazlası: raf sıfıra iner (eksiye düşmez), fazlası da gider, hareket notlanır.
+  depo.miktarAyarla(1, '103', 'A-01-02', 2, { ts: 1, kind: 'PUTAWAY' });
+  r = depo.islemler('TRM-01', 'ali', [op('TRANSFER_SEND', { from: 1, to: 108, lines: [{ productId: '103', qty: 5, shelf: 'A-01-02' }] })]);
+  assert.ok(r[0].ok, JSON.stringify(r));
+  assert.strictEqual(depo.miktar(1, '103', 'A-01-02'), 0);
+  assert.match(db.get('SELECT ref FROM movement WHERE op_id=?', `t-${n}`).ref, /rafta 2 vardı, 3 fazlası da gitti/);
+});
+
+test('kısmi kabul: okutulan alınır, gönderim açık kalır, fazlası reddedilir; bitirmede kalan eksik olur', async () => {
+  const sevk = { ind: 720, no: 'A0000720', tarih: new Date('2026-10-28T00:00:00'), kaynak: 1, hedef: 108, kalemler: [], satirlar: [
+    { productId: '101', sent: 4, open: 4 },
+    { productId: '102', sent: 3, open: 3 },
+  ] };
+  await transfer.yaz(); // önceki testlerden bekleyen kayıtlar yazılsın; aşağıdaki bekleyen yalnız bu testinki olsun
+  db.run('DELETE FROM transfer_fark'); // önceki testlerin eksik kayıtları havuz hesabını etkilemesin
+  hazir([sevk]);
+  const kapaliOnce = db.get('SELECT COUNT(*) AS n FROM transfer_kapali').n;
+  const farkOnce = db.get('SELECT COUNT(*) AS n FROM transfer_fark').n;
+
+  // Önceden kısmi alım yoksa boş bitirme olmaz.
+  let r = depo.islemler('TRM-02', 'veli', [op('TRANSFER_RECEIVE', { sevkId: '720', lines: [] })]);
+  assert.strictEqual(r[0].ok, false);
+
+  const o1 = op('TRANSFER_RECEIVE', { sevkId: '720', partial: true, lines: [{ productId: '101', qty: 1 }] });
+  r = depo.islemler('TRM-02', 'veli', [o1]);
+  assert.ok(r[0].ok, JSON.stringify(r));
+  assert.strictEqual(db.get('SELECT kismi FROM transfer WHERE id=?', o1.id).kismi, 1);
+  assert.strictEqual(db.get('SELECT COUNT(*) AS n FROM transfer_kapali').n, kapaliOnce, 'gönderim kapanmadı');
+  assert.strictEqual(db.get('SELECT COUNT(*) AS n FROM transfer_fark').n, farkOnce, 'eksik kaydı açılmadı');
+  let inc = transfer.terminalGorunumu().incoming.find((s) => s.id === '720');
+  assert.deepStrictEqual(inc.lines, [{ productId: '101', sent: 4, open: 3 }, { productId: '102', sent: 3, open: 3 }]);
+  assert.ok(depo.belgeler().some((b) => b.id === `TRF-${o1.id}` && b.depo === 108 && b.kalan === 1), 'alınan kısım rafa kaldırılacak belge');
+
+  // Aynı gönderimden kalandan fazlası alınamaz.
+  r = depo.islemler('TRM-02', 'veli', [op('TRANSFER_RECEIVE', { sevkId: '720', partial: true, lines: [{ productId: '101', qty: 4 }] })]);
+  assert.strictEqual(r[0].ok, false);
+  assert.match(r[0].error, /gönderilen 3, alınan 4/);
+
+  // Vega'ya yazılana kadar bekleyen miktar Vega havuzundan düşer (yoksa yenileme açık miktarı geri getirirdi).
+  transfer._gorunum({ okumaBasi: Date.now() + 1000 });
+  const oku = { sevkler: [{ ind: 720, no: 'A0000720', tarih: new Date('2026-10-28T00:00:00'), kaynak: 1, hedef: 108, kalemler: [{ stokno: '101', miktar: 4 }] }], havuz: [{ kaynak: 1, hedef: 108, stokno: '101', gonderilen: 4, alinan: 0 }] };
+  assert.deepStrictEqual(transfer._acikHesapla(oku, new Date('2026-10-01T00:00:00'))[0].satirlar.map((l) => [l.productId, l.open]), [['101', 3]]);
+
+  const o2 = op('TRANSFER_RECEIVE', { sevkId: '720', partial: true, lines: [{ productId: '101', qty: 3 }, { productId: '102', qty: 1, shelf: 'T-01-02' }] });
+  r = depo.islemler('TRM-02', 'veli', [o2]);
+  assert.ok(r[0].ok, JSON.stringify(r));
+  inc = transfer.terminalGorunumu().incoming.find((s) => s.id === '720');
+  assert.deepStrictEqual(inc.lines, [{ productId: '102', sent: 3, open: 2 }], 'tamamen alınan satır listeden çıktı');
+
+  // Kabulü bitir: kısmi alım olduğu için yeni satır olmasa da bitirilir; kalan miktar eksik olur, gönderim kapanır.
+  const o3 = op('TRANSFER_RECEIVE', { sevkId: '720', lines: [] });
+  r = depo.islemler('TRM-02', 'veli', [o3]);
+  assert.ok(r[0].ok, JSON.stringify(r));
+  const f = db.all('SELECT product_id, sent, received, eksik FROM transfer_fark WHERE sevk_ind=720');
+  assert.deepStrictEqual(f.map((x) => [x.product_id, x.sent, x.received, x.eksik]), [['102', 3, 1, 2]], 'gönderilen fişteki, alınan kısmi kabuller dahil');
+  assert.ok(db.get('SELECT 1 FROM transfer_kapali WHERE sevk_ind=720'));
+  assert.strictEqual(transfer.terminalGorunumu().incoming.length, 0);
+  // Boş kabul Vega'ya yazılacak satır üretmez; kısmi olanlar 129 olarak yazılır.
+  assert.strictEqual(db.get('SELECT durum FROM transfer WHERE id=?', o3.id).durum, 'YAZILDI');
+  await transfer.yaz();
+  assert.strictEqual(yazilanlar.at(-1).tip, 129);
+  assert.deepStrictEqual(yazilanlar.at(-1).kalemler, [{ stokno: 101, miktar: 3 }, { stokno: 102, miktar: 1 }]);
 });

@@ -17,7 +17,46 @@ let tray = null;
 let port = null;
 let cikiyor = false;
 let sunucu = null;
+// Çalışma biçimi (ilk açılışta sorulur, kullanıcı klasöründeki mod.json'da durur): "merkez" tek gerçek sunucudur (Vega, veritabanı,
+// yönetim ekranı); "kopru" Toybelen gibi uzak şubede Merkez'e VPN ile ulaşan bilgisayarda terminal isteklerini Merkez'e ileten
+// vekildir (server/kopru.js). İkisi de aynı exe: otomatik güncelleme tek kanaldan gelir.
+let mod = 'merkez';
 const gizliBasla = process.argv.includes('--gizli');
+const ORNEK_PORT = Number(process.env.ORTAS_PORT) || undefined;
+
+function modYolu() {
+  return path.join(app.getPath('userData'), 'mod.json');
+}
+
+function modOku() {
+  if (process.env.ORTAS_MOD === 'merkez' || process.env.ORTAS_MOD === 'kopru') return process.env.ORTAS_MOD;
+  try {
+    const m = JSON.parse(fs.readFileSync(modYolu(), 'utf8')).mod;
+    return m === 'kopru' || m === 'merkez' ? m : null;
+  } catch {
+    return null;
+  }
+}
+
+function modSor() {
+  const response = dialog.showMessageBoxSync({
+    type: 'question',
+    title: AD,
+    message: 'Bu bilgisayar nasıl çalışsın?',
+    detail:
+      "Merkez: Vega'ya bağlanan, terminallerin ve yönetim ekranının asıl sunucusu. Tek bir bilgisayarda olmalı.\n\n" +
+      "Toybelen köprüsü: uzak şubede Merkez'e VPN ile ulaşan bilgisayar. Şubedeki terminaller buna bağlanır, istekleri Merkez'e iletir. Veritabanı ve Vega kurulmaz.\n\n" +
+      'Bu seçim sonra tepsi menüsünden değiştirilebilir.',
+    buttons: ['Merkez', 'Toybelen köprüsü', 'Vazgeç'],
+    defaultId: 0,
+    cancelId: 2,
+  });
+  if (response === 2) return null;
+  const secilen = response === 1 ? 'kopru' : 'merkez';
+  fs.mkdirSync(app.getPath('userData'), { recursive: true });
+  fs.writeFileSync(modYolu(), JSON.stringify({ mod: secilen }), 'utf8');
+  return secilen;
+}
 
 function adresMetni() {
   const ip = sunucu ? sunucu.adresler()[0]?.ip : null;
@@ -44,6 +83,7 @@ function pencereAc() {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true },
   });
   const adres = `http://127.0.0.1:${port}`;
+  win.setTitle(mod === 'kopru' ? `${AD} · Toybelen köprüsü` : AD);
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
@@ -80,10 +120,30 @@ function tepsiKur() {
   const menu = () =>
     Menu.buildFromTemplate([
       { label: 'Aç', click: pencereAc },
-      { label: `Terminal adresi: ${adresMetni()}`, enabled: false },
+      { label: `Terminal adresi: ${adresMetni()}${mod === 'kopru' ? ' (köprü)' : ''}`, enabled: false },
       { type: 'separator' },
       {
-        label: 'Çıkış (terminaller bağlanamaz)',
+        label: 'Çalışma biçimini değiştir…',
+        click: async () => {
+          const { response } = await dialog.showMessageBox({
+            type: 'warning',
+            title: AD,
+            message: 'Çalışma biçimi değiştirilsin mi?',
+            detail: `Şu an: ${mod === 'kopru' ? 'Toybelen köprüsü' : 'Merkez'}. Program kapanıp yeniden açılırken sorulur. Veriler silinmez.`,
+            buttons: ['Değiştir', 'Vazgeç'],
+            defaultId: 1,
+            cancelId: 1,
+          });
+          if (response === 0) {
+            try { fs.unlinkSync(modYolu()); } catch { /* yoktu */ }
+            cikiyor = true;
+            app.relaunch();
+            app.quit();
+          }
+        },
+      },
+      {
+        label: mod === 'kopru' ? "Çıkış (Toybelen terminalleri Merkez'e ulaşamaz)" : 'Çıkış (terminaller bağlanamaz)',
         click: async () => {
           const { response } = await dialog.showMessageBox({
             type: 'warning',
@@ -101,7 +161,7 @@ function tepsiKur() {
         },
       },
     ]);
-  tray.setToolTip(`${AD} — sunucu çalışıyor`);
+  tray.setToolTip(`${AD} — ${mod === 'kopru' ? 'Toybelen köprüsü çalışıyor' : 'sunucu çalışıyor'}`);
   tray.setContextMenu(menu());
   tray.on('click', pencereAc);
   setInterval(() => tray && tray.setContextMenu(menu()), 60 * 1000);
@@ -215,12 +275,48 @@ function guncellemeKur() {
   setInterval(denetle, 6 * 60 * 60 * 1000);
 }
 
+/** Köprü biçimi: veritabanı ve Vega yok; yalnız terminal isteklerini Merkez'e ileten vekil ve küçük bir durum ekranı. */
+async function kopruBaslat() {
+  sunucu = require('../server/kopru.js');
+  const veri = app.getPath('userData');
+  try {
+    port = await sunucu.baslat({ veriKlasoru: veri, port: ORNEK_PORT || 5480 });
+  } catch (e) {
+    const mesaj = e.code === 'EADDRINUSE'
+      ? `Port kullanımda (${e.port || ''}). Program zaten açık olabilir (saat yanındaki simgeye bakın) ya da başka bir program bu portu kullanıyor.`
+      : e.message;
+    dialog.showErrorBox(AD, `Köprü başlatılamadı:\n${mesaj}`);
+    cikiyor = true;
+    app.quit();
+    return;
+  }
+  const ilk = path.join(veri, '.ilk-acilis');
+  if (app.isPackaged && !fs.existsSync(ilk)) {
+    app.setLoginItemSettings({ openAtLogin: true, args: ['--gizli'] });
+    fs.writeFileSync(ilk, new Date().toISOString());
+  }
+  powerSaveBlocker.start('prevent-app-suspension');
+  ipcKur();
+  tepsiKur();
+  // Merkez adresi henüz girilmediyse (ilk kurulum) durum ekranı hemen açılır; girilmişse gizli başlatma saygı görür.
+  if (!gizliBasla || !fs.existsSync(path.join(veri, 'kopru.json'))) pencereAc();
+  guncellemeKur();
+}
+
 async function baslat() {
+  mod = modOku() || modSor();
+  if (!mod) {
+    cikiyor = true;
+    app.quit();
+    return;
+  }
+  if (mod === 'kopru') return kopruBaslat();
   sunucu = require('../server/index.js');
   const veri = app.getPath('userData');
   try {
     port = await sunucu.baslat({
       veriKlasoru: veri,
+      port: ORNEK_PORT,
       apkKlasoru: app.isPackaged ? path.join(process.resourcesPath, 'apk') : path.join(__dirname, '..', 'apk'),
       arayuz: path.join(__dirname, '..', 'client', 'dist'),
     });

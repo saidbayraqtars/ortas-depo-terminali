@@ -116,3 +116,31 @@ SQL portu — genelde 1433 — VPN kuralında açık).
   `http://<şube-pc-vpn-ip>:5480` açılır.
 
 Şubelerde FortiGate cihazı varsa site-to-site VPN de mümkündür; o durumda da yukarıdaki kurulum değişmez.
+
+### Toybelen köprüsü (1.8.0+)
+
+Şubede ayrı bir yönetici programı (veritabanı, Vega) istenmiyorsa — Ortaş'ta Toybelen böyle çalışır — şubedeki **FortiClient VPN'li
+bilgisayarda** aynı exe **Köprü modunda** çalıştırılır. Köprü Toybelen'in yerel ağında `:5480` dinler ve terminallerin isteklerini
+(`/api`, `/apk`, `/kur`) Merkez bilgisayarına VPN üzerinden iletir. Tek gerçek sunucu Merkez'dir: Toybelen'e yönetici programı kurulmaz,
+Vega Merkez'den okunur, raflar ve işlemler Merkez'de durur. Tek exe olduğu için otomatik güncelleme tek kanaldan (GitHub) gelmeye devam eder.
+
+1. Merkez'de Ayarlar › Depolar arası transfer: iki depoyu seçin (Merkez ve Toybelen) ve transferi açın.
+2. Toybelen'deki bilgisayara kurulum programını çalıştırın. İlk açılışta **"Toybelen köprüsü"** seçin (sonra tepsi simgesi › *Çalışma
+   biçimini değiştir…* ile değişir).
+3. Açılan durum ekranına **Merkez adresini** yazın (Merkez bilgisayarının yerel ağ adresi ve port, örn. `192.168.1.10:5480`) ve *Kaydet ve sına*
+   deyin: "Merkez'e ulaşılıyor · 24 ms" görünmeli. Merkez'in Özet sayfasında "Toybelen köprüsü: bağlı" çıkar.
+4. Merkez'de Cihazlar › Kurulum QR'ında **bağlantı adresi** olarak köprüyü seçin (Toybelen terminalleri için); Merkez'dekiler için Merkez adresi.
+   Terminalde Ayarlar › QR ile kur.
+
+Köprü bilgisayarı kapalıysa ya da VPN koparsa Toybelen terminalleri çevrimdışı çalışır, işlemleri kuyruğa yazar ve bağlantı gelince gönderir.
+Bu yüzden köprü bilgisayarı mesai boyunca açık, FortiClient bağlı olmalı (program Windows açılınca kendiliğinden başlar, uykuya geçmez).
+
+**Sahada kontrol listesi (köprü ilk kez denenecek):**
+
+- [ ] FortiGate VPN kuralında Merkez bilgisayarına **TCP 5480** açık mı? (Şimdiki kural yalnız SQL için 1433 olabilir.) Köprü bilgisayarından
+      tarayıcıyla `http://<merkez-ip>:5480/api/ping` açılınca `{"ok":true…}` gelmeli.
+- [ ] FortiClient VPN bağlıyken **yerel ağ kesiliyor mu?** (Tüm trafiği tünele alan "split tunnel kapalı" ayarı.) Toybelen terminalleri köprü
+      bilgisayarına ulaşabilmeli: terminalin tarayıcısında `http://<köprü-ip>:5480/kur` açılmalı.
+- [ ] Köprü bilgisayarına **sabit IP** verildi mi (modem DHCP rezervasyonu)? IP değişirse terminallerin QR'ı yenilenmeli.
+- [ ] Wi-Fi'de **cihazlar arası yalıtım** (client isolation) kapalı mı? Terminaller Wi-Fi'de köprü bilgisayarına (kablolu olabilir) ulaşabilmeli.
+- [ ] Windows güvenlik duvarı 5480'i yerel ağa açıyor mu (kurulum programı kuralı ekler).

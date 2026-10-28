@@ -87,15 +87,18 @@ bütün özetleri unutur (sonraki tur hepsi yeniden iner). Sıra sabittir; Vega 
 `head` parçasında gelir. Özellik ayarda kapalıysa `{"on": false}`:
 
 ```json
-{"on": true, "yolda": 3,
- "depots": [{"id": 1, "name": "MERKEZ"}],
+{"on": true, "yolda": 3, "pair": [1, 108],
+ "depots": [{"id": 1, "name": "MERKEZ"}, {"id": 108, "name": "TOYBELEN SANAYİ"}],
  "incoming": [{"id": "2631", "no": "A0000576", "date": "28.10.2026", "from": 1, "fromName": "MERKEZ", "to": 108, "toName": "TOYBELEN SANAYİ",
                "lines": [{"productId": "7058", "sent": 1, "open": 1}]}]}
 ```
 
-`depots`: gönderim hedefi olabilecek bütün Vega depoları (yoldaki hariç). `incoming`: kabul bekleyen gönderimler; `open` hâlâ alınmamış
-miktar. Gönderim (128) ile kabul (129) arasında Vega'da belge bağı yoktur; açık miktar (gönderen, alan, ürün) bazında toplam
-gönderilen − toplam alınan − kayıtlı eksik olarak hesaplanıp en yeni gönderimden geriye dağıtılır (`yonetici/server/transfer.js`).
+`pair` / `depots` (1.8.0+): transfer yalnız yönetici programında seçilen **iki depo** arasında yapılır (Ayarlar › Depolar arası transfer,
+Ortaş: Merkez ↔ Toybelen). Terminal çıkış deposunu bu ikiliden sorar, varış diğeridir. Çift seçilmemişse `on: false`. Sunucu bu çift
+dışındaki gönderim ve kabulü kalıcı reddeder, Vega'dan da yalnız bu çifti okur. (1.6.x–1.7.0 sunucuda `depots` yoldaki hariç bütün depolardı, `pair` yoktu.)
+`incoming`: kabul bekleyen gönderimler; `open` hâlâ alınmamış miktar (kısmi kabulden sonra azalır). Gönderim (128) ile kabul (129)
+arasında Vega'da belge bağı yoktur; açık miktar (gönderen, alan, ürün) bazında toplam gönderilen − toplam alınan − kayıtlı eksik −
+henüz Vega'ya yazılmamış kabul olarak hesaplanıp en yeni gönderimden geriye dağıtılır (`yonetici/server/transfer.js`).
 
 ### Stok parçaları, `v: 2` (1.5.0+)
 
@@ -118,6 +121,47 @@ Terminal ana veriyi aldıktan sonra cevaptaki `surum`u `since` ile gönderir. Su
 (1–30) bekler; değişiklik olunca ya da süre dolunca `{"surum": N}` döner. `N !== since` ise hemen döner. Terminal dakikada bir
 yoklamak yerine bunu dinler: yönetici, başka terminal ya da Vega'daki yeni mal kabul/stok saniyeler içinde gelir. Vega'dan okunan
 içerik değişmediyse sayaç artmaz. Uç yoksa (`404`, eski sunucu) terminal dakikada bir yoklar.
+
+## Belge kilidi (1.8.0+)
+
+Mal kabul / rafa kaldırma belgesini ve gelen transfer belgesini ekranında açan terminal belgeyi kilitler; başka bir terminal aynı
+belgeye girmek isterse "Ahmet (TRM-03) kullanıyor" uyarısı alır ve belge o terminalde açılmaz. **Sayım kapsam dışıdır.** Kilit
+**arayüz korumasıdır**: `/api/ops` işlemleri kilide bakmadan işlenir, çakışmayı miktar sınırları çözer (rafa kaldırmada satırın kalanı,
+transferde açık miktar). Kilitler sunucu veritabanında (`belge_kilit`) durur, yeniden başlatmada düşmez.
+
+Belge kimliği: mal kabul / rafa kaldırma için ana verideki `receipts[].id`, gelen transfer için `"SEVK-" + transfer.incoming[].id`.
+`kind`: `KABUL` ya da `TRANSFER` (yönetici ekranında gösterim için).
+
+| Uç | Gövde | Cevap |
+|---|---|---|
+| `POST /api/lock` | `{docId, kind, docNo, user, device?}` | `{"ok": true, "token": "…", "sureSn": 180}` ya da belge başka cihazdaysa `{"ok": false, "holder": {"user", "device", "since", "mesaj": "Ahmet (TRM-03) kullanıyor"}}`. Aynı cihaz yeniden girerse kendi kilidini devralır (eski token geçersiz olur). |
+| `POST /api/lock/ping` | `{docId, token}` | Tutan terminalin nabzı, **30 sn'de bir**: `{"ok": true}`. Kilit gittiyse `{"ok": false, "neden": "yonetici" \| "baska" \| "yok", "holder"?}`: `yonetici` yönetici kilidi açtı, `baska` süre dolup başkası aldı, `yok` kayıt yok. Süresi dolmuş ama kimsenin almadığı kilit nabızla sessizce sürer. |
+| `POST /api/lock/release` | `{docId, token}` | Belgeden çıkış, "Kabulü bitir", oturum kapanması: `{"ok": true}`. Başkasının kilidine dokunmaz. |
+| `GET /api/locks` | — | `{"locks": [{"id", "tur", "no", "user", "device", "since", "last"}]}`: şu an tutulan belgeler; terminal liste ekranlarında 🔒 göstermek için 10 sn'de bir okur. Ana veriyi (ve `surum`u) değiştirmez. |
+
+Nabız **3 dakika** gelmezse kilit düşer. Terminal `lock` isteğine cevap alamazsa (ağ yok) belgeyi "kilitsiz" uyarısıyla açar; uç `404`
+dönerse (eski yönetici programı) uyarısız açar. Nabızda `ok: false` gelirse terminal bekleyen işi kaydeder (gelen transferde
+okutulanlar `partial: true` ile kısmi kabul olarak gider), uyarı gösterir ve belgeden çıkar; sessizce yeniden kilit almaz.
+Yönetici programında Özet › **Açık belgeler**: belge, kim, hangi cihaz, ne zamandır, son nabız; satır başına *Bu kilidi aç*, üstte
+*Tüm kilitleri sıfırla* (açılan kilidin satırı silinmez, durumu `ACILDI` olur; tutan terminal bir sonraki nabızda öğrenir).
+Terminal sürümü 1.8.0'dan eskiyse kilidi bilmez; Cihazlar ve Özet'te "kilit desteği yok" etiketi görünür.
+
+## `GET /api/ping` (1.8.0+)
+
+Kimlik gerektirmez: `{"ok": true, "surum": "1.8.0", "zaman": 1793191232753}`. Toybelen köprüsünün "Merkez'e ulaşılıyor mu, gecikme kaç ms"
+sınaması bunu kullanır.
+
+## Toybelen köprüsü (1.8.0+)
+
+Uzak şubede (Toybelen) Merkez'e VPN ile ulaşan bilgisayarda aynı exe **Köprü modunda** çalışır (`yonetici/server/kopru.js`): şubenin yerel
+ağında `:5480` dinler, `/api/*`, `/apk` ve `/kur` isteklerini Merkez'in VPN adresine olduğu gibi iletir (uzun yoklama ve gzip dahil;
+gövdeler çözülmeden akıtılır). Veritabanı ve Vega yoktur. Bağlantı koparsa köprü `502` (`{"error": "Köprü Merkez'e ulaşamıyor: …"}`) döner;
+Merkez adresi girilmemişse `503`; terminal bunu "sunucuya ulaşılamıyor" sayar, çevrimdışı çalışıp işlemleri kuyruğa yazar.
+Köprü Merkez'e şu başlıkları ekler: `X-Kopru: <köprü adı>`, `X-Kopru-Adresler: http://ip:port,…` (köprünün yerel adresleri),
+`X-Kopru-Surum`, `X-Forwarded-For: <terminalin gerçek adresi>`. Merkez bunlardan köprüyü tanır (Özet: "Toybelen köprüsü: bağlı / son
+görülme"; Cihazlar › kurulum QR'ında bağlantı adresi olarak köprü seçilebilir) ve terminalin son bağlantı adresini köprü arkasından
+da doğru gösterir (`X-Forwarded-For` yalnız `X-Kopru` ile birlikte gelirse dikkate alınır). Köprünün kendi arayüzü
+(`http://127.0.0.1:5480/`, yalnız o bilgisayardan): Merkez adresi, ulaşılıyor mu, gecikme, bağlı terminaller.
 
 ## `POST /api/rapor` (1.3.0+)
 
@@ -158,8 +202,8 @@ Cevap: her işlem için bir satır.
 | `PICK` (1.5.0+) | `productId, shelf, qty, depot, user, device` | Raftan alma: `locations[productId, shelf] -= qty` (eksiye düşmez), hareket `PICK`. Raf boşalırsa terminal zimmeti kalkar. Vega'ya yazılmaz. |
 | `TRANSFER` | `productId, from, to, qty, user, device` | `from -= qty`, `to += qty` |
 | `COUNT_SUBMIT` | `sessionId, no, title, shelves[], lines[{shelf, productId, system, counted}], user, device` | Sayımı onay bekleyen olarak kaydet. Raf miktarları sayılan değere çekilir. Vega'ya sayım fişi yönetici onayıyla yazılır. `shelves` boş sayılan rafları da içerir. |
-| `TRANSFER_SEND` (1.6.0+) | `from, to, lines[{productId, qty, shelf}], user, device` | Depolar arası gönderim. `shelf` boş olabilir (raf stoku değişmez). Gönderen depoda raf stoku düşer (eksiye düşmez), kayıt `transfer` tablosunda bekler; sunucu arka planda Vega'ya **depo gönderim fişi (128)** yazar. `to` yoldaki depo olamaz; özellik ayarda kapalıysa kalıcı ret. |
-| `TRANSFER_RECEIVE` (1.6.0+) | `sevkId, lines[{productId, qty, shelf}], depot, user, device` | Gönderim kabulü. `sevkId` ana verideki `transfer.incoming[].id` (Vega 128 başlık IND'i). Alan depoda raf stoku artar; gönderilenden fazla ya da gönderimde olmayan ürün kalıcı ret. `shelf` boş olabilir (1.7.0+ terminal raf sormaz): rafsız alınan mal ana verideki `receipts` içinde `TRF-<işlem kimliği>` belgesi olarak (rafa kaldırılacak, `PUTAWAY` ile yerleştirilir) bekler; rafla alınan kısım baştan yerleşmiş sayılır. Gönderimde olup gelmeyen miktar `transfer_fark`'a **eksik** olarak yazılır, gönderim kapanır; sunucu Vega'ya **gönderim kabul fişi (129)** yazar. |
+| `TRANSFER_SEND` (1.6.0+) | `from, to, lines[{productId, qty, shelf}], user, device` | Depolar arası gönderim; `from` ve `to` ayardaki çiftin iki ayrı deposu olmalı, değilse kalıcı ret (özellik kapalıysa, çift seçilmemişse ya da `to`/`from` yoldaki depoysa da). Kayıt `transfer` tablosunda bekler; sunucu arka planda Vega'ya **depo gönderim fişi (128)** yazar (ürün başına toplam miktar). **Raf kuralı (1.8.0+):** bir ürün birden çok satır olabilir (raf başına bir satır; `shelf` boş satır = rafsız). Raflı satırlar `from` deposunun o rafından düşer (rafta olandan fazlası raf sıfıra iner, eksiye düşmez, hareket notuna yazılır). Rafsız satır için sunucu son sözü söyler: ürünün `from` deposunda **hâlâ raf stoku varsa** rafsız miktarı kendisi düşer (önce ürünün asıl rafı, sonra en çok stoklu raf; hareket notu "raf otomatik seçildi", `transfer_line.otomatik`); raf stoku yetmezse raflar sıfıra çekilir, kalan rafsız geçer ve notlanır, işlem reddedilmez (mal fiziken gitmiştir). Rafta stoğu olmayan ürünün rafsız miktarı olduğu gibi geçer. Terminal bunu önceden uygular: raf stoku olan ürün raftan düşmeden eklenemez, raf stokunu aşan miktarın fazlası rafsız gider. |
+| `TRANSFER_RECEIVE` (1.6.0+) | `sevkId, lines[{productId, qty, shelf}], partial, depot, user, device` | Gönderim kabulü. `sevkId` ana verideki `transfer.incoming[].id` (Vega 128 başlık IND'i); gönderimin iki deposu çiftin içinde olmalı. Gönderilenden (açık miktardan) fazla ya da gönderimde olmayan ürün kalıcı ret. `shelf` boş olabilir (1.7.0+ terminal raf sormaz): rafsız alınan mal ana verideki `receipts` içinde `TRF-<işlem kimliği>` belgesi olarak (rafa kaldırılacak, `PUTAWAY` ile yerleştirilir) bekler; rafla alınan kısım baştan yerleşmiş sayılır. **`partial: true` (1.8.0+):** okutulanlar kısmi kabuldür; gönderim açık kalır (`open` düşer), eksik kaydı açılmaz, `lines` boş olamaz. **`partial` yok/false ("Kabulü bitir"):** gönderimde olup gelmeyen miktar `transfer_fark`'a **eksik** olarak yazılır (gönderilen = fişteki miktar, alınan = gönderilen − eksik; önceki kısmi kabuller alınmış sayılır), gönderim kapanır; daha önce kısmi kabul yapılmışsa `lines` boş olabilir. Her kabul işlemi için sunucu Vega'ya ayrı bir **gönderim kabul fişi (129)** yazar (satır yoksa yazılacak bir şey yoktur). |
 | `SHELF_ADD` (1.4.0+) | `code, depot, user, device` | Terminalde okutulan tanımsız raf etiketini o depoda raf olarak aç (kaynak `TERMINAL`). |
 
 `sessionId` `LOCAL-` ile başlıyorsa terminalde başlatılmış serbest sayımdır; sunucuda karşılığı yoktur,
@@ -179,4 +223,5 @@ Miktarlar ondalıklı olabilir (litre, metre); sayı olarak gelir.
 ## Diğer uçlar
 
 - `GET /apk` — terminal APK'sı. `GET /kur` — terminal tarayıcısı için indirme sayfası.
-- Kurulum QR'ı: `ORTASDEPO|http://ip:port|ANAHTAR|TRM-01` (terminal Ayarlar › QR ile kur).
+- Kurulum QR'ı: `ORTASDEPO|http://ip:port|ANAHTAR|TRM-01` (terminal Ayarlar › QR ile kur). Adres Merkez'in ya da Toybelen köprüsünün
+  adresi olabilir (yönetici programında QR penceresinde seçilir).

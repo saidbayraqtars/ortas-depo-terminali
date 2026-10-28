@@ -1,20 +1,28 @@
 import React, { useEffect, useState } from 'react';
-import { Alan, api, Btn, Durum, Icon, Modal, once, Rozet, SayfaBaslik, useApp, useOnay, useVeri } from '../lib.jsx';
+import { Alan, api, Btn, Durum, Icon, kilitDestegiYok, Modal, once, Rozet, SayfaBaslik, useApp, useOnay, useVeri } from '../lib.jsx';
 
 function QrPenceresi({ cihaz, kapat }) {
   const { durum, toast } = useApp();
   const ipler = durum?.adresler || [];
-  const [ip, setIp] = useState(ipler[0]?.ip || '');
+  // Bağlantı adresi: bu bilgisayar (Merkez) ya da Toybelen gibi uzak şubedeki köprü bilgisayarı (terminaller ona bağlanır).
+  const kopruler = (durum?.kopruler || []).filter((k) => k.adresler.length);
+  const secenekler = [
+    ...ipler.map((a) => ({ kod: `ip:${a.ip}`, ad: `Merkez · ${a.ip} (${a.ad})` })),
+    ...kopruler.flatMap((k) => k.adresler.map((u) => ({ kod: `url:${u}`, ad: `${k.ad} · ${u.replace(/^https?:\/\//, '')}${k.bagli ? '' : ' (bağlı değil)'}` }))),
+  ];
+  const [secim, setSecim] = useState(secenekler[0]?.kod || '');
   const [qr, setQr] = useState(null);
   useEffect(() => {
-    api(`/cihaz/${cihaz.id}/qr${ip ? `?ip=${ip}` : ''}`).then(setQr).catch((e) => toast(e.message, true));
-  }, [cihaz.id, ip, toast]);
+    const [tur, ...kalan] = secim.split(':');
+    const q = secim ? `?${tur === 'url' ? 'url' : 'ip'}=${encodeURIComponent(kalan.join(':'))}` : '';
+    api(`/cihaz/${cihaz.id}/qr${q}`).then(setQr).catch((e) => toast(e.message, true));
+  }, [cihaz.id, secim, toast]);
   return (
     <Modal genis baslik={`${cihaz.name} kurulumu`} kapat={kapat} alt={<Btn kind="primary" onClick={kapat}>Tamam</Btn>}>
-      {ipler.length > 1 && (
-        <Alan etiket="Terminallerin bağlanacağı adres" ipucu="Terminaller hangi ağdaysa o ağdaki adresi seçin">
-          <select className="inp" value={ip} onChange={(e) => setIp(e.target.value)}>
-            {ipler.map((a) => <option key={a.ip} value={a.ip}>{a.ip} ({a.ad})</option>)}
+      {secenekler.length > 1 && (
+        <Alan etiket="Terminallerin bağlanacağı adres" ipucu={kopruler.length ? 'Merkezdeki terminaller için Merkez adresini, Toybelen terminalleri için köprü adresini seçin' : 'Terminaller hangi ağdaysa o ağdaki adresi seçin'}>
+          <select className="inp" value={secim} onChange={(e) => setSecim(e.target.value)}>
+            {secenekler.map((o) => <option key={o.kod} value={o.kod}>{o.ad}</option>)}
           </select>
         </Alan>
       )}
@@ -111,7 +119,7 @@ export default function Cihazlar() {
                     <td className="mono">{c.key}</td>
                     <td className="muted">{once(c.last_seen)}{c.last_ip ? ` · ${c.last_ip}` : ''}</td>
                     <td>{c.last_user || '—'}</td>
-                    <td className="mono small">{c.app_version || '—'}</td>
+                    <td className="mono small">{c.app_version || '—'}{kilitDestegiYok(c.app_version) && <div><Rozet tur="b-warn">kilit desteği yok</Rozet></div>}</td>
                     <td>
                       <div className="btns" style={{ justifyContent: 'flex-end' }}>
                         <Btn size="sm" icon="qr" onClick={() => setQr(c)}>Kurulum QR</Btn>

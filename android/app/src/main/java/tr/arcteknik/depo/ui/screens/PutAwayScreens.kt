@@ -19,6 +19,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,9 +41,15 @@ import tr.arcteknik.depo.ui.AppVm
 import tr.arcteknik.depo.ui.C
 import tr.arcteknik.depo.ui.Caption
 import tr.arcteknik.depo.ui.Card
+import tr.arcteknik.depo.ui.DocLockEffect
+import tr.arcteknik.depo.ui.DocTakenScreen
+import tr.arcteknik.depo.ui.DocUnlockedNotice
 import tr.arcteknik.depo.ui.Divider
 import tr.arcteknik.depo.ui.Hint
 import tr.arcteknik.depo.ui.Ic
+import tr.arcteknik.depo.ui.LockState
+import tr.arcteknik.depo.ui.LockTag
+import tr.arcteknik.depo.ui.LocksPoller
 import tr.arcteknik.depo.ui.MessageBar
 import tr.arcteknik.depo.ui.MonoText
 import tr.arcteknik.depo.ui.Notice
@@ -73,6 +80,8 @@ fun ReceiptListScreen(vm: AppVm, online: Boolean, version: Int) {
     }
     val openCount = remember(version) { db.receipts(true).count { !multiDepot || !onlyHere || it.depot == db.depot } }
 
+    // Başka terminallerin açtığı belgeler kilit simgesiyle görünür (belge kilidi).
+    LocksPoller(vm)
     Screen("Rafa Kaldır", online = online, onBack = { vm.back() }) {
         // Ürün okutulursa belge seçmeden rafa kaldırılır (miktar açık belgelerden, artanı belgesiz); belge numarası
         // okutulursa belge açılır; tam eşleşme yoksa liste okutulan metne göre süzülür.
@@ -132,6 +141,7 @@ fun ReceiptListScreen(vm: AppVm, online: Boolean, version: Int) {
                     // Belge başka depoya girdiyse göze çarpsın: rafa kaldırma o depoda olur.
                     if (multiDepot) Text(r.depotName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (r.depot == vm.repo.db.depot) C.Muted else C.Info)
                     Text(r.supplier, fontWeight = FontWeight.SemiBold)
+                    LockTag(vm, r.id)
                     val ratio = if (r.lineCount == 0) 0f else r.doneLines.toFloat() / r.lineCount
                     Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(C.LineSoft)) {
                         Box(Modifier.fillMaxWidth(ratio).height(8.dp).background(C.Ok))
@@ -203,6 +213,17 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
     var conflict by remember { mutableStateOf<Pair<String, String>?>(null) }
     var typed by remember { mutableStateOf("") }
 
+    // Belge kilidi: belgeye girerken alınır, çıkınca bırakılır; başkası kullanıyorsa belge açılmaz.
+    DocLockEffect(vm, receiptId, "KABUL", receipt?.docNo ?: receiptId)
+    LaunchedEffect(vm.docLock.state) {
+        // Her rafa kaldırma anında kaydedildiği için bekleyen iş yok; yalnız çıkılır.
+        if (vm.docLock.state == LockState.LOST) { vm.error(vm.docLock.message); vm.back() }
+    }
+    if (vm.docLock.state == LockState.TAKEN) {
+        DocTakenScreen(vm, online, receipt?.docNo ?: "Belge")
+        return
+    }
+
     val line = lines.firstOrNull { it.id == lineId }
     // Belge depo bazlı: raflar ve öneri belgenin deposundan. Rafta yoksa ürünün asıl rafı (Excel'den) önerilir.
     val rd = receipt?.depot ?: db.depot
@@ -257,6 +278,7 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
             else -> null
         },
     ) {
+        DocUnlockedNotice(vm)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Step("1 Ürün", line != null, line == null, Modifier.weight(1f))
             Step("2 Miktar", qtyDone, line != null && !qtyDone, Modifier.weight(1f))

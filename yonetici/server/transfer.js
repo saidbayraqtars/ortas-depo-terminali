@@ -5,6 +5,10 @@
 // Vega'ya yazım terminali beklemez: işlem hemen kabul edilir, fiş arka planda yazılır (bekleyen kayıtlar `transfer`
 // tablosunda, hata olursa yeniden denenir, 5 denemeden sonra yönetici ekranından elle). Fişin yapısı vega.js transferYaz.
 //
+// Transfer yalnız ayarlardaki iki depo (transfer.cift) arasında yapılır; sunucu başka çifti reddeder, Vega'dan yalnız bu çifti okur.
+// Gönderimde ürün raf stoku olan depodan çıkıyorsa raftan düşer (gonderUygula); raf stoku olmayan ürün "rafsız" geçer.
+// Kabulde raf yoktur: mal alan depoda Rafa Kaldır ekranında belge (TRF-) olarak bekler. Kabul kısmi de yapılabilir (partial).
+//
 // Gönderim (128) ile kabul (129) arasında Vega'da belge bağı yoktur. Açık gönderim, (gönderen, alan, ürün) bazında
 // toplam gönderilen − toplam alınan − programda kayıtlı eksik, en yeni gönderimden geriye dağıtılarak bulunur.
 const db = require('./db');
@@ -39,9 +43,15 @@ async function yoldaDepo(cfg = config.load()) {
   return d ? Number(d.ind) : null;
 }
 
+/** Transfer yapılabilen iki depo (ayarda); seçilmemişse null. */
+function cift(cfg = config.load()) {
+  const c = Array.isArray(cfg.transfer?.cift) ? cfg.transfer.cift.map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
+  return c.length === 2 && c[0] !== c[1] ? c : null;
+}
+
 // ---- Açık gönderimler (Vega'dan) --------------------------------------------------------------
 
-let gorunum = { at: 0, yolda: null, depolar: [], sevkler: [], ozet: '' };
+let gorunum = { at: 0, okumaBasi: 0, yolda: null, depolar: [], sevkler: [], ozet: '' };
 let yenilePromise = null;
 
 function tarihStr(d) {
@@ -67,13 +77,26 @@ function acikHesapla(oku, bas) {
     const k = `${f.from_depo}|${f.to_depo}|${f.product_id}`;
     fark.set(k, (fark.get(k) || 0) + f.eksik);
   }
+  // Terminalden kabul edilip Vega'ya henüz yazılmamış (ya da okumanın başladığı andan sonra yazılmış, okumaya girmemiş olabilir)
+  // miktar da havuzdan düşer; yoksa kısmi kabul sonrası aynı mal ikinci kez kabul edilebilirdi.
+  const bekleyen = new Map();
+  for (const r of db.all(
+    `SELECT t.from_depo, t.to_depo, l.product_id, SUM(l.qty) AS q FROM transfer t JOIN transfer_line l ON l.transfer_id = t.id
+     WHERE t.kind = 'RECEIVE' AND t.created_at >= ? AND (t.durum <> 'YAZILDI' OR t.yazildi_at > ?)
+     GROUP BY t.from_depo, t.to_depo, l.product_id`,
+    bas.getTime(), gorunum.okumaBasi || 0,
+  )) {
+    bekleyen.set(`${r.from_depo}|${r.to_depo}|${r.product_id}`, r.q);
+  }
+  const c = cift();
+  const ciftte = (s) => !c || (c.includes(s.kaynak) && c.includes(s.hedef) && s.kaynak !== s.hedef);
   const bakiye = new Map();
   for (const h of oku.havuz) {
     const k = `${h.kaynak}|${h.hedef}|${h.stokno}`;
-    bakiye.set(k, Math.max(0, yuvarla(h.gonderilen - h.alinan - (fark.get(k) || 0))));
+    bakiye.set(k, Math.max(0, yuvarla(h.gonderilen - h.alinan - (fark.get(k) || 0) - (bekleyen.get(k) || 0))));
   }
   const sevkler = [...oku.sevkler]
-    .filter((s) => !kapali.has(s.ind))
+    .filter((s) => !kapali.has(s.ind) && ciftte(s))
     .sort((a, b) => (b.tarih?.getTime?.() || 0) - (a.tarih?.getTime?.() || 0) || b.ind - a.ind);
   const out = [];
   for (const s of sevkler) {
@@ -112,13 +135,16 @@ async function yenileAsil() {
   try {
     const yolda = await yoldaDepo(cfg);
     const tum = await tumDepolar(cfg);
-    const alanlar = depo().depolar().map((d) => d.ind);
+    const c = cift(cfg);
     const bas = baslangic(cfg);
-    const oku = await vega.transferOku(cfg, { bas, alanlar });
+    const okumaBasi = now();
+    // Çift seçilmemişse hiçbir şey okunmaz (özellik çalışmaz); seçiliyse yalnız bu iki depo arasındaki belgeler.
+    const oku = c ? await vega.transferOku(cfg, { bas, alanlar: c, kaynaklar: c }) : { sevkler: [], havuz: [] };
+    gorunum.okumaBasi = okumaBasi;
     const sevkler = acikHesapla(oku, bas);
-    const ozet = JSON.stringify([yolda, tum.map((d) => [d.ind, d.ad]), sevkler.map((s) => [s.ind, s.satirlar])]);
+    const ozet = JSON.stringify([yolda, c, tum.map((d) => [d.ind, d.ad]), sevkler.map((s) => [s.ind, s.satirlar])]);
     const degisti = ozet !== gorunum.ozet;
-    gorunum = { at: now(), yolda, depolar: tum, sevkler, ozet };
+    gorunum = { at: now(), okumaBasi, yolda, depolar: tum, sevkler, ozet };
     if (degisti) depo().degisti();
   } catch (e) {
     log.uyari(`Transfer: açık gönderimler okunamadı: ${e.message}`);
@@ -131,10 +157,13 @@ function terminalGorunumu() {
   const cfg = config.load();
   if (!cfg.transfer?.aktif) return { on: false };
   const ad = (d) => (gorunum.depolar.find((x) => Number(x.ind) === d)?.ad) || depo().depoAdi(d);
+  const c = cift(cfg);
   return {
-    on: Boolean(gorunum.yolda),
+    on: Boolean(gorunum.yolda && c),
     yolda: gorunum.yolda,
-    depots: gorunum.depolar.filter((d) => Number(d.ind) !== gorunum.yolda).map((d) => ({ id: Number(d.ind), name: d.ad })),
+    // Terminal çıkış deposunu bu ikiliden sorar; varış diğeridir. (1.6.x terminaller de bunu varış listesi sayar.)
+    depots: c ? c.map((id) => ({ id, name: ad(id) })) : [],
+    pair: c || [],
     incoming: gorunum.sevkler.map((s) => ({
       id: String(s.ind),
       no: s.no,
@@ -155,7 +184,7 @@ function kur(p, ad) {
   return Number.isInteger(n) ? n : null;
 }
 
-function satirlariOku(p, Ret, bilinen) {
+function satirlariOku(p, Ret, bilinen, { bosOlur = false } = {}) {
   const satirlar = [];
   for (const l of Array.isArray(p.lines) ? p.lines : []) {
     const pid = String(l.productId || '');
@@ -164,7 +193,7 @@ function satirlariOku(p, Ret, bilinen) {
     bilinen(pid);
     satirlar.push({ pid, qty: yuvarla(qty), shelf: depo().rafKodu(l.shelf) });
   }
-  if (!satirlar.length) throw new Ret('Transferde satır yok');
+  if (!satirlar.length && !bosOlur) throw new Ret('Transferde satır yok');
   return satirlar;
 }
 
@@ -173,43 +202,97 @@ function ac(cfg, Ret) {
   if (cfg.transfer?.aktif && !gorunum.at) throw new Error('Transfer verisi henüz okunmadı');
   if (!cfg.transfer?.aktif) throw new Ret('Depolar arası transfer yönetici programında açık değil (Ayarlar › Depolar arası transfer)');
   if (!gorunum.yolda) throw new Ret('Yoldaki depo (TRANSFER) belli değil; Ayarlar › Depolar arası transfer');
+  const c = cift(cfg);
+  if (!c) throw new Ret('Transfer yapılacak iki depo seçilmemiş (Ayarlar › Depolar arası transfer)');
+  return c;
+}
+
+const ciftAdi = (c) => `${depo().depoAdi(c[0])} ↔ ${depo().depoAdi(c[1])}`;
+
+/**
+ * Gönderimde bir ürünün çıkış deposundaki raflardan düşülmesi. Terminal raf seçtiyse o raflardan düşer. Rafsız satır
+ * (terminal raf stoku olmadığını sanmıştı: eski sürüm, çevrimdışı eşitleme) için sunucu son sözü söyler: ürünün çıkış
+ * deposunda hâlâ raf stoku varsa eksiği kendisi düşer — önce ürünün asıl rafı (zimmet), sonra en çok stoklu raf; hareket
+ * notuna "raf otomatik seçildi" yazılır. Raf stoku yetmezse işlem reddedilmez: raflar sıfıra çekilir, kalan rafsız geçer ve
+ * not düşülür (mal fiziken gitmiştir). Rafta stoğu olmayan ürünün rafsız miktarı olduğu gibi geçer.
+ * Dönen: transfer_line'a yazılacak satırlar.
+ */
+function gonderRafla(from, to, pid, raflar, rafsiz, h) {
+  const d = depo();
+  const out = [];
+  const hedef = d.depoAdi(to);
+  for (const [shelf, q] of raflar) {
+    const vardi = d.miktar(from, pid, shelf);
+    const not = q - vardi > EPS ? ` · rafta ${vardi} vardı, ${yuvarla(q - vardi)} fazlası da gitti` : '';
+    d.miktarEkle(from, pid, shelf, -q, { ...h, kind: 'TRANSFER_OUT_DEPO', ref: `→ ${hedef}${not}` });
+    if (d.miktar(from, pid, shelf) <= EPS) d.terminalZimmetBosalt(from, pid, shelf);
+    out.push({ shelf, qty: q, otomatik: 0 });
+  }
+  let kalan = rafsiz;
+  if (kalan > EPS) {
+    const asil = d.zimmetler(from, pid).map((z) => z.shelf);
+    const stoklu = db.all('SELECT shelf, qty FROM location WHERE depo=? AND product_id=? AND qty>0', from, pid);
+    stoklu.sort((a, b) => (asil.includes(b.shelf) - asil.includes(a.shelf)) || b.qty - a.qty || (a.shelf < b.shelf ? -1 : 1));
+    for (const r of stoklu) {
+      if (kalan <= EPS) break;
+      const al = yuvarla(Math.min(kalan, r.qty));
+      kalan = yuvarla(kalan - al);
+      const yetmedi = kalan > EPS && r === stoklu[stoklu.length - 1] ? ` (raf stoku yetmedi, ${kalan} rafsız geçti)` : '';
+      d.miktarEkle(from, pid, r.shelf, -al, { ...h, kind: 'TRANSFER_OUT_DEPO', ref: `→ ${hedef} · raf otomatik seçildi${yetmedi}` });
+      if (d.miktar(from, pid, r.shelf) <= EPS) d.terminalZimmetBosalt(from, pid, r.shelf);
+      out.push({ shelf: r.shelf, qty: al, otomatik: 1 });
+    }
+  }
+  if (kalan > EPS) out.push({ shelf: '', qty: yuvarla(kalan), otomatik: 0 });
+  return out;
 }
 
 function gonderUygula(op, p, h, { Ret, bilinen }) {
   const cfg = config.load();
-  ac(cfg, Ret);
+  const c = ac(cfg, Ret);
   const from = kur(p, 'from');
   const to = kur(p, 'to');
   if (from === null || to === null) throw new Ret('Gönderen ya da alan depo yok');
   if (from === to) throw new Ret('Gönderen ve alan depo aynı');
+  if (!c.includes(from) || !c.includes(to)) throw new Ret(`Transfer yalnız ${ciftAdi(c)} arasında yapılır`);
   if (from === gorunum.yolda || to === gorunum.yolda) throw new Ret('Yoldaki depo gönderen ya da alan olamaz');
   if (!gorunum.depolar.some((d) => Number(d.ind) === to) || !gorunum.depolar.some((d) => Number(d.ind) === from)) throw new Ret('Depo Vega\'da bulunamadı');
   const satirlar = satirlariOku(p, Ret, bilinen);
-  const d = depo();
+  // Ürün başına: terminalin seçtiği raflar ve rafsız miktar.
+  const urunler = new Map();
   for (const l of satirlar) {
-    if (!l.shelf) continue;
-    // Sunucudaki miktar terminalin gördüğünden azsa eksiye düşmez; Vega'ya gönderilen miktar terminalin yazdığıdır.
-    d.miktarEkle(from, l.pid, l.shelf, -l.qty, { ...h, kind: 'TRANSFER_OUT_DEPO', ref: `→ ${d.depoAdi(to)}` });
-    if (d.miktar(from, l.pid, l.shelf) <= EPS) d.terminalZimmetBosalt(from, l.pid, l.shelf);
+    if (!urunler.has(l.pid)) urunler.set(l.pid, { raflar: new Map(), rafsiz: 0 });
+    const u = urunler.get(l.pid);
+    if (l.shelf) u.raflar.set(l.shelf, yuvarla((u.raflar.get(l.shelf) || 0) + l.qty));
+    else u.rafsiz = yuvarla(u.rafsiz + l.qty);
+  }
+  const yazilacak = [];
+  for (const [pid, u] of urunler) {
+    for (const s of gonderRafla(from, to, pid, u.raflar, u.rafsiz, h)) yazilacak.push({ pid, ...s });
   }
   db.run('INSERT INTO transfer(id, kind, from_depo, to_depo, user, device, created_at) VALUES(?,?,?,?,?,?,?)', op.id, 'SEND', from, to, h.user, h.device, now());
-  for (const l of satirlar) {
+  for (const l of yazilacak) {
     db.run(
-      'INSERT INTO transfer_line(transfer_id, product_id, qty, shelf) VALUES(?,?,?,?) ON CONFLICT(transfer_id, product_id, shelf) DO UPDATE SET qty = qty + excluded.qty',
-      op.id, l.pid, l.qty, l.shelf,
+      'INSERT INTO transfer_line(transfer_id, product_id, qty, shelf, otomatik) VALUES(?,?,?,?,?) ON CONFLICT(transfer_id, product_id, shelf) DO UPDATE SET qty = qty + excluded.qty',
+      op.id, l.pid, l.qty, l.shelf, l.otomatik,
     );
   }
 }
 
 function kabulUygula(op, p, h, { Ret, bilinen }) {
   const cfg = config.load();
-  ac(cfg, Ret);
+  const c = ac(cfg, Ret);
   const sevk = gorunum.sevkler.find((s) => String(s.ind) === String(p.sevkId));
   if (!sevk) {
     if (db.get('SELECT 1 FROM transfer_kapali WHERE sevk_ind=?', Number(p.sevkId))) throw new Ret('Bu gönderimin kabulü daha önce tamamlandı');
     throw new Ret('Gönderim açık görünmüyor (kabul edilmiş, iptal edilmiş ya da Vega henüz okunmamış olabilir)');
   }
-  const satirlar = satirlariOku(p, Ret, bilinen);
+  if (!c.includes(sevk.kaynak) || !c.includes(sevk.hedef)) throw new Ret(`Transfer yalnız ${ciftAdi(c)} arasında yapılır`);
+  // partial: kısmi kabul — okutulanlar alınır, gönderim açık kalır, eksik kaydı açılmaz. Eksik yalnız "Kabulü bitir" ile (partial değil) açılır;
+  // önceden kısmi alınmış gönderimde bitirirken yeni satır olmayabilir (kalan hepsi eksik olur).
+  const kismi = p.partial === true || p.partial === 1 || p.partial === 'true';
+  const oncekiKismi = Boolean(db.get("SELECT 1 FROM transfer WHERE kind='RECEIVE' AND sevk_ind=? AND kismi=1", sevk.ind));
+  const satirlar = satirlariOku(p, Ret, bilinen, { bosOlur: !kismi && oncekiKismi });
   const acik = new Map(sevk.satirlar.map((l) => [l.productId, l.open]));
   const gelen = new Map();
   for (const l of satirlar) {
@@ -228,7 +311,11 @@ function kabulUygula(op, p, h, { Ret, bilinen }) {
     d.miktarEkle(to, l.pid, l.shelf, l.qty, { ...h, kind: 'TRANSFER_IN_DEPO', ref: `${sevk.no} · ${d.depoAdi(from)}` });
     d.terminalZimmet(to, l.pid, l.shelf);
   }
-  db.run('INSERT INTO transfer(id, kind, from_depo, to_depo, sevk_ind, sevk_no, user, device, created_at) VALUES(?,?,?,?,?,?,?,?,?)', op.id, 'RECEIVE', from, to, sevk.ind, sevk.no, h.user, h.device, now());
+  // Yazılacak satır yoksa (kısmi alınmışın ardından boş bitirme) Vega'ya yazılacak bir şey de yoktur.
+  db.run(
+    'INSERT INTO transfer(id, kind, from_depo, to_depo, sevk_ind, sevk_no, user, device, created_at, kismi, durum, yazildi_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+    op.id, 'RECEIVE', from, to, sevk.ind, sevk.no, h.user, h.device, now(), kismi ? 1 : 0, satirlar.length ? 'BEKLIYOR' : 'YAZILDI', satirlar.length ? null : now(),
+  );
   for (const l of satirlar) {
     db.run(
       'INSERT INTO transfer_line(transfer_id, product_id, qty, shelf) VALUES(?,?,?,?) ON CONFLICT(transfer_id, product_id, shelf) DO UPDATE SET qty = qty + excluded.qty',
@@ -243,19 +330,33 @@ function kabulUygula(op, p, h, { Ret, bilinen }) {
       );
     }
   }
+  fisOnbellek.surum = -1;
+  if (kismi) {
+    // Gönderim açık kalır; alınan kadarı terminallere gidecek açık miktardan düşer (Vega okuması beklenmeden).
+    for (const s of gorunum.sevkler) {
+      if (s.ind !== sevk.ind) continue;
+      s.satirlar = s.satirlar
+        .map((l) => ({ ...l, open: yuvarla(l.open - (gelen.get(l.productId) || 0)) }))
+        .filter((l) => l.open > EPS);
+    }
+    gorunum.sevkler = gorunum.sevkler.filter((s) => s.satirlar.length);
+    return;
+  }
   // Gelmeyen miktar kayıtlı kalır; gönderim terminallerde kapanır (belge açık kalmaz).
+  const gonderilen = new Map(sevk.satirlar.map((l) => [l.productId, l.sent]));
   for (const [pid, beklenen] of acik) {
     const alinan = gelen.get(pid) || 0;
     const eksik = yuvarla(beklenen - alinan);
     if (eksik > EPS) {
+      // Gönderilen miktar fişteki, alınan = gönderilen − eksik (önceki kısmi kabuller de alınmış sayılır).
+      const sent = gonderilen.get(pid) ?? beklenen;
       db.run(
         'INSERT INTO transfer_fark(transfer_id, sevk_ind, sevk_no, from_depo, to_depo, product_id, sent, received, eksik, user, device, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
-        op.id, sevk.ind, sevk.no, from, to, pid, beklenen, alinan, eksik, h.user, h.device, now(),
+        op.id, sevk.ind, sevk.no, from, to, pid, sent, yuvarla(sent - eksik), eksik, h.user, h.device, now(),
       );
     }
   }
   db.run('INSERT INTO transfer_kapali(sevk_ind, transfer_id, at) VALUES(?,?,?)', sevk.ind, op.id, now());
-  fisOnbellek.surum = -1;
   gorunum.sevkler = gorunum.sevkler.filter((s) => s.ind !== sevk.ind);
 }
 
@@ -386,7 +487,7 @@ function programKabulFisleri() {
 function liste(limit = 200) {
   const ad = (d) => depo().depoAdi(d);
   const transferler = db.all('SELECT * FROM transfer ORDER BY created_at DESC LIMIT ?', limit).map((t) => {
-    const satirlar = db.all('SELECT product_id, qty, shelf FROM transfer_line WHERE transfer_id=? ORDER BY product_id, shelf', t.id).map((l) => {
+    const satirlar = db.all('SELECT product_id, qty, shelf, otomatik FROM transfer_line WHERE transfer_id=? ORDER BY product_id, shelf', t.id).map((l) => {
       const u = depo().urun(l.product_id);
       return { ...l, kod: u?.code || l.product_id, ad: u?.name || '' };
     });
@@ -402,7 +503,7 @@ function liste(limit = 200) {
   }));
   const cfg = config.load();
   return {
-    ayar: { aktif: Boolean(cfg.transfer?.aktif), yoldaDepo: cfg.transfer?.yoldaDepo ?? null, userno: cfg.transfer?.userno ?? null, onek: cfg.transfer?.onek || 'A', gun: cfg.transfer?.gun || 45 },
+    ayar: { aktif: Boolean(cfg.transfer?.aktif), yoldaDepo: cfg.transfer?.yoldaDepo ?? null, userno: cfg.transfer?.userno ?? null, onek: cfg.transfer?.onek || 'A', gun: cfg.transfer?.gun || 45, cift: cift(cfg) || [] },
     yolda: gorunum.yolda,
     yoldaAd: gorunum.yolda ? ad(gorunum.yolda) : null,
     depolar: gorunum.depolar.map((d) => ({ ind: Number(d.ind), ad: d.ad })),
@@ -468,7 +569,7 @@ module.exports = {
   programKabulFisleri,
   acikKapat,
   uygula, yaz, yaziciTetikle, yenile, terminalGorunumu, programKabulBelgeleri, liste, yenidenDene, farkCoz, farkAc,
-  yoldaDepo, tumDepolar,
+  yoldaDepo, tumDepolar, cift,
   // Testler için
   _gorunum: (g) => { if (g) gorunum = { ...gorunum, ...g }; return gorunum; },
   _acikHesapla: acikHesapla,

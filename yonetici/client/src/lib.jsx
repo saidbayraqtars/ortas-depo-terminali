@@ -70,6 +70,14 @@ export function tarihSaat(ts) {
   return d.toLocaleDateString('tr-TR') + ' ' + d.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
 }
 
+/** Terminal sürümü 1.8.0'dan eskiyse belge kilidini bilmez (sürüm bilinmiyorsa uyarı verilmez). */
+export function kilitDestegiYok(surum) {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(String(surum || ''));
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  return a < 1 || (a === 1 && b < 8);
+}
+
 export function once(ts) {
   if (!ts) return 'hiç';
   const s = Math.round((Date.now() - ts) / 1000);

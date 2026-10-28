@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { api, Btn, HAREKET, Icon, miktar, once, Rozet, SayfaBaslik, tarihSaat, useApp } from '../lib.jsx';
+import React, { useEffect, useState } from 'react';
+import { api, Btn, Durum, HAREKET, Icon, kilitDestegiYok, miktar, once, Rozet, SayfaBaslik, tarihSaat, useApp, useOnay, useVeri } from '../lib.jsx';
 
 const ISLEM_AD = { PUTAWAY: 'Rafa kaldırma', TRANSFER: 'Transfer', COUNT_SUBMIT: 'Sayım gönderimi' };
 
@@ -23,6 +23,76 @@ function Kurulum({ d }) {
           </a>
         ))}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Açık belgeler: mal kabul / rafa kaldırma / gelen transfer belgesini şu an ekranında tutan terminaller (belge kilidi).
+ * Kilit arayüz korumasıdır; açmak işlemleri silmez, tutan terminal bekleyen işini kaydedip belgeden çıkar.
+ * Kilit durumu ana veriyi değiştirmediği için liste kendisi 10 sn'de bir yenilenir.
+ */
+function AcikBelgeler() {
+  const { toast } = useApp();
+  const { veri, hata, yukleniyor, yukle } = useVeri('/kilitler');
+  const [sor, onay] = useOnay();
+  useEffect(() => {
+    const t = setInterval(yukle, 10000);
+    return () => clearInterval(t);
+  }, [yukle]);
+  const liste = veri?.liste || [];
+  const ac = async (k) => {
+    if (!(await sor('Bu kilit açılsın mı?', `${k.belgeNo}: ${k.user || '?'} (${k.device}) bu belgeyi kullanıyor.
+
+Açılırsa terminal bekleyen işini kaydedip belgeden çıkar; kaydedilenler silinmez. Başka bir terminal belgeye girebilir.`, { tamam: 'Kilidi aç', tehlike: true }))) return;
+    try {
+      await api('/kilitler/ac', { method: 'POST', body: { belgeId: k.id } });
+      toast('Kilit açıldı');
+      yukle();
+    } catch (e) {
+      toast(e.message, true);
+      yukle();
+    }
+  };
+  const sifirla = async () => {
+    if (!(await sor('Tüm kilitler sıfırlansın mı?', `${liste.length} belgedeki kilit kalkar. Belgeyi kullanan çalışanların terminalleri bekleyen işlerini kaydedip belgeden çıkar; yaptıkları işler kaydedilir, kaybolmaz.
+
+Çalışanlar uyarılmadan kilit düşer; gerekirse önce kendilerine haber verin.`, { tamam: 'Tümünü sıfırla', tehlike: true }))) return;
+    try {
+      const r = await api('/kilitler/sifirla', { method: 'POST' });
+      toast(`${r.sifirlanan} kilit sıfırlandı`);
+      yukle();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <div className="card-head">
+        <Icon name="lock" /><h2>Açık belgeler</h2><div className="grow" />
+        <Btn size="sm" kind="danger" disabled={!liste.length} onClick={sifirla}>Tüm kilitleri sıfırla</Btn>
+      </div>
+      <Durum yukleniyor={yukleniyor && !veri} hata={hata} bos={veri && !liste.length && 'Şu an hiçbir belge bir terminalde açık değil. Terminal bir belgeye girince burada görünür; çıkınca ya da 3 dakika nabız vermezse kalkar.'}>
+        <table className="tbl">
+          <thead><tr><th>Belge</th><th>Kim</th><th>Cihaz</th><th>Ne zamandır</th><th>Son nabız</th><th /></tr></thead>
+          <tbody>
+            {liste.map((k) => (
+              <tr key={k.id}>
+                <td>
+                  <div className="row" style={{ gap: 8 }}><Icon name="lock" size={14} /><b className="mono">{k.belgeNo}</b>{k.tur === 'TRANSFER' && <Rozet tur="b-info">gelen transfer</Rozet>}</div>
+                  {(k.firma || k.depoAd) && <div className="muted small">{[k.firma, k.depoAd].filter(Boolean).join(' · ')}</div>}
+                </td>
+                <td>{k.user || '—'}</td>
+                <td className="mono">{k.device}</td>
+                <td className="muted">{k.sureDk < 1 ? 'az önce' : `${k.sureDk} dk`} · {tarihSaat(k.since)}</td>
+                <td className="muted">{once(k.last)}</td>
+                <td><div className="btns" style={{ justifyContent: 'flex-end' }}><Btn size="sm" onClick={() => ac(k)}>Bu kilidi aç</Btn></div></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Durum>
+      {onay}
     </div>
   );
 }
@@ -59,6 +129,12 @@ export default function Ozet() {
           <p>Vega'ya ulaşılamıyor: {v.hata}. {v.at ? `Terminaller ${tarihSaat(v.at)} tarihli son veriyle çalışmaya devam ediyor.` : ''}</p>
         </div>
       )}
+      {(d.kopruler || []).map((k) => (
+        <div key={k.ad} className={`notice ${k.bagli ? 'info' : 'warn'}`} style={{ marginBottom: 14 }}>
+          <Icon name={k.bagli ? 'wifi' : 'wifiOff'} />
+          <p><b>{k.ad}:</b> {k.bagli ? 'bağlı' : 'bağlı değil'} · son görülme {once(k.son)} ({k.ip}){k.surum ? ` · sürüm ${k.surum}` : ''}.{!k.bagli && ' Köprü bilgisayarı kapalı ya da VPN kopuk olabilir; o şubedeki terminaller çevrimdışı çalışır ve işlemleri sonra gönderir.'}</p>
+        </div>
+      ))}
       <div className="grid g4" style={{ marginBottom: 14 }}>
         <a className="card stat" href="#/kabul">
           <span className="k"><Icon name="package" size={16} /> Açık mal kabul</span>
@@ -109,7 +185,7 @@ export default function Ozet() {
                       </td>
                       <td>{c.last_user || '—'}</td>
                       <td className="muted">{once(c.last_seen)}{c.last_ip ? ` · ${c.last_ip}` : ''}</td>
-                      <td className="mono small">{c.app_version || '—'}</td>
+                      <td className="mono small">{c.app_version || '—'}{kilitDestegiYok(c.app_version) && <div><Rozet tur="b-warn">kilit desteği yok</Rozet></div>}</td>
                     </tr>
                   );
                 })}
@@ -153,6 +229,8 @@ export default function Ozet() {
           </div>
         </div>
       </div>
+
+      <AcikBelgeler />
 
       <div className="card" style={{ marginTop: 14 }}>
         <div className="card-head"><Icon name="history" /><h2>Son hareketler</h2><div className="grow" /><a className="btn sm" href="#/hareketler">Tümü</a></div>

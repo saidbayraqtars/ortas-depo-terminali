@@ -30,20 +30,38 @@ function Bolum({ ikon, baslik, aciklama, children, alt }) {
 }
 
 
+const bosDepo = (x) => (x === null || x === undefined ? '' : String(x));
+
 /** Depolar arası transfer: terminalden Vega'ya depo gönderim (128) ve kabul (129) fişi yazma. */
 function TransferAyari({ a, kaydet }) {
   const { veri } = useVeri('/transfer');
   const [t, setT] = useState({ aktif: false, yoldaDepo: '', userno: '', onek: 'A', gun: 45, ...(a.transfer || {}) });
+  const [cift, setCift] = useState(() => [bosDepo(a.transfer?.cift?.[0]), bosDepo(a.transfer?.cift?.[1])]);
   const d = (k) => (e) => setT((x) => ({ ...x, [k]: e.target.value }));
   const depolar = veri?.depolar || [];
   const bos = (x) => (x === null || x === undefined ? '' : String(x));
   // Ayardaki null ('otomatik' / boş) Number(null) = 0 olup sunucuda geçersiz sayılmasın.
   const sayi = (x) => (x === '' || x === null || x === undefined ? null : Number(x));
+  const ciftGecerli = cift[0] !== '' && cift[1] !== '' && cift[0] !== cift[1];
+  const ciftSec = (i) => (e) => setCift((c) => c.map((x, j) => (j === i ? e.target.value : x)));
   return (
     <Bolum ikon="truck" baslik="Depolar arası transfer" aciklama="Terminalden depoya gönder ve gönderim kabul: program Vega'ya depo gönderim fişi (128) ve gönderim kabul fişi (129) yazar. Kabulde gelmeyen mal kayıtlı kalır (Depo transferi sayfası)."
-      alt={<Btn kind="primary" onClick={() => kaydet({ transfer: { aktif: Boolean(t.aktif), yoldaDepo: sayi(t.yoldaDepo), userno: sayi(t.userno), onek: t.onek, gun: Number(t.gun) || 45 } }, 'Transfer ayarı kaydedildi')}>Kaydet</Btn>}>
+      alt={<Btn kind="primary" onClick={() => kaydet({ transfer: { aktif: Boolean(t.aktif), yoldaDepo: sayi(t.yoldaDepo), userno: sayi(t.userno), onek: t.onek, gun: Number(t.gun) || 45, cift: ciftGecerli ? cift.map(Number) : [] } }, 'Transfer ayarı kaydedildi')}>Kaydet</Btn>}>
       <label className="check"><input type="checkbox" checked={Boolean(t.aktif)} onChange={(e) => setT((x) => ({ ...x, aktif: e.target.checked }))} /><span><b>Depolar arası transfer açık</b><br /><span className="muted small">Kapalıyken terminalde "Depoya Gönder" ve "Gönderim Kabul" görünmez. Önce Vega kopyasında denenmelidir.</span></span></label>
       <div className="grid g2">
+        <Alan etiket="Transfer yapılacak 1. depo" ipucu="Terminal çıkış deposunu bu iki depodan sorar (Ortaş: Merkez)">
+          <select className="inp" value={cift[0]} onChange={ciftSec(0)}>
+            <option value="">Seçilmedi</option>
+            {depolar.map((x) => <option key={x.ind} value={x.ind}>{x.ad}</option>)}
+          </select>
+        </Alan>
+        <Alan etiket="Transfer yapılacak 2. depo" ipucu="Varış, çıkışın karşısındaki depodur (Ortaş: Toybelen)">
+          <select className="inp" value={cift[1]} onChange={ciftSec(1)}>
+            <option value="">Seçilmedi</option>
+            {depolar.map((x) => <option key={x.ind} value={x.ind}>{x.ad}</option>)}
+          </select>
+        </Alan>
+        {t.aktif && !ciftGecerli && <div className="notice warn" style={{ gridColumn: '1 / -1' }}><Icon name="warning" /><p>Transfer açıkken birbirinden farklı iki depo seçilmeli; seçilmezse terminalde transfer görünmez ve gelen işlemler reddedilir. Sunucu bu iki depo dışındaki gönderim ve kabulü reddeder, Vega'dan da yalnız bu çifti okur.</p></div>}
         <Alan etiket="Yoldaki depo" ipucu="Mal gönderimle kabul arasında bu depoda durur (Ortaş: TRANSFER)">
           <select className="inp" value={bos(t.yoldaDepo)} onChange={d('yoldaDepo')}>
             <option value="">{veri?.yolda ? `Otomatik: ${veri.yoldaAd}` : 'Otomatik (adı TRANSFER olan depo)'}</option>

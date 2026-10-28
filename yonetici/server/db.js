@@ -283,6 +283,28 @@ function migrate() {
     `);
     set('surum', '6');
   }
+  if (Number(get("SELECT value FROM meta WHERE key='surum'")?.value) < 7) {
+    // 7: transfer_line.otomatik: gönderimde sunucunun raf seçtiği satır (terminal rafsız yollamıştı, rafta stok vardı);
+    // transfer.kismi: kabulü bitmeden kaydedilen kısmi kabul (gönderim açık kalır, eksik kaydı açılmaz).
+    // belge_kilit: mal kabul / rafa kaldırma / gelen transfer belgesini ekranında tutan terminal (arayüz koruması; işlemi
+    // reddetmez). durum ACILDI: yönetici kilidi açtı, tutan terminal bir sonraki nabızda öğrenir; satır silinmez ki öğrenebilsin.
+    db.exec(`
+      ALTER TABLE transfer_line ADD COLUMN otomatik INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE transfer ADD COLUMN kismi INTEGER NOT NULL DEFAULT 0;
+      CREATE TABLE belge_kilit(
+        belge_id TEXT PRIMARY KEY,
+        tur TEXT NOT NULL,
+        belge_no TEXT,
+        user TEXT,
+        device TEXT,
+        token TEXT NOT NULL,
+        durum TEXT NOT NULL DEFAULT 'ACIK',
+        alindi_at INTEGER NOT NULL,
+        nabiz_at INTEGER NOT NULL
+      );
+    `);
+    set('surum', '7');
+  }
 }
 
 function get(sql, ...args) {

@@ -29,22 +29,42 @@ programının bilgisayarındaki etiket yazıcısından çıkarır.
 - Vega'da olup terminalde görünmeyen stok için yönetici programında Ürünler › **Neden terminalde yok?**: ürünün Vega
   girişleri belge belge ve her birinin neden terminale gitmediği (tür seçili değil, başlangıçtan eski, iade, depo seçili değil…).
 
-## Depolar arası transfer (1.6.0+)
+## Depolar arası transfer (1.6.0+, 1.8.0'da değişti)
 
-Yönetici programında Ayarlar › Depolar arası transfer açıksa ana menüde iki kutu çıkar.
+Yönetici programında Ayarlar › Depolar arası transfer açık ve **iki depo seçilmişse** (Ortaş: Merkez ↔ Toybelen) ana menüde iki kutu çıkar.
+Transfer yalnız bu iki depo arasındadır; başka depoya gönderilemez.
 
-Raf adımı yoktur: gönderirken de kabul ederken de ürün okutulur, **her okutma 1 adet ekler**, miktar satırdaki +/− ile düzeltilir.
-
-- **Depoya Gönder:** önce hangi depodan çıkacağı, sonra hangi depoya gideceği sorulur. Ürünler okutulur. **Gönder** deyince yönetici
-  programı Vega'ya *depo gönderim fişi* (128) yazar. (Raf belirtilmediği için gönderen deponun raf stoku değişmez; sayımla düzelir.)
-- **Gönderim Kabul:** çalışılan depoya gelen gönderimler listelenir. Gelen ürünler okutulur, **Kabulü bitir** deyince Vega'ya
-  *gönderim kabul fişi* (129) yazılır. Alınan mal **Rafa Kaldır'da belge olarak bekler**; çalışan oradan girip rafa yerleştirir
-  (belgeden ürün → miktar → raf). Gönderimde olup gelmeyen mal kabulde "eksik" olarak kaydedilir: belge açık kalmaz,
-  ama yönetici programı Depo transferi › Eksikler'de gönderen depo, ürün ve miktarı gösterir; mal bulununca ya da kayıp
-  sayılınca çözüldü işaretlenir.
+- **Depoya Gönder:** önce **hangi depodan çıkıldığı** sorulur (iki seçenek); varış karşıdaki depodur. Sonra her ürün için:
+  **ürünü okut → adet → raf**.
+  - Ürün çıkış deposunda **rafta stoğu olan** bir ürünse raf seçmek zorunludur: adet raflara bölünebilir (raf okutarak ya da raf
+    satırındaki +/− ile), hiçbir rafta o rafın stoğunun üstüne çıkılamaz, raftaki stok bitmeden "rafsız" kalan olamaz. Adet raf stokunu
+    aşarsa fazlası **rafsız** gider (rafa kaldırılmayı bekleyen mal olabilir). Seçilen raflardan düşülür.
+  - Rafta stoğu olmayan ürün **"Rafsız gönder"** uyarısıyla geçer; raftan düşülmez.
+  - Ürünlerin hepsi eklenince **Gönder** → varış deposu onaylanır → yönetici programı Vega'ya *depo gönderim fişi* (128) yazar.
+    (Sunucu son sözü söyler: eski sürüm bir terminal rafsız yollarsa ve ürünün rafında stok varsa eksiği kendisi raftan düşer.)
+- **Gönderim Kabul:** çalışılan depoya gelen gönderimler listelenir. Gelen ürünler okutulur, **her okutma 1 adet sayar**, miktar satırdaki
+  +/− ile düzeltilir. İki yol:
+  - **Okutulanları kaydet (kısmi):** okutulanlar kabul edilir, gönderim **açık kalır** (kalan miktar listede durur), eksik kaydı açılmaz.
+  - **Kabulü bitir:** kalan miktar "eksik" olarak kaydedilir ve gönderim kapanır; daha önce kısmi kabul yapılmışsa yeni okutma olmadan da
+    bitirilebilir.
+  Her kabul için Vega'ya *gönderim kabul fişi* (129) yazılır. Alınan mal **Rafa Kaldır'da belge olarak bekler**; çalışan oradan girip
+  rafa yerleştirir (belgeden ürün → miktar → raf). Eksikler yönetici programında Depo transferi › Eksikler'de gönderen depo, ürün ve
+  miktarla görünür; mal bulununca ya da kayıp sayılınca çözüldü işaretlenir.
 
 Fişler terminali beklemeden arka planda yazılır; Vega'ya ulaşılamazsa yönetici programı yeniden dener, 5 denemeden sonra
 Depo transferi › Gönderim ve kabuller'de "Yeniden dene" görünür.
+
+## Belge kilidi (1.8.0+)
+
+Mal kabul / rafa kaldırma belgesine ve gelen transfer belgesine girince belge o terminale kilitlenir; belge listesinde başka terminalin
+tuttuğu belge **🔒 Ahmet (TRM-03) kullanıyor** ile görünür, o belgeye girilmek istenirse uyarı verilir ve belge açılmaz. Kilit belgeden
+çıkınca, "Kabulü bitir"de ve oturum kapanınca kalkar; terminal 30 sn'de bir sunucuya nabız yollar, **3 dakika nabız gelmezse** (terminal
+kapandı, Wi-Fi koptu) kilit kendiliğinden düşer. Sunucuya ulaşılamıyorsa belge "kilitsiz" uyarısıyla açılır.
+
+- Yönetici bir kilidi açarsa terminal bekleyen işini kaydedip belgeden çıkar (gelen transferde okutulanlar kısmi kabul olarak gider);
+  yapılan işler kaybolmaz.
+- Kilit yalnız arayüz korumasıdır; iki terminal yine de aynı belgeye işlem yollarsa sunucu miktar sınırlarıyla çakışmayı çözer.
+- Sayım kilitlenmez. 1.8.0'dan eski terminaller kilidi bilmez (Cihazlar'da "kilit desteği yok" etiketi).
 
 ## Okuyucu ayarı
 

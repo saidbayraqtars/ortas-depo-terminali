@@ -1,5 +1,6 @@
 package tr.arcteknik.depo.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -13,7 +14,9 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -34,8 +37,14 @@ import tr.arcteknik.depo.ui.Caption
 import tr.arcteknik.depo.ui.Card
 import tr.arcteknik.depo.ui.DepotDialog
 import tr.arcteknik.depo.ui.Divider
+import tr.arcteknik.depo.ui.DocLockEffect
+import tr.arcteknik.depo.ui.DocTakenScreen
+import tr.arcteknik.depo.ui.DocUnlockedNotice
 import tr.arcteknik.depo.ui.Hint
 import tr.arcteknik.depo.ui.Ic
+import tr.arcteknik.depo.ui.LockState
+import tr.arcteknik.depo.ui.LockTag
+import tr.arcteknik.depo.ui.LocksPoller
 import tr.arcteknik.depo.ui.MessageBar
 import tr.arcteknik.depo.ui.MonoText
 import tr.arcteknik.depo.ui.Notice
@@ -43,18 +52,20 @@ import tr.arcteknik.depo.ui.PrimaryButton
 import tr.arcteknik.depo.ui.ProductScanField
 import tr.arcteknik.depo.ui.QtyStepper
 import tr.arcteknik.depo.ui.Route
+import tr.arcteknik.depo.ui.ScanField
 import tr.arcteknik.depo.ui.Screen
 import tr.arcteknik.depo.ui.SecondaryButton
 import tr.arcteknik.depo.ui.Tone
 
 /*
- * Depolar arası transfer. Raf adımı yok: gönderirken de kabul ederken de ürün okutulur, her okutma 1 adet ekler,
- * miktar satırdaki +/− ile düzeltilir.
- *  - Depoya Gönder: çıkış deposu sorulur, varış deposu seçilir, ürünler okutulur. Gönder deyince sunucu Vega'ya depo
- *    gönderim fişi (128) yazar.
- *  - Gönderim Kabul: alan depoya gelen gönderimler listelenir, gelen ürünler okutulur. Kabulü bitirince sunucu gönderim
- *    kabul fişi (129) yazar; alınan mal Rafa Kaldır'da belge olarak bekler, oradan rafa yerleştirilir. Gelmeyen miktar
- *    kayıtlı kalır (eksik), gönderim kapanır.
+ * Depolar arası transfer. Yalnız ayarlardaki iki depo (örneğin Merkez ↔ Toybelen) arasında yapılır.
+ *  - Depoya Gönder: çıkış deposu iki seçenekten sorulur, varış diğer depodur. Akış: ürün okut → adet → raf. Ürün çıkış
+ *    deposunda raf stoku olan bir ürünse raf seçmek zorunludur (adet raflara bölünebilir, hiçbir rafta stoğun üstüne
+ *    çıkılamaz); raf stoku olmayan ürün "rafsız" gider. Raf stokundan fazlası da rafsız geçer: rafa kaldırılmayı bekleyen
+ *    mal olabilir. Gönder deyince varış onaylanır ve sunucu Vega'ya depo gönderim fişi (128) yazar.
+ *  - Gönderim Kabul: gelen ürünler okutulur, her okutma 1 adet sayar. Okutulanlar "kaydet" ile kısmi kabul olarak gider,
+ *    gönderim açık kalır; "Kabulü bitir" kalan miktarı eksik olarak kaydeder ve gönderimi kapatır. Alınan mal Rafa Kaldır'da
+ *    belge olarak bekler. Belgeye girerken kilit alınır (başka terminal kullanıyorsa belge açılmaz).
  */
 
 @Composable
@@ -86,25 +97,38 @@ fun SendDepotScreen(vm: AppVm, online: Boolean, version: Int) {
     val draft = vm.sendDraft
     // Çıkış deposu her gönderimde sorulur; ilk açılışta çalışılan depo öneri olarak işaretli gelir.
     var pickFrom by remember { mutableStateOf(!draft.fromConfirmed) }
-    var pickTo by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<Product?>(null) }
 
-    val from = if (draft.from == 0) db.depot else draft.from
-    val to = draft.to
-    val fromName = db.depotName(from).ifBlank { from.toString() }
-    val toName = info.depots.firstOrNull { it.id == to }?.name ?: ""
+    // Transfer iki depo arasındadır (sunucu ayarı): çıkış bu ikiliden biri, varış diğeri.
+    val pair = info.depots
+    val from = pair.firstOrNull { it.id == draft.from }?.id ?: pair.firstOrNull { it.id == db.depot }?.id ?: pair.firstOrNull()?.id ?: 0
+    val toDepot = pair.firstOrNull { it.id != from }
+    val fromName = pair.firstOrNull { it.id == from }?.name ?: db.depotName(from).ifBlank { from.toString() }
+    val toName = toDepot?.name ?: ""
     val lines = draft.lines
 
-    fun onProduct(p: Product) {
-        val n = lines.qtyOf(p.id) + 1
-        lines.setQty(p.id, n)
-        vm.ok("${p.name} · ${fmt(n)} ${p.unit.lowercase()}")
+    if (!info.on || pair.size != 2) {
+        Screen("Depoya Gönder", online = online, onBack = { vm.back() }) {
+            Notice("Depolar arası transfer bu sunucuda açık değil ya da iki depo seçilmemiş. Yönetici programında Ayarlar › Depolar arası transfer.", Tone.Warn, icon = Ic.Warning)
+            SecondaryButton("Geri", { vm.back() })
+        }
+        return
+    }
+
+    editing?.let { p ->
+        SendProductPanel(
+            vm, online, p, from, fromName, toName, lines.filter { it.productId == p.id },
+            onSave = { draft.replace(p.id, it); editing = null; if (it.isNotEmpty()) vm.ok("${p.name} · ${fmt(it.sumOf { l -> l.qty })} ${p.unit.lowercase()}") },
+            onCancel = { editing = null },
+        )
+        return
     }
 
     Screen(
-        "Depoya Gönder", sub = "$fromName → ${toName.ifBlank { "?" }}", online = online, onBack = { vm.back() },
+        "Depoya Gönder", sub = "$fromName → $toName", online = online, onBack = { vm.back() },
         footer = if (lines.isNotEmpty()) ({
-            PrimaryButton("Gönder · ${lines.size} kalem", { confirm = true })
+            PrimaryButton("Gönder · ${lines.map { it.productId }.distinct().size} kalem", { confirm = true })
         }) else null,
     ) {
         Card(padding = PaddingValues(horizontal = 14.dp, vertical = 2.dp)) {
@@ -116,16 +140,12 @@ fun SendDepotScreen(vm: AppVm, online: Boolean, version: Int) {
             Divider()
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Varış", fontSize = 12.sp, color = C.Muted, modifier = Modifier.width(52.dp))
-                Text(toName.ifBlank { "Seçilmedi" }, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = if (to == 0) C.Warn else C.Ink, modifier = Modifier.weight(1f))
-                LinkText(if (to == 0) "Seç" else "Değiştir") { pickTo = true }
+                Text(toName, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Hint("karşıdaki depo")
             }
         }
-        if (to == 0) {
-            Hint("Mal gönderilecek depoyu seçin. Sonra ürünleri okutun.")
-            return@Screen
-        }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            ProductScanField(vm, "Ürün okutun", "Her okutma 1 adet ekler; barkod ya da isimle arama", ::onProduct)
+            ProductScanField(vm, "Ürün okutun", "Barkod okutun ya da isimle arayın; sonra adet ve raf", onProduct = { editing = it })
             MessageBar(vm.message?.first, vm.message?.second == true)
             if (lines.isNotEmpty()) {
                 Card(padding = PaddingValues(start = 14.dp, end = 8.dp, top = 10.dp, bottom = 4.dp)) {
@@ -133,15 +153,17 @@ fun SendDepotScreen(vm: AppVm, online: Boolean, version: Int) {
                         Caption("Gönderilecekler", Modifier.weight(1f))
                         LinkText("Sıfırla", C.Err) { lines.clear() }
                     }
-                    lines.toList().forEach { l ->
-                        val p = db.productById(l.productId)
+                    lines.groupBy { it.productId }.forEach { (pid, ls) ->
+                        val p = db.productById(pid, from)
                         Divider()
-                        Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.clickable { p?.let { editing = it } }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text(p?.name ?: l.productId, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
+                                Text(p?.name ?: pid, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
                                 Hint(p?.code ?: "")
+                                Hint(ls.joinToString(" · ") { (if (it.shelf.isBlank()) "rafsız" else it.shelf) + " ×" + fmt(it.qty) })
                             }
-                            QtyStepper(l.qty, { lines.setQty(l.productId, it) }, small = true)
+                            MonoText(fmt(ls.sumOf { it.qty }), size = 18)
+                            LinkText("Sil", C.Err) { draft.replace(pid, emptyList()) }
                         }
                     }
                 }
@@ -151,32 +173,30 @@ fun SendDepotScreen(vm: AppVm, online: Boolean, version: Int) {
 
     if (pickFrom) {
         DepotDialog(
-            db.depots().filter { it.id != to && it.id != info.yolda }, from,
-            { draft.from = it; draft.fromConfirmed = true; pickFrom = false; if (draft.to == 0) pickTo = true },
+            pair, from,
+            { draft.from = it; draft.fromConfirmed = true; pickFrom = false },
             { if (draft.fromConfirmed) pickFrom = false else vm.back() },
             title = "Hangi depodan çıkıyor?",
-            note = "Mal bu depodan çıkar. Raf belirtilmez; Vega'da bu depodan düşer.",
-        )
-    }
-    if (pickTo) {
-        DepotDialog(
-            info.depots.filter { it.id != from }, to,
-            { draft.to = it; pickTo = false },
-            { pickTo = false },
-            title = "Hangi depoya gidiyor?",
-            note = "Alan depo gönderimi kendi terminalinden kabul eder.",
+            note = "Mal bu depodan çıkar; varış karşıdaki depodur. Raftaki stok varsa raf da sorulur.",
         )
     }
     if (confirm) {
         val total = lines.sumOf { it.qty }
+        val rafsiz = lines.filter { it.shelf.isBlank() }.sumOf { it.qty }
         AlertDialog(
             onDismissRequest = { confirm = false },
-            title = { Text("Gönderilsin mi?") },
-            text = { Text("$fromName → $toName\n${lines.size} kalem, toplam ${fmt(total)}\n\nVega'ya depo gönderim fişi yazılır; mal alan depo kabul edene kadar yolda görünür.") },
+            title = { Text("$toName deposuna gönderilsin mi?") },
+            text = {
+                Text(
+                    "Çıkış: $fromName\nVarış: $toName\n${lines.map { it.productId }.distinct().size} kalem, toplam ${fmt(total)}" +
+                        (if (rafsiz > 1e-9) "\n${fmt(rafsiz)} adet rafsız gidiyor." else "") +
+                        "\n\nVega'ya depo gönderim fişi yazılır; mal alan depo kabul edene kadar yolda görünür.",
+                )
+            },
             confirmButton = {
                 TextButton({
                     confirm = false
-                    vm.repo.sendTransfer(from, to, lines.toList(), vm.userName)
+                    vm.repo.sendTransfer(from, toDepot!!.id, lines.toList(), vm.userName)
                     draft.clear()
                     vm.saved("Gönderim kaydedildi: $fromName → $toName")
                     vm.back()
@@ -184,6 +204,139 @@ fun SendDepotScreen(vm: AppVm, online: Boolean, version: Int) {
             },
             dismissButton = { TextButton({ confirm = false }, Modifier.focusProperties { canFocus = false }) { Text("Vazgeç") } },
         )
+    }
+}
+
+/**
+ * Gönderimde bir ürünün adedi ve rafları. Ürünün çıkış deposunda raf stoku S varsa: adet raflara bölünür, her rafta o rafın
+ * stoğu aşılamaz ve min(adet, S) kadarı raflardan seçilmeden eklenemez; adet S'yi aşarsa fazlası rafsız gider. Raf stoku
+ * yoksa ürün "rafsız gönder" uyarısıyla geçer. (Sunucu son sözü söyler: eski terminalden gelen rafsız satırı da raf stoku
+ * varsa kendisi düşer.)
+ */
+@Composable
+private fun SendProductPanel(
+    vm: AppVm,
+    online: Boolean,
+    product: Product,
+    from: Int,
+    fromName: String,
+    toName: String,
+    existing: List<TransferLine>,
+    onSave: (List<TransferLine>) -> Unit,
+    onCancel: () -> Unit,
+) {
+    val db = vm.repo.db
+    val stocks = remember(product.id, from) {
+        val home = db.homeShelves(product.id, from)
+        db.locationsOf(product.id, from).filter { it.qty > 1e-9 }.sortedWith(compareByDescending<tr.arcteknik.depo.data.Location> { it.shelf in home }.thenByDescending { it.qty })
+    }
+    val total = stocks.sumOf { it.qty }
+    var qty by remember { mutableStateOf(if (existing.isEmpty()) 1.0 else existing.sumOf { it.qty }) }
+    val alloc = remember { mutableStateMapOf<String, Double>() }
+
+    /** Adet için raflardan gereken miktarı asıl raf / en çok stoklu raftan başlayarak paylaştırır. */
+    fun autoFill(q: Double) {
+        alloc.clear()
+        var left = minOf(q, total)
+        for (s in stocks) {
+            if (left <= 1e-9) break
+            val take = minOf(left, s.qty)
+            alloc[s.shelf] = take
+            left -= take
+        }
+    }
+    remember(product.id) {
+        if (existing.any { it.shelf.isNotBlank() }) existing.filter { it.shelf.isNotBlank() }.forEach { alloc[it.shelf] = it.qty } else autoFill(qty)
+        true
+    }
+
+    val needed = minOf(qty, total)
+    val assigned = alloc.values.sum()
+    val rafsiz = (qty - assigned).coerceAtLeast(0.0)
+    val valid = qty > 1e-9 && kotlin.math.abs(assigned - needed) < 1e-6
+    val remaining = (needed - assigned).coerceAtLeast(0.0)
+
+    fun onShelf(code: String) {
+        val s = code.trim().uppercase()
+        if (db.findProduct(code) != null) return vm.error("Raf barkodu okutun; bu bir ürün barkodu")
+        val st = stocks.firstOrNull { it.shelf == s } ?: return vm.error("$s rafında ${product.name} yok; $fromName deposunda bu ürünün rafları aşağıda")
+        val cur = alloc[s] ?: 0.0
+        val add = minOf(st.qty - cur, remaining)
+        if (add <= 1e-9) return vm.error(if (remaining <= 1e-9) "Raflardan gereken miktar zaten seçildi" else "$s rafındaki stok tamamı seçildi")
+        alloc[s] = cur + add
+        vm.ok("$s · ${fmt(cur + add)}")
+    }
+
+    Screen(
+        "Depoya Gönder", sub = "$fromName → $toName", online = online, onBack = onCancel,
+        footer = ({
+            MessageBar(vm.message?.first, vm.message?.second == true)
+            PrimaryButton(
+                if (total <= 1e-9) "Rafsız gönder · ${fmt(qty)} ${product.unit.lowercase()}" else "Ekle · ${fmt(qty)} ${product.unit.lowercase()}",
+                {
+                    val out = mutableListOf<TransferLine>()
+                    stocks.forEach { s -> (alloc[s.shelf] ?: 0.0).takeIf { it > 1e-9 }?.let { out += TransferLine(product.id, it, s.shelf) } }
+                    if (rafsiz > 1e-9) out += TransferLine(product.id, rafsiz)
+                    onSave(out)
+                },
+                enabled = valid,
+            )
+            SecondaryButton("Vazgeç", onCancel)
+        }),
+    ) {
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Card {
+                Column {
+                    Text(product.name, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                    MonoText(listOfNotNull(product.code, product.barcode).joinToString(" · "), size = 13, weight = FontWeight.Medium, color = C.Muted)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Adet", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = C.Text2)
+                        Hint("${product.unit} · $fromName deposundaki raf stoku ${fmt(total)}")
+                    }
+                    QtyStepper(qty, { qty = it; autoFill(it) })
+                }
+            }
+            if (total <= 1e-9) {
+                Notice(
+                    "$fromName deposunda bu ürün hiçbir rafta görünmüyor. Rafsız gönder: raftan düşülmez, yalnız Vega'ya gönderim fişi yazılır.",
+                    Tone.Warn, title = "Rafsız gönder", icon = Ic.Warning,
+                )
+            } else {
+                Card(padding = PaddingValues(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Caption("Hangi raftan?", Modifier.weight(1f))
+                        Text(
+                            "${fmt(assigned)} / ${fmt(needed)}", fontWeight = FontWeight.Bold, fontSize = 15.sp,
+                            color = if (valid) C.Ok else C.Warn,
+                        )
+                    }
+                    ScanField("Raf okutun (isteğe bağlı)", "Okutulan raftan kalan miktar düşülür", true, vm.repo.prefs.cameraButton, ::onShelf)
+                    stocks.forEach { s ->
+                        val a = alloc[s.shelf] ?: 0.0
+                        Divider()
+                        Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                MonoText(s.shelf, size = 16, weight = FontWeight.SemiBold)
+                                Hint("rafta ${fmt(s.qty)}")
+                            }
+                            QtyStepper(a, { alloc[s.shelf] = it.coerceIn(0.0, s.qty).let { v -> minOf(v, a + remaining) } }, max = s.qty, small = true)
+                        }
+                    }
+                }
+                if (!valid) {
+                    Notice(
+                        "Raf stoku olan ürün raftan düşülmeden gönderilemez: ${fmt(needed)} ${product.unit.lowercase()} için raf seçin" +
+                            (if (assigned > needed + 1e-6) " (seçilen fazla)." else "."),
+                        Tone.Warn, icon = Ic.Warning,
+                    )
+                }
+                if (qty > total + 1e-9) {
+                    Hint("Raf stoku ${fmt(total)}; kalan ${fmt(qty - total)} ${product.unit.lowercase()} rafsız gider (rafa kaldırılmayı bekleyen mal olabilir).")
+                }
+            }
+        }
     }
 }
 
@@ -196,6 +349,7 @@ fun ReceiveListScreen(vm: AppVm, online: Boolean, version: Int) {
     val d = db.depot
     val mine = info.incoming.filter { it.to == d }
     val others = info.incoming.filter { it.to != d }
+    LocksPoller(vm)
     Screen("Gönderim Kabul", sub = db.depotName(d).ifBlank { null }, online = online, onBack = { vm.back() }) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (mine.isEmpty()) {
@@ -209,6 +363,7 @@ fun ReceiveListScreen(vm: AppVm, online: Boolean, version: Int) {
                         Hint(s.date)
                     }
                     Text("${s.fromName} deposundan", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    LockTag(vm, "SEVK-${s.id}")
                     Hint("${s.lines.size} kalem · toplam ${fmt(s.lines.sumOf { it.open })}" + if (started) " · okutma sürüyor" else "")
                 }
             }
@@ -226,6 +381,27 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
     val db = vm.repo.db
     val info = remember(version) { vm.repo.transferInfo() }
     val sevk: Incoming? = info.incoming.firstOrNull { it.id == sevkId }
+    val draft = vm.receiveDraft(sevkId)
+    var confirm by remember { mutableStateOf(false) }
+    var leaveAsk by remember { mutableStateOf(false) }
+
+    // Belge kilidi: girerken alınır; yönetici açarsa ya da başka terminal alırsa okutulanlar kısmi kabul olarak kaydedilip çıkılır.
+    DocLockEffect(vm, "SEVK-$sevkId", "TRANSFER", sevk?.no ?: sevkId)
+    LaunchedEffect(vm.docLock.state) {
+        if (vm.docLock.state == LockState.LOST) {
+            val s = info.incoming.firstOrNull { it.id == sevkId }
+            if (s != null && draft.isNotEmpty()) {
+                vm.repo.receiveTransfer(s, draft.toList(), vm.userName, partial = true)
+                vm.dropReceiveDraft(sevkId)
+                vm.saved("${vm.docLock.message}; okutulanlar kısmi kabul olarak kaydedildi")
+            } else vm.error(vm.docLock.message)
+            vm.back()
+        }
+    }
+    if (vm.docLock.state == LockState.TAKEN) {
+        DocTakenScreen(vm, online, sevk?.no ?: "Gönderim")
+        return
+    }
     if (sevk == null) {
         Screen("Gönderim Kabul", online = online, onBack = { vm.back() }) {
             Notice("Bu gönderim artık açık görünmüyor (kabul edilmiş ya da iptal edilmiş olabilir).", Tone.Warn, icon = Ic.Warning)
@@ -233,8 +409,6 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
         }
         return
     }
-    val draft = vm.receiveDraft(sevk.id)
-    var confirm by remember { mutableStateOf(false) }
 
     fun have(pid: String) = draft.qtyOf(pid)
     fun remaining(pid: String): Double = (sevk.lines.firstOrNull { it.productId == pid }?.open ?: 0.0) - have(pid)
@@ -247,14 +421,28 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
         vm.ok("${p.name} · ${fmt(n)}/${fmt(sevk.lines.first { it.productId == p.id }.open)}")
     }
 
+    /** Okutulanlar kısmi kabul olarak gider; gönderim açık kalır, eksik kaydı açılmaz. */
+    fun savePartial(thenLeave: Boolean) {
+        vm.repo.receiveTransfer(sevk, draft.toList(), vm.userName, partial = true)
+        vm.dropReceiveDraft(sevk.id)
+        vm.saved("Okutulanlar kısmi kabul olarak kaydedildi")
+        if (thenLeave) vm.back()
+    }
+
     val missing = sevk.lines.filter { remaining(it.productId) > 1e-9 }
+    // Daha önce kısmi alınmışsa yeni okutma olmasa da kabul bitirilebilir (kalan eksik olur).
+    val hadPartial = sevk.lines.any { it.open < it.sent - 1e-9 }
+    BackHandler(enabled = draft.isNotEmpty()) { leaveAsk = true }
     Screen(
-        "Gönderim Kabul", sub = "${sevk.no} · ${sevk.fromName} → ${sevk.toName}", online = online, onBack = { vm.back() },
+        "Gönderim Kabul", sub = "${sevk.no} · ${sevk.fromName} → ${sevk.toName}", online = online,
+        onBack = { if (draft.isNotEmpty()) leaveAsk = true else vm.back() },
         footer = ({
-            PrimaryButton("Kabulü bitir", { confirm = true }, enabled = draft.isNotEmpty())
+            if (draft.isNotEmpty()) SecondaryButton("Okutulanları kaydet (kısmi) · ${fmt(draft.sumOf { it.qty })}", { savePartial(false) })
+            PrimaryButton("Kabulü bitir", { confirm = true }, enabled = draft.isNotEmpty() || hadPartial)
         }),
     ) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            DocUnlockedNotice(vm)
             ProductScanField(vm, "Ürün okutun", "Gelen ürünü okutun; her okutma 1 adet sayar", ::onProduct)
             MessageBar(vm.message?.first, vm.message?.second == true)
             Card(padding = PaddingValues(start = 14.dp, end = 8.dp, top = 10.dp, bottom = 4.dp)) {
@@ -279,10 +467,27 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
                     }
                 }
             }
+            if (hadPartial) Hint("Bu gönderimden bir kısmı daha önce alındı; yukarıdakiler kalan miktardır.")
             Hint("Alınan mal Rafa Kaldır'da belge olarak bekler; oradan rafa yerleştirilir.")
         }
     }
 
+    if (leaveAsk) {
+        AlertDialog(
+            onDismissRequest = { leaveAsk = false },
+            title = { Text("Okutulanlar kaydedilsin mi?") },
+            text = { Text("${fmt(draft.sumOf { it.qty })} adet okutuldu, henüz kaydedilmedi. Kısmi kabul olarak kaydedilirse gönderim açık kalır; kalanı sonra alınır ya da \"Kabulü bitir\" ile eksik yazılır.") },
+            confirmButton = {
+                TextButton({ leaveAsk = false; savePartial(true) }, Modifier.focusProperties { canFocus = false }) { Text("Kısmi kaydet", fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                Row {
+                    TextButton({ leaveAsk = false }, Modifier.focusProperties { canFocus = false }) { Text("Vazgeç") }
+                    TextButton({ leaveAsk = false; vm.back() }, Modifier.focusProperties { canFocus = false }) { Text("Taslak kalsın") }
+                }
+            },
+        )
+    }
     if (confirm) {
         val eksik = missing.sumOf { remaining(it.productId) }
         AlertDialog(

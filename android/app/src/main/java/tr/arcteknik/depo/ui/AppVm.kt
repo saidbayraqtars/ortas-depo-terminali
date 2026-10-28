@@ -34,6 +34,7 @@ import tr.arcteknik.depo.data.Repo
 import tr.arcteknik.depo.data.TransferLine
 import tr.arcteknik.depo.data.User
 import tr.arcteknik.depo.diag.Diag
+import tr.arcteknik.depo.sync.LockInfo
 import tr.arcteknik.depo.sync.UserActivity
 import tr.arcteknik.depo.ui.screens.CountDiffScreen
 import tr.arcteknik.depo.ui.screens.CountListScreen
@@ -74,20 +75,56 @@ sealed interface Route {
     data class ReceiveDoc(val sevkId: String) : Route
 }
 
-/** Depoya gönder taslağı: ekrandan çıkılsa da (başka ekrana gidilse de) uygulama açık olduğu sürece kaybolmaz. */
+/**
+ * Depoya gönder taslağı: ekrandan çıkılsa da (başka ekrana gidilse de) uygulama açık olduğu sürece kaybolmaz.
+ * Varış deposu yoktur: transfer yalnız iki depo arasında olduğu için çıkışın karşısındaki depodur.
+ * Bir ürün birden çok satır olabilir (raf başına bir satır, rafsız kalan için shelf boş bir satır).
+ */
 class SendDraft {
     var from by mutableStateOf(0)
-    var to by mutableStateOf(0)
 
     /** Çıkış deposu bu gönderim için sorulup seçildi mi (her gönderimde yeniden sorulur). */
     var fromConfirmed by mutableStateOf(false)
     val lines = mutableStateListOf<TransferLine>()
 
     fun clear() {
-        to = 0
         fromConfirmed = false
         lines.clear()
     }
+
+    /** [productId]'nin satırlarını [new] ile değiştirir (boşsa ürün listeden çıkar). */
+    fun replace(productId: String, new: List<TransferLine>) {
+        val at = lines.indexOfFirst { it.productId == productId }
+        lines.removeAll { it.productId == productId }
+        if (new.isNotEmpty()) lines.addAll(if (at in 0..lines.size) at else lines.size, new)
+    }
+
+    fun qtyOf(productId: String): Double = lines.filter { it.productId == productId }.sumOf { it.qty }
+}
+
+/** Belge kilidinin terminaldeki durumu (docs/API.md "Belge kilidi"). */
+enum class LockState {
+    /** Kilit yok: belge bir kilit gerektirmeyen ekranda. */
+    NONE,
+    /** Kilit isteniyor; belge hemen açılır, cevap gelince durum netleşir. */
+    CHECKING,
+    /** Kilit bu terminalde; 30 sn'de bir nabız gider. */
+    HELD,
+    /** Kilitsiz açıldı: sunucuya ulaşılamadı ya da sunucu kilidi bilmiyor. Belge kullanılır, uyarı gösterilir. */
+    UNLOCKED,
+    /** Belgeyi başka bir terminal kullanıyor; belge bu terminalde açılmaz. */
+    TAKEN,
+    /** Kilit sonradan gitti (yönetici açtı ya da başka terminal aldı); ekran bekleyen işi kaydedip belgeden çıkar. */
+    LOST,
+}
+
+class DocLock {
+    var docId by mutableStateOf<String?>(null)
+    var state by mutableStateOf(LockState.NONE)
+
+    /** TAKEN: "Ahmet (TRM-03) kullanıyor". LOST: nedeni. UNLOCKED: uyarı metni (boşsa uyarı yok). */
+    var message by mutableStateOf("")
+    var token = ""
 }
 
 /** Okutulan tanımsız raf etiketi: kullanıcıya raf olarak eklensin mi diye sorulur. */
@@ -103,6 +140,12 @@ class AppVm(app: Application) : AndroidViewModel(app) {
         private set
 
     val sendDraft = SendDraft()
+    val docLock = DocLock()
+    private var lockJob: Job? = null
+
+    /** Listelerde kilit simgesi için: şu an başka terminallerde açık belgeler (kimlik → tutan). */
+    var locks by mutableStateOf<Map<String, LockInfo>>(emptyMap())
+        private set
     private val receiveDrafts = HashMap<String, androidx.compose.runtime.snapshots.SnapshotStateList<TransferLine>>()
 
     /** Gönderim kabulünde okutulanlar; kabul bitene ya da vazgeçilene kadar saklanır. */
@@ -152,7 +195,72 @@ class AppVm(app: Application) : AndroidViewModel(app) {
         routed()
     }
 
+    /** Kilitli belge listesini sunucudan yeniler (liste ekranları 10 sn'de bir çağırır). Ulaşılamazsa eski liste kalır. */
+    fun refreshLocks() {
+        viewModelScope.launch {
+            val l = withContext(Dispatchers.IO) { runCatching { sync.backend().locks() } }.getOrNull() ?: return@launch
+            locks = l.filter { it.device != repo.prefs.deviceName }.associateBy { it.id }
+        }
+    }
+
+    /**
+     * Belgeyi kilitler ve tutulduğu sürece 30 sn'de bir nabız yollar. Belge hemen açılır (durum CHECKING); cevap gelince
+     * HELD, TAKEN (başkası kullanıyor), UNLOCKED (sunucu yok ya da bilmiyor) olur. Nabız kilidin gittiğini söylerse LOST.
+     * Kilit arayüz korumasıdır: işlemler kilide bakılmadan sunucuya gider, miktar sınırları çakışmayı çözer.
+     */
+    fun enterDoc(docId: String, kind: String, docNo: String) {
+        leaveDoc()
+        docLock.docId = docId
+        docLock.state = LockState.CHECKING
+        docLock.message = ""
+        docLock.token = ""
+        lockJob = viewModelScope.launch {
+            while (docLock.docId == docId) {
+                if (docLock.token.isEmpty()) {
+                    val reply = withContext(Dispatchers.IO) { runCatching { sync.backend().lock(docId, kind, docNo, userName) } }.getOrNull()
+                    if (docLock.docId != docId) return@launch
+                    when {
+                        reply == null -> { docLock.state = LockState.UNLOCKED; docLock.message = "Sunucuya ulaşılamıyor: belge kilitsiz açıldı; başka terminal de açmış olabilir."; return@launch }
+                        !reply.supported -> { docLock.state = LockState.UNLOCKED; docLock.message = ""; return@launch }
+                        !reply.ok -> { docLock.state = LockState.TAKEN; docLock.message = reply.holder.ifBlank { "Başka bir terminal kullanıyor" }; return@launch }
+                        else -> { docLock.token = reply.token; docLock.state = LockState.HELD }
+                    }
+                } else {
+                    val reply = withContext(Dispatchers.IO) { runCatching { sync.backend().lockPing(docId, docLock.token) } }.getOrNull()
+                    if (docLock.docId != docId) return@launch
+                    // Ağ hatasında kilit sunucuda 3 dk dayanır; bir sonraki nabızda yeniden denenir.
+                    if (reply != null && reply.supported && !reply.ok) {
+                        docLock.token = ""
+                        docLock.state = LockState.LOST
+                        docLock.message = when (reply.reason) {
+                            "yonetici" -> "Yönetici bu belgenin kilidini açtı"
+                            "baska" -> "Belgeyi başka bir terminal aldı"
+                            else -> "Belge kilidi kalktı"
+                        }
+                        return@launch
+                    }
+                }
+                delay(30_000)
+            }
+        }
+    }
+
+    /** Belgeden çıkış, kabulü bitirme ya da oturum kapanması: kilit bırakılır. [docId] verilirse yalnız o belgenin kilidi. */
+    fun leaveDoc(docId: String? = null) {
+        if (docId != null && docLock.docId != docId) return
+        lockJob?.cancel()
+        lockJob = null
+        val id = docLock.docId
+        val token = docLock.token
+        docLock.docId = null
+        docLock.state = LockState.NONE
+        docLock.message = ""
+        docLock.token = ""
+        if (id != null && token.isNotEmpty()) viewModelScope.launch(Dispatchers.IO) { runCatching { sync.backend().lockRelease(id, token) } }
+    }
+
     fun logout() {
+        leaveDoc()
         user = null
         stack.clear()
         stack += Route.Login
