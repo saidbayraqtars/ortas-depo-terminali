@@ -20,8 +20,8 @@ android {
         // Sahadaki en eski el terminali Android 7.1.2 (API 25).
         minSdk = 25
         targetSdk = 35
-        versionCode = 12
-        versionName = "1.8.0"
+        versionCode = 13
+        versionName = "1.8.2"
         // Çökme/donma raporları: nevaqr VPS'teki hata toplayıcı (araclar/hata-toplayici). Anahtar keystore.properties'te.
         buildConfigField("String", "REPORT_URL", "\"https://lisans.neva.technology/hata/v1/rapor\"")
         buildConfigField("String", "REPORT_KEY", "\"${keyProps.getProperty("raporAnahtari", "")}\"")
