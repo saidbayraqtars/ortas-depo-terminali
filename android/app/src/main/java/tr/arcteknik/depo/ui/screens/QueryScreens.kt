@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -23,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -40,6 +43,7 @@ import tr.arcteknik.depo.ui.MonoText
 import tr.arcteknik.depo.ui.Route
 import tr.arcteknik.depo.ui.Ic
 import tr.arcteknik.depo.ui.LabelDialog
+import tr.arcteknik.depo.ui.LimitedList
 import tr.arcteknik.depo.ui.ProductScanField
 import tr.arcteknik.depo.ui.ScanField
 import tr.arcteknik.depo.ui.Screen
@@ -59,7 +63,9 @@ fun ProductQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String
     val homes = remember(version, productId) { productId?.let { db.homeShelves(it) }.orEmpty() }
 
     var label by remember { mutableStateOf(false) }
-    Screen("Ürün Sorgu", online = online, onBack = { vm.back() }, footer = product?.let { p ->
+    var removing by remember { mutableStateOf<String?>(null) }
+    // Okutma alanı sabit, ürün bilgisi altta kendi kaydırmasında.
+    Screen("Ürün Sorgu", online = online, onBack = { vm.back() }, scroll = false, footer = product?.let { p ->
         {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SecondaryButton("Etiket bas", { label = true }, Modifier.weight(1f), icon = Ic.Barcode)
@@ -82,10 +88,29 @@ fun ProductQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String
         }
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             ProductCard(product, locs.sumOf { it.qty }, remember(version, productId) { db.pendingPutAway(product.id) })
+            if (homes.isNotEmpty()) {
+                // Ürünün raf adresleri (zimmet): yanlış adres buradan hemen silinir; rafın kendisi ve raftaki miktar değişmez.
+                Card(padding = CardPad) {
+                    Caption("Raf adresleri")
+                    homes.forEach { h ->
+                        Divider()
+                        Row(Modifier.fillMaxWidth().padding(start = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                            val here = locs.firstOrNull { it.shelf == h }?.qty ?: 0.0
+                            Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
+                                MonoText(h)
+                                Hint(if (here > 0) "rafta ${fmt(here)}" else "rafta stok yok")
+                            }
+                            Text(
+                                "Sil", color = C.Err, fontWeight = FontWeight.SemiBold, fontSize = 15.sp,
+                                modifier = Modifier.focusProperties { canFocus = false }.clickable { removing = h }.padding(horizontal = 14.dp, vertical = 12.dp),
+                            )
+                        }
+                    }
+                }
+            }
             Card(padding = CardPad) {
                 Caption("Raf dağılımı")
                 if (locs.isEmpty()) Hint("Bu ürün hiçbir rafta görünmüyor.", Modifier.padding(bottom = 10.dp))
-                if (homes.isNotEmpty()) Hint("Zimmetli raflar: " + homes.joinToString(", "), Modifier.padding(bottom = 8.dp))
                 val max = locs.maxOfOrNull { it.qty } ?: 1.0
                 locs.forEach { l ->
                     Divider()
@@ -112,6 +137,24 @@ fun ProductQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String
                     }
                 }
             }
+        }
+    }
+    removing?.let { h ->
+        val p = product
+        if (p != null) {
+            AlertDialog(
+                onDismissRequest = { removing = null },
+                title = { Text("Raf adresi silinsin mi?") },
+                text = { Text("${p.name} ürününün $h raf adresi silinir. Raf ve raftaki miktar değişmez; yönetici programında ve Vega kartında da kalkar.") },
+                confirmButton = {
+                    TextButton({
+                        vm.repo.removeHome(p, h, vm.userName)
+                        removing = null
+                        vm.saved("${p.code}: $h adresi silindi")
+                    }, Modifier.focusProperties { canFocus = false }) { Text("Sil", color = C.Err, fontWeight = FontWeight.Bold) }
+                },
+                dismissButton = { TextButton({ removing = null }, Modifier.focusProperties { canFocus = false }) { Text("Vazgeç") } },
+            )
         }
     }
 }
@@ -145,7 +188,16 @@ fun ShelfQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String?)
     var shelfLabel by remember { mutableStateOf(false) }
     val items = remember(version, shelf) { shelf?.let { db.shelfContents(it) }.orEmpty() }
 
-    Screen("Raf Sorgu", sub = shelf, online = online, onBack = { vm.back() }) {
+    Screen(
+        "Raf Sorgu", sub = shelf, online = online, onBack = { vm.back() }, scrollKey = shelf,
+        // Düğmeler altta sabit: uzun raf listesi bunları ekran dışına itmesin.
+        footer = if (shelf != null) ({
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SecondaryButton("Raf etiketi bas", { shelfLabel = true }, Modifier.weight(1f), icon = Ic.Barcode)
+                SecondaryButton("Transfer başlat", { vm.go(Route.Transfer(from = shelf)) }, Modifier.weight(1f), icon = Ic.Transfer)
+            }
+        }) else null,
+    ) {
         ScanField("Raf okutun", shelf?.let { "Son okunan: $it" } ?: "Raf etiketindeki barkod", true, vm.repo.prefs.cameraButton, { code ->
             val s = code.uppercase()
             when {
@@ -163,27 +215,21 @@ fun ShelfQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String?)
                 Caption("Miktar")
             }
             if (items.isEmpty()) Hint("Raf boş.", Modifier.padding(bottom = 10.dp))
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                items.forEach { l ->
-                    Divider()
-                    Row(
-                        Modifier.fillMaxWidth().clickable { vm.go(Route.ProductQuery(l.product.code)) }.padding(vertical = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(l.product.name, fontWeight = FontWeight.SemiBold)
-                            MonoText(l.product.code + if (l.assigned) " · zimmetli" else "", size = 12, weight = FontWeight.Medium, color = C.Muted)
-                        }
-                        // Zimmetli olup rafta hiç sayılmamış ürün.
-                        if (l.qty > 0) MonoText(fmt(l.qty), size = 17, modifier = Modifier.width(56.dp))
-                        else Text("sayılmadı", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = C.WarnText, modifier = Modifier.width(72.dp), textAlign = TextAlign.End)
+            LimitedList(items, { it.product.id }, limit = 80) { l ->
+                Divider()
+                Row(
+                    Modifier.fillMaxWidth().clickable { vm.go(Route.ProductQuery(l.product.code)) }.padding(vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(l.product.name, fontWeight = FontWeight.SemiBold)
+                        MonoText(l.product.code + if (l.assigned) " · zimmetli" else "", size = 12, weight = FontWeight.Medium, color = C.Muted)
                     }
+                    // Zimmetli olup rafta hiç sayılmamış ürün.
+                    if (l.qty > 0) MonoText(fmt(l.qty), size = 17, modifier = Modifier.width(56.dp))
+                    else Text("sayılmadı", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = C.WarnText, modifier = Modifier.width(72.dp), textAlign = TextAlign.End)
                 }
             }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SecondaryButton("Raf etiketi bas", { shelfLabel = true }, Modifier.weight(1f), icon = Ic.Barcode)
-            SecondaryButton("Transfer başlat", { vm.go(Route.Transfer(from = shelf)) }, Modifier.weight(1f), icon = Ic.Transfer)
         }
         if (shelfLabel) {
             LabelDialog("Raf etiketi", shelf!!, { n -> shelfLabel = false; vm.printLabel("SHELF", shelf!!, n) }, { shelfLabel = false })

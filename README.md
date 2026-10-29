@@ -50,7 +50,7 @@ Terminal önce çevrimdışı düşünülmüştür: ürün ve raf listesi cihazd
 
 **Terminal (Android)**
 
-- **Rafa kaldırma:** belgeyi seç, ürünü okut, miktarı ve rafı gir. Belgesi olmayan stok da ürün okutarak kaldırılır. Ürün başka rafta duruyorsa titreşim ve ses ile uyarır.
+- **Rafa kaldırma:** belgeyi seç, rafı okut, ürünleri peş peşe okut (her okutma 1 adet, adet girilmez). Belgesi olmayan stok da ürün okutarak kaldırılır. Ürün başka rafta duruyorsa titreşim ve ses ile uyarır.
 - **Raftan al, raf transferi, ürün ve raf sorgu:** ürünün hangi rafta kaç adet durduğu, Vega stokuyla farkı, son hareketleri.
 - **Sayım:** raf, kat ya da bölge kapsamlı veya tam sayım; kör sayım seçeneği.
 - **Depolar arası transfer:** Vega depo gönderim ve gönderim kabul fişleri terminalden yazılır; kısmi kabul, eksik kaydı.

@@ -40,6 +40,7 @@ import tr.arcteknik.depo.ui.Caption
 import tr.arcteknik.depo.ui.Card
 import tr.arcteknik.depo.ui.Divider
 import tr.arcteknik.depo.ui.Hint
+import tr.arcteknik.depo.ui.LimitedList
 import tr.arcteknik.depo.ui.MessageBar
 import tr.arcteknik.depo.ui.MonoText
 import tr.arcteknik.depo.ui.Notice
@@ -55,7 +56,7 @@ import tr.arcteknik.depo.ui.Tone
 @Composable
 fun CountListScreen(vm: AppVm, online: Boolean, version: Int) {
     val sessions = remember(version) { vm.repo.db.countSessions() }
-    Screen("Sayım", online = online, onBack = { vm.back() }, footer = {
+    Screen("Sayım", online = online, onBack = { vm.back() }, scroll = false, footer = {
         SecondaryButton("Serbest sayım başlat", { vm.go(Route.Count(vm.repo.startFreeCount().id)) })
     }) {
         Hint("Yönetici programında açılan sayımlar burada görünür.")
@@ -110,7 +111,7 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
         return
     }
 
-    Screen(session.no, sub = "${session.title} · " + if (session.blind) "kör sayım" else "açık sayım", online = online, onBack = { vm.back() }, monoTitle = true, footer = {
+    Screen(session.no, sub = "${session.title} · " + if (session.blind) "kör sayım" else "açık sayım", online = online, onBack = { vm.back() }, monoTitle = true, scrollKey = shelf, footer = {
         MessageBar(vm.message?.first, vm.message?.second == true)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             SecondaryButton("Sonraki raf", { shelf = null }, Modifier.weight(1f), enabled = shelf != null)
@@ -161,31 +162,28 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
             Card(padding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp)) {
                 Caption("Bu rafta sayılan")
                 if (lines.isEmpty()) Hint("Henüz ürün okutulmadı.", Modifier.padding(bottom = 10.dp))
-                LazyColumn {
-                    items(lines, key = { it.product.id }) { l ->
-                        Divider()
-                        Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Column(Modifier.weight(1f)) {
-                                Text(l.product.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                                MonoText(l.product.code, size = 12, weight = FontWeight.Medium, color = C.Muted)
-                            }
-                            QtyStepper(l.qty, { vm.repo.setCount(sessionId, shelf!!, l.product, it) }, small = true)
+                // Okutulan satırların hepsi görünür: ada göre sıralı, yeni okutulan sınırın dışında kalmasın.
+                LimitedList(lines, { it.product.id }, limit = Int.MAX_VALUE) { l ->
+                    Divider()
+                    Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(Modifier.weight(1f)) {
+                            Text(l.product.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                            MonoText(l.product.code, size = 12, weight = FontWeight.Medium, color = C.Muted)
                         }
+                        QtyStepper(l.qty, { vm.repo.setCount(sessionId, shelf!!, l.product, it) }, small = true)
                     }
-                    if (waiting.isNotEmpty()) {
-                        item(key = "bekleyen") {
-                            Divider()
-                            Caption("Bu rafta beklenen, okutulmadı (${waiting.size})", Modifier.padding(top = 10.dp))
-                        }
-                        items(waiting, key = { "w" + it.product.id }) { w ->
-                            Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(w.product.name, color = C.Text2, maxLines = 1)
-                                    MonoText(w.product.code + if (w.qty <= 0) " · zimmetli" else "", size = 12, weight = FontWeight.Medium, color = C.Muted)
-                                }
-                                // Kör sayımda sistem miktarı gösterilmez; yalnız ürünün beklendiği.
-                                if (!session.blind && w.qty > 0) MonoText(fmt(w.qty), size = 14, color = C.Muted)
+                }
+                if (waiting.isNotEmpty()) {
+                    Divider()
+                    Caption("Bu rafta beklenen, okutulmadı (${waiting.size})", Modifier.padding(top = 10.dp))
+                    LimitedList(waiting, { "w" + it.product.id }) { w ->
+                        Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Column(Modifier.weight(1f)) {
+                                Text(w.product.name, color = C.Text2, maxLines = 1)
+                                MonoText(w.product.code + if (w.qty <= 0) " · zimmetli" else "", size = 12, weight = FontWeight.Medium, color = C.Muted)
                             }
+                            // Kör sayımda sistem miktarı gösterilmez; yalnız ürünün beklendiği.
+                            if (!session.blind && w.qty > 0) MonoText(fmt(w.qty), size = 14, color = C.Muted)
                         }
                     }
                 }
@@ -222,26 +220,25 @@ fun CountDiffScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String)
                 Caption("Sayılan", Modifier.width(60.dp))
                 Caption("Fark", Modifier.width(44.dp))
             }
-            LazyColumn {
-                items(diffs, key = { it.shelf + it.product.id }) { d ->
-                    Divider()
-                    Row(Modifier.padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(d.product.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                            MonoText("${d.product.code} · ${d.shelf}", size = 12, weight = FontWeight.Medium, color = C.Muted)
-                        }
-                        MonoText(fmt(d.system), modifier = Modifier.width(52.dp), weight = FontWeight.Medium)
-                        MonoText(fmt(d.counted), modifier = Modifier.width(60.dp), weight = FontWeight.Medium)
-                        MonoText(
-                            if (d.diff == 0.0) "0" else (if (d.diff > 0) "+" else "−") + fmt(Math.abs(d.diff)),
-                            modifier = Modifier.width(44.dp),
-                            color = when {
-                                d.diff > 0 -> C.Info
-                                d.diff < 0 -> C.Warn
-                                else -> C.Muted
-                            },
-                        )
+            // Farklı kalemler başta sıralıdır; çok uzun sayımda kalanı "Daha fazla göster" ile açılır.
+            LimitedList(diffs, { it.shelf + it.product.id }, limit = 80) { d ->
+                Divider()
+                Row(Modifier.padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(d.product.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        MonoText("${d.product.code} · ${d.shelf}", size = 12, weight = FontWeight.Medium, color = C.Muted)
                     }
+                    MonoText(fmt(d.system), modifier = Modifier.width(52.dp), weight = FontWeight.Medium)
+                    MonoText(fmt(d.counted), modifier = Modifier.width(60.dp), weight = FontWeight.Medium)
+                    MonoText(
+                        if (d.diff == 0.0) "0" else (if (d.diff > 0) "+" else "−") + fmt(Math.abs(d.diff)),
+                        modifier = Modifier.width(44.dp),
+                        color = when {
+                            d.diff > 0 -> C.Info
+                            d.diff < 0 -> C.Warn
+                            else -> C.Muted
+                        },
+                    )
                 }
             }
         }

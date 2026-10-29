@@ -83,13 +83,13 @@ object Diag {
         io.execute { runCatching { checkPreviousExit() } }
     }
 
-    /** Olay kaydı: okutma, ekran, mesaj, eşitleme. Son 80 olay saklanır. */
+    /** Olay kaydı: okutma, ekran, mesaj, eşitleme. Son 400 olay saklanır (50-60 kalemlik belge okutması 150+ olay yazar). */
     fun crumb(text: String) {
         val line = "${time.format(Date())} ${text.take(300)}"
         val snapshot: List<String>
         synchronized(crumbs) {
             crumbs.addLast(line)
-            while (crumbs.size > 80) crumbs.removeFirst()
+            while (crumbs.size > 400) crumbs.removeFirst()
             snapshot = crumbs.toList()
         }
         if (::dir.isInitialized) io.execute { runCatching { File(dir, "olaylar.txt").writeText(snapshot.joinToString("\n")) } }

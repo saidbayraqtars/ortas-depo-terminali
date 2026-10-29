@@ -10,8 +10,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
@@ -39,6 +37,7 @@ import tr.arcteknik.depo.ui.Card
 import tr.arcteknik.depo.ui.Divider
 import tr.arcteknik.depo.ui.Hint
 import tr.arcteknik.depo.ui.Ic
+import tr.arcteknik.depo.ui.LimitedList
 import tr.arcteknik.depo.ui.MessageBar
 import tr.arcteknik.depo.ui.MonoText
 import tr.arcteknik.depo.ui.Notice
@@ -78,21 +77,19 @@ fun QueueScreen(vm: AppVm, online: Boolean, version: Int) {
                     Caption("Bekleyen ${ops.size} işlem")
                     Caption("En eski ${time.format(ops.first().createdAt)}")
                 }
-                LazyColumn {
-                    items(ops, key = { it.id }) { op ->
-                        val title = op.summary.substringBefore('|')
-                        val sub = op.summary.substringAfter('|', "")
-                        val err = op.status == OpStatus.ERROR
-                        Column(Modifier.clickable { selected = op }) {
-                            Divider()
-                            Row(Modifier.padding(vertical = 10.dp), verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                                    if (err) Text(op.error ?: "Sunucu reddetti", color = C.Err, fontSize = 12.sp)
-                                    else MonoText("$sub · ${time.format(op.createdAt)}", size = 12, weight = FontWeight.Medium, color = C.Muted)
-                                }
-                                Tag(if (err) "Hata" else "Bekliyor", err)
+                LimitedList(ops, { it.id }) { op ->
+                    val title = op.summary.substringBefore('|')
+                    val sub = op.summary.substringAfter('|', "")
+                    val err = op.status == OpStatus.ERROR
+                    Column(Modifier.clickable { selected = op }) {
+                        Divider()
+                        Row(Modifier.padding(vertical = 10.dp), verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Column(Modifier.weight(1f)) {
+                                Text(title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                if (err) Text(op.error ?: "Sunucu reddetti", color = C.Err, fontSize = 12.sp)
+                                else MonoText("$sub · ${time.format(op.createdAt)}", size = 12, weight = FontWeight.Medium, color = C.Muted)
                             }
+                            Tag(if (err) "Hata" else "Bekliyor", err)
                         }
                     }
                 }

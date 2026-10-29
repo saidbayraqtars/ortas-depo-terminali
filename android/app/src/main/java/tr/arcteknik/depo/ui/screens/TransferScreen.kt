@@ -1,134 +1,181 @@
 package tr.arcteknik.depo.ui.screens
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusProperties
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import tr.arcteknik.depo.data.Product
 import tr.arcteknik.depo.data.Repo.Companion.fmt
 import tr.arcteknik.depo.ui.AppVm
+import tr.arcteknik.depo.ui.BasketBox
+import tr.arcteknik.depo.ui.BasketLink
+import tr.arcteknik.depo.ui.BasketRow
 import tr.arcteknik.depo.ui.C
-import tr.arcteknik.depo.ui.Card
-import tr.arcteknik.depo.ui.Hint
+import tr.arcteknik.depo.ui.CartLine
+import tr.arcteknik.depo.ui.Caption
 import tr.arcteknik.depo.ui.MessageBar
 import tr.arcteknik.depo.ui.MonoText
-import tr.arcteknik.depo.ui.PrimaryButton
-import tr.arcteknik.depo.ui.QtyStepper
 import tr.arcteknik.depo.ui.ProductScanField
-import tr.arcteknik.depo.ui.ScanField
 import tr.arcteknik.depo.ui.Screen
+import tr.arcteknik.depo.ui.bump
+import tr.arcteknik.depo.ui.cartQty
+import tr.arcteknik.depo.ui.undo
 
-/** Kaynak raf → ürün → miktar → hedef raf. */
+/**
+ * Raf transferi (sepet mantığı): kaynak raf okutulur, ürünler peş peşe okutulur (her okutma +1, adet sorulmaz), hedef raf
+ * okutulunca onaydan sonra hepsi taşınır. Raftaki miktar aşılırsa okutma engellenmez: sesli ve görüntülü uyarı verilir,
+ * onay penceresinde ayrıca uyarılır (kaynak raf sıfırda kesilir, hedefe okutulan adet girer).
+ */
 @Composable
 fun TransferScreen(vm: AppVm, online: Boolean, version: Int, initialProduct: String?, initialFrom: String?) {
     val db = vm.repo.db
-    var from by remember { mutableStateOf(initialFrom) }
-    var productId by remember { mutableStateOf(initialProduct?.takeIf { p -> initialFrom != null && db.qtyAt(p, initialFrom) > 0 }) }
-    var qty by remember { mutableStateOf(productId?.let { db.qtyAt(it, initialFrom!!) } ?: 0.0) }
-    var qtyDone by remember { mutableStateOf(false) }
-    var to by remember { mutableStateOf<String?>(null) }
-
-    val product = remember(version, productId) { productId?.let { db.productById(it) } }
-    val available = remember(version, productId, from) { if (productId != null && from != null) db.qtyAt(productId!!, from!!) else 0.0 }
-
-    fun reset() {
-        from = null; productId = null; qty = 0.0; qtyDone = false; to = null
-    }
-
-    val step = when {
-        from == null -> 1
-        product == null -> 2
-        !qtyDone -> 3
-        else -> 4
-    }
-
-    Screen("Raf Transferi", online = online, onBack = { vm.back() }, footer = {
-        MessageBar(vm.message?.first, vm.message?.second == true)
-        when (step) {
-            3 -> PrimaryButton("Miktarı onayla", { qtyDone = true }, enabled = qty > 0 && qty <= available)
-            else -> PrimaryButton("Transferi kaydet", {
-                vm.repo.transfer(product!!, from!!, to!!, qty, vm.userName)
-                vm.saved("${fmt(qty)} ${product.unit.lowercase()} $from → $to taşındı")
-                reset()
-            }, enabled = step == 4 && to != null)
-        }
-    }) {
-        StepRow(1, "Kaynak raf", from, step) { reset() }
-        StepRow(2, "Ürün" + (if (product != null) " · rafta ${fmt(available)} ${product.unit.lowercase()}" else ""), product?.name, step, mono = false, sub = product?.code) {
-            productId = null; qtyDone = false; qty = 0.0; to = null
-        }
-        if (step >= 3) {
-            if (step == 3) {
-                Card {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Miktar", fontWeight = FontWeight.SemiBold)
-                            Hint("En çok ${fmt(available)}")
-                        }
-                        QtyStepper(qty, { qty = it }, max = available)
-                    }
-                }
-            } else {
-                StepRow(3, "Miktar", "${fmt(qty)} ${product?.unit?.lowercase()}", step) { qtyDone = false; to = null }
+    var from by remember { mutableStateOf(initialFrom?.uppercase()) }
+    val cart = remember {
+        mutableStateListOf<CartLine>().also { c ->
+            // Ürün sorgudan "Transfer" ile gelindiyse ürünün o raftaki tamamı sepete konur; azaltmak için − kullanılır.
+            if (initialProduct != null && initialFrom != null) {
+                val q = db.qtyAt(initialProduct, initialFrom)
+                if (q > 0) c.add(CartLine(initialProduct, initialFrom.uppercase(), q))
             }
         }
-        if (step == 4 && to != null) StepRow(4, "Hedef raf", to, 5) { to = null }
+    }
+    var tick by remember { mutableStateOf(0) }
+    var toShelf by remember { mutableStateOf<String?>(null) }
+    var leaveAsk by remember { mutableStateOf(false) }
 
-        when (step) {
-            1 -> ScanField("Kaynak rafı okutun", "Ürünün şu an durduğu raf", true, vm.repo.prefs.cameraButton, { code ->
-                val s = code.uppercase()
-                if (!db.shelfExists(s)) vm.error("\"$s\" tanımlı bir raf değil") else { from = s; vm.feedback.ok() }
-            })
-            2 -> ProductScanField(vm, "Ürünü okutun", "$from rafındaki ürün", { p ->
-                if (db.qtyAt(p.id, from!!) <= 0) vm.error("${p.name} $from rafında görünmüyor")
-                else { productId = p.id; qty = db.qtyAt(p.id, from!!); vm.feedback.ok() }
-            })
-            4 -> if (to == null) ScanField("Hedef rafı okutun", "Raf etiketindeki barkodu okutun ya da yazın", true, vm.repo.prefs.cameraButton, { code ->
-                val s = code.uppercase()
+    fun onProduct(p: Product) {
+        val f = from ?: return vm.error("Önce kaynak rafı okutun")
+        val here = db.qtyAt(p.id, f)
+        if (here <= 1e-9) return vm.error("${p.name} $f rafında görünmüyor")
+        val n = cart.bump(p.id, f)
+        tick++
+        if (n - here > 1e-9) vm.error("${p.name}: $f rafında ${fmt(here)} var, ${fmt(n)} okutuldu")
+        else vm.ok("${p.name} · ${fmt(n)}")
+    }
+
+    /** Raf barkodu: kaynak yoksa kaynak, sepet boşken kaynak değişir, sepet doluyken hedeftir (onaylanır). */
+    fun onShelf(code: String): Boolean {
+        val s = code.trim().uppercase()
+        if (!db.shelfExists(s)) {
+            if (from == null || cart.isEmpty()) return false
+            // Sepet dolu: tanımsız raf hedef olarak eklenebilir.
+            vm.unknownShelf(s) { toShelf = it }
+            return true
+        }
+        when {
+            from == null || cart.isEmpty() -> { from = s; vm.ok("Kaynak raf $s") }
+            s == from -> vm.error("Hedef raf kaynakla aynı olamaz")
+            else -> { vm.feedback.ok(); toShelf = s }
+        }
+        return true
+    }
+
+    BackHandler(enabled = cart.isNotEmpty()) { leaveAsk = true }
+    Screen(
+        "Raf Transferi", sub = from?.let { "Kaynak $it" }, online = online,
+        onBack = { if (cart.isNotEmpty()) leaveAsk = true else vm.back() }, scroll = false,
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            ProductScanField(
+                vm, if (from == null) "Raf okutun" else "Ürün okutun",
                 when {
-                    s == from -> vm.error("Hedef raf kaynakla aynı olamaz")
-                    !db.shelfExists(s) -> vm.unknownShelf(s) { to = it }
-                    else -> { to = s; vm.feedback.ok() }
+                    from == null -> "Önce kaynak raf"
+                    cart.isEmpty() -> "Kaynak $from"
+                    else -> "Sonra hedef raf okutun"
+                },
+                ::onProduct, onOther = ::onShelf, showSearchLink = false,
+            )
+            MessageBar(vm.message?.takeIf { it.second }?.first, true)
+            val rows = cart.asReversed().map { c ->
+                val p = db.productById(c.productId)
+                val here = db.qtyAt(c.productId, c.shelf)
+                BasketRow(
+                    key = c.productId, name = p?.name ?: c.productId,
+                    detail = listOfNotNull(p?.code, "rafta ${fmt(here)}").joinToString(" · "),
+                    count = fmt(c.qty), countColor = if (c.qty - here > 1e-9) C.Err else C.Ink,
+                    highlight = if (c === cart.last()) C.AccentBg else Color.Transparent,
+                    onUndo = { cart.undo(c.productId, c.shelf) },
+                )
+            }
+            BasketBox(
+                rows, scrollKey = tick,
+                emptyHint = if (from == null) "Önce ürünlerin durduğu rafı okutun; sonra ürünleri peş peşe, en sonda hedef rafı okutun." else "Ürünleri peş peşe okutun; okutulanlar burada listelenir. Sonra hedef rafı okutun.",
+                modifier = Modifier.weight(1f),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Caption(if (from == null) "Kaynak raf yok" else "$from · ${fmt(cart.sumOf { it.qty })} adet", Modifier.weight(1f))
+                    if (cart.isNotEmpty()) BasketLink("Sıfırla", C.Err) { cart.clear() }
+                    else if (from != null) BasketLink("Rafı sıfırla") { from = null }
                 }
-            })
+            }
         }
-        if (step < 4 || to == null) MessageBar(vm.message?.first, vm.message?.second == true)
     }
-}
 
-@Composable
-private fun StepRow(n: Int, label: String, value: String?, current: Int, mono: Boolean = true, sub: String? = null, onEdit: () -> Unit) {
-    if (value == null) return
-    Card {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Box(Modifier.size(32.dp).clip(CircleShape).background(C.OkBg), contentAlignment = Alignment.Center) {
-                Text("✓", color = C.OkText, fontWeight = FontWeight.Bold)
-            }
-            Column(Modifier.weight(1f)) {
-                Text(label, fontSize = 12.sp, color = C.Muted)
-                if (mono) MonoText(value, size = 17) else Text(value, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-                if (sub != null) MonoText(sub, size = 12, weight = FontWeight.Medium, color = C.Muted)
-            }
-            if (current > n) {
-                Text("Değiştir", color = C.Info, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.focusProperties { canFocus = false }.clickable(onClick = onEdit).padding(8.dp))
-            }
+    if (leaveAsk) {
+        AlertDialog(
+            onDismissRequest = { leaveAsk = false },
+            title = { Text("Okutulanlar atılsın mı?") },
+            text = { Text("${cart.size} kalem okutuldu, henüz taşınmadı.") },
+            confirmButton = { TextButton({ leaveAsk = false; cart.clear(); vm.back() }, Modifier.focusProperties { canFocus = false }) { Text("Atıp çık", color = C.Err, fontWeight = FontWeight.Bold) } },
+            dismissButton = { TextButton({ leaveAsk = false }, Modifier.focusProperties { canFocus = false }) { Text("Vazgeç") } },
+        )
+    }
+    toShelf?.let { t ->
+        val f = from
+        if (f != null) {
+            val over = cart.filter { it.qty - db.qtyAt(it.productId, f) > 1e-9 }
+            AlertDialog(
+                onDismissRequest = { toShelf = null },
+                title = { Text("${cart.size} kalem taşınsın mı?") },
+                text = {
+                    Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            MonoText(f, size = 16)
+                            Text("→")
+                            MonoText(t, size = 16)
+                        }
+                        Text("Toplam ${fmt(cart.sumOf { it.qty })} adet.")
+                        if (over.isNotEmpty()) {
+                            Text("${over.size} kalemde kaynak raftaki miktardan fazla okutuldu:", fontWeight = FontWeight.SemiBold, color = C.Err, modifier = Modifier.padding(top = 6.dp))
+                            over.forEach { c ->
+                                val p = db.productById(c.productId)
+                                Text("• ${p?.name ?: c.productId} · ${p?.code ?: ""} ${fmt(c.qty)}/${fmt(db.qtyAt(c.productId, f))}", fontSize = 14.sp, color = C.Err)
+                            }
+                            Text("Kaynak raf sıfırda kesilir; okutulan adedin tamamı hedef rafa girer.", fontSize = 13.sp, color = C.Muted)
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton({
+                        val n = cart.size
+                        val total = cart.sumOf { it.qty }
+                        cart.toList().forEach { c -> db.productById(c.productId)?.let { vm.repo.transfer(it, f, t, c.qty, vm.userName) } }
+                        vm.saved("$n kalem · ${fmt(total)} adet $f → $t taşındı")
+                        cart.clear(); from = null; toShelf = null
+                    }, Modifier.focusProperties { canFocus = false }) { Text("Taşı", fontWeight = FontWeight.Bold) }
+                },
+                dismissButton = { TextButton({ toShelf = null }, Modifier.focusProperties { canFocus = false }) { Text("Vazgeç") } },
+            )
         }
     }
 }

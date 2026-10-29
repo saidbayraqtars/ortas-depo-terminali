@@ -14,6 +14,13 @@ Barkodu okunmayan ürün için her okutma alanının altında **İsimle ara** va
 olsa da yakın adlar listelenir. Ürün Sorgu ve Raf Sorgu ekranlarındaki **Etiket bas** düğmesi etiketi yönetici
 programının bilgisayarındaki etiket yazıcısından çıkarır.
 
+## Okutma mantığı: sepet (1.8.2+)
+
+Rafa Kaldır (belge içi), Raftan Al, Raf Transferi, Depoya Gönder ve Gönderim Kabul aynı mantıkla çalışır: **adet sorulmaz**. Ürün okutulunca
+listeye girer, **aynı ürün tekrar okutulunca adet 1 artar**, arada başka ürün okutulabilir. Liste en son okutulan üstte olacak şekilde
+sıralıdır (son okutulan renkli), satırdaki **−** tek adım geri alır. Beklenen miktar (belgede kalan, raftaki stok, gönderilen) aşılırsa okutma
+**engellenmez**: sesli ve görüntülü uyarı verilir, işlem sonunda onay penceresinde ayrıca uyarılır.
+
 ## Rafa kaldırma ve raftan alma (1.5.0+)
 
 - **Rafa Kaldır** listesi çalışılan deponun belgelerini gösterir ("Bütün depolar" ile hepsi). Okutma alanına belge
@@ -23,9 +30,16 @@ programının bilgisayarındaki etiket yazıcısından çıkarır.
 - Aynı alana **ürün** okutulursa belge seçmeden rafa kaldırılır: ürün → miktar → raf. Miktar o depodaki açık belgelerden
   (en eski önce) düşülür; belgede olmayan kısım **belgesiz** kalkar (Vega'da stok var ama mal kabul belgesi yok:
   seçilmemiş belge türü, devir, başlangıç tarihinden eski giriş). En çok "belgede + belgesiz" kadar kaldırılır.
-- Belge içinden rafa kaldırma da ürün → miktar → raf sırasındadır.
-- **Raftan Al**: ürün → miktar → raf (okutulur ya da ürünün durduğu raflardan seçilir). Raf stoku azalır; Vega'daki çıkış
-  (fatura, sevk) ayrıca Vega'da yapılır.
+- Belge içinden rafa kaldırma (1.8.2+): **raf okutulur, ürünler peş peşe okutulur** (her okutma +1), **Rafa kaldır** hepsini işler. Raf
+  değiştirilecekse yeni raf okutulur (3. kat, 2. kat, zemin gibi bölerek). Raf okutulmadıysa ürünün durduğu ya da asıl rafı kullanılır;
+  kayıtlı rafı yoksa önce raf istenir. Belgede kalandan fazlası da rafa kalkar (uyarıyla). Ayrılırken okutulanlar için "rafa kaldırılsın mı"
+  sorulur. **Kalan** sekmesi belgede henüz okutulmamış kalemleri gösterir.
+- **Raftan Al** (1.8.2+): ürünler peş peşe okutulur (+1), **Raftan al** hepsini işler. Raf okutulursa ürünler o raftan alınır (**Otomatik**
+  ile bırakılır); okutulmazsa her ürün için raf kendiliğinden seçilir (önce sepetteki raf, sonra asıl raf / en çok stoklu). Raf stoku
+  azalır; raftaki miktar aşılırsa raf sıfırda kesilir. Vega'daki çıkış (fatura, sevk) ayrıca Vega'da yapılır. Ürünün raf adresini silmek
+  için Ürün Sorgu'daki **Raf adresleri › Sil** kullanılır.
+- **Raf Transferi** (1.8.2+): kaynak raf okutulur, ürünler peş peşe okutulur (+1), hedef raf okutulunca onaydan sonra hepsi taşınır.
+  Kaynak raftaki miktar aşılırsa kaynak sıfırda kesilir, okutulan adedin tamamı hedefe girer.
 - Vega'da olup terminalde görünmeyen stok için yönetici programında Ürünler › **Neden terminalde yok?**: ürünün Vega
   girişleri belge belge ve her birinin neden terminale gitmediği (tür seçili değil, başlangıçtan eski, iade, depo seçili değil…).
 
@@ -35,20 +49,21 @@ Yönetici programında Ayarlar › Depolar arası transfer açık ve **iki depo 
 Transfer yalnız bu iki depo arasındadır; başka depoya gönderilemez.
 
 - **Depoya Gönder:** önce **hangi depodan çıkıldığı** sorulur (iki seçenek); varış karşıdaki depodur. Sonra her ürün için:
-  **ürünü okut → adet → raf**.
-  - Ürün çıkış deposunda **rafta stoğu olan** bir ürünse raf seçmek zorunludur: adet raflara bölünebilir (raf okutarak ya da raf
-    satırındaki +/− ile), hiçbir rafta o rafın stoğunun üstüne çıkılamaz, raftaki stok bitmeden "rafsız" kalan olamaz. Adet raf stokunu
-    aşarsa fazlası **rafsız** gider (rafa kaldırılmayı bekleyen mal olabilir). Seçilen raflardan düşülür.
-  - Rafta stoğu olmayan ürün **"Rafsız gönder"** uyarısıyla geçer; raftan düşülmez.
+  **ürünler peş peşe okutulur** (her okutma +1, adet sorulmaz).
+  - Ürün çıkış deposunda **rafta stoğu olan** bir ürünse raf **kendiliğinden seçilir** (önce sepetteki raf, sonra asıl raf / en çok stoklu);
+    adet ya da raf değiştirmek için satıra dokunulur (adet raflara bölünebilir). Adet raf stokunu aşarsa fazlası **rafsız** gider
+    (rafa kaldırılmayı bekleyen mal olabilir); okutmada ve gönder penceresinde uyarılır. Seçilen raflardan düşülür.
+  - Rafta stoğu olmayan ürün rafsız gider; raftan düşülmez.
   - Ürünlerin hepsi eklenince **Gönder** → varış deposu onaylanır → yönetici programı Vega'ya *depo gönderim fişi* (128) yazar.
     (Sunucu son sözü söyler: eski sürüm bir terminal rafsız yollarsa ve ürünün rafında stok varsa eksiği kendisi raftan düşer.)
-- **Gönderim Kabul:** çalışılan depoya gelen gönderimler listelenir. Gelen ürünler okutulur, **her okutma 1 adet sayar**, miktar satırdaki
-  +/− ile düzeltilir. İki yol:
-  - **Okutulanları kaydet (kısmi):** okutulanlar kabul edilir, gönderim **açık kalır** (kalan miktar listede durur), eksik kaydı açılmaz.
+- **Gönderim Kabul:** çalışılan depoya gelen gönderimler listelenir. Gelen ürünler okutulur, **her okutma 1 adet sayar**, yanlış okutma
+  satırdaki − ile geri alınır. Gönderilenden fazlası okutulabilir (uyarı verir) ama fişe yalnız gönderilen kadar yazılır; **Kalan** sekmesi
+  henüz okutulmayanları gösterir. İki yol:
+  - **Kısmi kaydet:** okutulanlar kabul edilir, gönderim **açık kalır** (kalan miktar listede durur), eksik kaydı açılmaz.
   - **Kabulü bitir:** kalan miktar "eksik" olarak kaydedilir ve gönderim kapanır; daha önce kısmi kabul yapılmışsa yeni okutma olmadan da
     bitirilebilir.
   Her kabul için Vega'ya *gönderim kabul fişi* (129) yazılır. Alınan mal **Rafa Kaldır'da belge olarak bekler**; çalışan oradan girip
-  rafa yerleştirir (belgeden ürün → miktar → raf). Eksikler yönetici programında Depo transferi › Eksikler'de gönderen depo, ürün ve
+  rafa yerleştirir (belgeden raf → ürünler peş peşe). Eksikler yönetici programında Depo transferi › Eksikler'de gönderen depo, ürün ve
   miktarla görünür; mal bulununca ya da kayıp sayılınca çözüldü işaretlenir.
 
 Fişler terminali beklemeden arka planda yazılır; Vega'ya ulaşılamazsa yönetici programı yeniden dener, 5 denemeden sonra

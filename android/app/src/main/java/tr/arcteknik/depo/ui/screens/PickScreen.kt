@@ -1,190 +1,181 @@
 package tr.arcteknik.depo.ui.screens
 
-import androidx.compose.foundation.clickable
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Icon
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import tr.arcteknik.depo.data.Product
 import tr.arcteknik.depo.data.Repo.Companion.fmt
 import tr.arcteknik.depo.ui.AppVm
+import tr.arcteknik.depo.ui.BasketBox
+import tr.arcteknik.depo.ui.BasketLink
+import tr.arcteknik.depo.ui.BasketRow
 import tr.arcteknik.depo.ui.C
+import tr.arcteknik.depo.ui.CartLine
 import tr.arcteknik.depo.ui.Caption
-import tr.arcteknik.depo.ui.Card
-import tr.arcteknik.depo.ui.Divider
-import tr.arcteknik.depo.ui.Hint
-import tr.arcteknik.depo.ui.Ic
 import tr.arcteknik.depo.ui.MessageBar
-import tr.arcteknik.depo.ui.MonoText
 import tr.arcteknik.depo.ui.PrimaryButton
 import tr.arcteknik.depo.ui.ProductScanField
-import tr.arcteknik.depo.ui.ScanField
 import tr.arcteknik.depo.ui.Screen
-import tr.arcteknik.depo.ui.SecondaryButton
+import tr.arcteknik.depo.ui.bump
+import tr.arcteknik.depo.ui.cartQty
+import tr.arcteknik.depo.ui.undo
 
 /**
- * Raftan alma (çalışılan depoda): ürün okut → miktar → raf okut ya da listeden seç. Raf stoku azalır; Vega'daki
- * çıkış (fatura, sevk) ayrıca Vega'da yapılır. Seçilen rafta yeterli miktar olmalı.
+ * Raftan alma (sepet mantığı, çalışılan depoda): ürünler peş peşe okutulur (her okutma +1, adet sorulmaz), "Raftan al"
+ * hepsini işler. Raf okutulursa ürünler o raftan alınır (raf başka raf okutulana ya da temizlenene kadar sürer); okutulmazsa
+ * her ürün için raf kendiliğinden seçilir (önce sepette olan raf, sonra asıl raf / en çok stoklu). Raf stoku azalır;
+ * Vega'daki çıkış (fatura, sevk) ayrıca Vega'da yapılır. Raftaki miktar aşılırsa okutma engellenmez: sesli ve görüntülü
+ * uyarı verilir, işlem sonunda ayrıca uyarılır (raf sıfırda kesilir).
  */
 @Composable
 fun PickScreen(vm: AppVm, online: Boolean, version: Int) {
     val db = vm.repo.db
-    var productId by remember { mutableStateOf<String?>(null) }
-    var qty by remember { mutableStateOf(1.0) }
-    var qtyDone by remember { mutableStateOf(false) }
     var shelf by remember { mutableStateOf<String?>(null) }
+    val cart = remember { mutableStateListOf<CartLine>() }
+    var tick by remember { mutableStateOf(0) }
+    var confirm by remember { mutableStateOf(false) }
+    var leaveAsk by remember { mutableStateOf(false) }
 
-    val product = remember(version, productId) { productId?.let { db.productById(it) } }
-    val locations = remember(version, productId) { productId?.let { db.locationsOf(it) } ?: emptyList() }
-    val total = locations.sumOf { it.qty }
-    val homes = remember(version, productId) { productId?.let { db.homeShelves(it) } ?: emptyList() }
-    var removing by remember { mutableStateOf<String?>(null) }
-
-    fun reset() {
-        productId = null; qty = 1.0; qtyDone = false; shelf = null
-    }
-
-    fun onShelf(code: String) {
-        val s = code.uppercase()
-        val p = product ?: return
-        if (db.findProduct(code) != null) return vm.error("Raf barkodu okutun; bu bir ürün barkodu")
-        val here = db.qtyAt(p.id, s)
-        when {
-            !db.shelfExists(s) -> vm.error("\"$s\" tanımlı bir raf değil")
-            here <= 0 -> vm.error("${p.name} $s rafında görünmüyor")
-            here + 1e-9 < qty -> vm.error("$s rafında yalnız ${fmt(here)} ${p.unit.lowercase()} var")
-            else -> { shelf = s; vm.ok("Raf $s") }
-        }
-    }
-
-    Screen(
-        "Raftan Al", sub = db.depotName(db.depot).ifBlank { null }, online = online, onBack = { vm.back() },
-        footer = when {
-            product != null && !qtyDone && total > 0 -> ({
-                MessageBar(vm.message?.first, vm.message?.second == true)
-                PrimaryButton("Miktarı onayla", { qtyDone = true }, enabled = qty > 0 && qty <= total + 1e-9)
-            })
-            product != null && shelf != null -> ({
-                MessageBar(vm.message?.first, vm.message?.second == true)
-                PrimaryButton("${fmt(qty)} ${product.unit.lowercase()} $shelf rafından al", {
-                    vm.repo.pick(product, shelf!!, qty, vm.userName)
-                    vm.saved("${product.name}: ${fmt(qty)} ${product.unit.lowercase()} $shelf rafından alındı")
-                    reset()
-                }, enabled = qty > 0)
-            })
-            else -> null
-        },
-    ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Step("1 Ürün", product != null, product == null, Modifier.weight(1f))
-            Step("2 Miktar", qtyDone, product != null && !qtyDone, Modifier.weight(1f))
-            Step("3 Raf", shelf != null, qtyDone && shelf == null, Modifier.weight(1f))
-        }
-        if (product == null) {
-            ProductScanField(vm, "Ürün okutun", "Raftan alınacak ürünün barkodu ya da listeden seçin", { p ->
-                if (db.shelvedTotal(p.id) <= 0 && db.homeShelves(p.id).isEmpty()) vm.error("${p.name} bu depoda hiçbir rafta görünmüyor, raf adresi de yok")
-                else { productId = p.id; qty = 1.0; vm.ok(p.name) }
-            })
-            MessageBar(vm.message?.first, vm.message?.second == true)
-            return@Screen
-        }
-        Card {
-            Column {
-                Text(product.name, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-                MonoText(listOfNotNull(product.code, product.barcode).joinToString(" · "), size = 13, weight = FontWeight.Medium, color = C.Muted)
-            }
-            Hint(if (total > 0) "Raflarda toplam ${fmt(total)} ${product.unit.lowercase()}, ${locations.size} raf" else "Bu depoda rafta stok yok; yalnız raf adresi silinebilir.")
-        }
-        if (homes.isNotEmpty() && shelf == null) {
-            Card(padding = androidx.compose.foundation.layout.PaddingValues(start = 14.dp, end = 14.dp, top = 10.dp)) {
-                Caption("Ürünün raf adresleri")
-                homes.forEach { h ->
-                    Column {
-                        Divider()
-                        Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                MonoText(h, size = 16)
-                                val here = db.qtyAt(product.id, h)
-                                if (here > 0) Hint("rafta ${fmt(here)} ${product.unit.lowercase()}")
-                            }
-                            Text(
-                                "Adresi sil", color = C.Err, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
-                                modifier = Modifier.focusProperties { canFocus = false }.clickable { removing = h }.padding(10.dp),
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        if (total <= 0) {
-            SecondaryButton("Başka ürün seç", { reset() })
-        } else if (!qtyDone) {
-            QtyRow(qty, { qty = it }, product.unit, total)
-            SecondaryButton("Başka ürün seç", { reset() })
+    fun onProduct(p: Product) {
+        val stocks = sendStocks(db, p.id, db.depot)
+        if (stocks.isEmpty()) return vm.error("${p.name} bu depoda hiçbir rafta görünmüyor")
+        val current = shelf
+        val target = if (current != null) {
+            if (db.qtyAt(p.id, current) <= 1e-9) return vm.error("${p.name} $current rafında görünmüyor")
+            current
         } else {
-            QtyDoneRow(qty, product.unit) { qtyDone = false; shelf = null }
-            if (shelf == null) {
-                ScanField("Raf okutun", "Ya da aşağıdan seçin", true, vm.repo.prefs.cameraButton, ::onShelf)
-                MessageBar(vm.message?.first, vm.message?.second == true)
-                Card(padding = androidx.compose.foundation.layout.PaddingValues(start = 14.dp, end = 14.dp, top = 10.dp)) {
-                    Caption("Bulunduğu raflar")
-                    locations.forEach { l ->
-                        val enough = l.qty + 1e-9 >= qty
-                        Column(Modifier.focusProperties { canFocus = false }.clickable(enabled = enough) { onShelf(l.shelf) }) {
-                            Divider()
-                            Row(Modifier.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                MonoText(l.shelf, size = 16, color = if (enough) C.Ink else C.Muted, modifier = Modifier.weight(1f))
-                                Text("${fmt(l.qty)} ${product.unit.lowercase()}", fontWeight = FontWeight.SemiBold, color = if (enough) C.Ink else C.Muted)
-                            }
-                        }
-                    }
-                }
-            } else {
-                Card(bg = C.OkBg, border = C.Ok, borderWidth = 1.5.dp) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Icon(Ic.Check, null, tint = C.Ok, modifier = Modifier.size(22.dp))
-                        Column(Modifier.weight(1f)) {
-                            MonoText(shelf!!, size = 20)
-                            Text("Rafta ${fmt(db.qtyAt(product.id, shelf!!))}, alındıktan sonra ${fmt(db.qtyAt(product.id, shelf!!) - qty)}", fontSize = 12.sp, color = C.OkText)
-                        }
-                        Text("Değiştir", color = C.Info, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.focusProperties { canFocus = false }.clickable { shelf = null }.padding(8.dp))
-                    }
+            // Raf okutulmadı: sepette olup boş stoğu kalan raf, sonra stok sırasındaki boş stoklu raf, o da yoksa ilk raf.
+            stocks.firstOrNull { cart.cartQty(p.id, it.shelf) > 1e-9 && it.qty - cart.cartQty(p.id, it.shelf) > 1e-9 }?.shelf
+                ?: stocks.firstOrNull { it.qty - cart.cartQty(p.id, it.shelf) > 1e-9 }?.shelf
+                ?: stocks.first().shelf
+        }
+        val here = db.qtyAt(p.id, target)
+        val n = cart.bump(p.id, target)
+        tick++
+        if (n - here > 1e-9) vm.error("${p.name}: $target rafında ${fmt(here)} var, ${fmt(n)} okutuldu")
+        else vm.ok("${p.name} · $target · ${fmt(n)}")
+    }
+
+    /** Raf barkodu okunan raf olur; tanımsız raf kodu uyarı verir, başka kod ürün hatasına düşer. */
+    fun onShelf(code: String): Boolean {
+        val s = code.trim().uppercase()
+        if (db.shelfExists(s)) {
+            shelf = s
+            vm.ok("Raf $s")
+            return true
+        }
+        return false
+    }
+
+    fun commit() {
+        val n = cart.size
+        val total = cart.sumOf { it.qty }
+        cart.toList().forEach { c -> db.productById(c.productId)?.let { vm.repo.pick(it, c.shelf, c.qty, vm.userName) } }
+        cart.clear()
+        vm.saved("Raftan alındı · $n kalem · ${fmt(total)} adet")
+    }
+
+    val over = cart.filter { it.qty - db.qtyAt(it.productId, it.shelf) > 1e-9 }
+    BackHandler(enabled = cart.isNotEmpty()) { leaveAsk = true }
+    Screen(
+        "Raftan Al", sub = db.depotName(db.depot).ifBlank { null }, online = online,
+        onBack = { if (cart.isNotEmpty()) leaveAsk = true else vm.back() }, scroll = false,
+        footer = if (cart.isNotEmpty()) ({
+            PrimaryButton("Raftan al · ${cart.size} kalem · ${fmt(cart.sumOf { it.qty })} adet", {
+                if (over.isEmpty()) commit() else confirm = true
+            })
+        }) else null,
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            ProductScanField(
+                vm, "Ürün okutun",
+                if (shelf == null) "Raf: otomatik" else "Raf: $shelf",
+                ::onProduct, onOther = ::onShelf, showSearchLink = false,
+            )
+            MessageBar(vm.message?.takeIf { it.second }?.first, true)
+            val rows = cart.asReversed().map { c ->
+                val p = db.productById(c.productId)
+                val here = db.qtyAt(c.productId, c.shelf)
+                BasketRow(
+                    key = c.productId + "|" + c.shelf, name = p?.name ?: c.productId,
+                    detail = listOfNotNull(p?.code, c.shelf, "rafta ${fmt(here)}").joinToString(" · "),
+                    count = fmt(c.qty), countColor = if (c.qty - here > 1e-9) C.Err else C.Ink,
+                    highlight = if (c === cart.last()) C.AccentBg else Color.Transparent,
+                    onUndo = { cart.undo(c.productId, c.shelf) },
+                )
+            }
+            BasketBox(
+                rows, scrollKey = tick,
+                emptyHint = "Ürünleri peş peşe okutun; okutulanlar burada listelenir. Belli bir raftan alıyorsanız önce rafı okutun.",
+                modifier = Modifier.weight(1f),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Caption(
+                        if (shelf == null) "Raf otomatik" else "Raf $shelf",
+                        Modifier.weight(1f),
+                    )
+                    if (shelf != null) BasketLink("Otomatik") { shelf = null }
+                    if (cart.isNotEmpty()) BasketLink("Sıfırla", C.Err) { cart.clear() }
                 }
             }
         }
     }
-    removing?.let { h ->
-        val p = product
-        if (p != null) {
-            AlertDialog(
-                onDismissRequest = { removing = null },
-                title = { Text("Raf adresi silinsin mi?") },
-                text = { Text("${p.name} ürününün $h raf adresi silinir. Raf ve raftaki miktar değişmez; yönetici programında ve Vega kartında da kalkar.") },
-                confirmButton = {
-                    TextButton({
-                        vm.repo.removeHome(p, h, vm.userName)
-                        removing = null
-                        vm.saved("${p.code}: $h adresi silindi")
-                        if (db.homeShelves(p.id).none { it != h } && total <= 0) reset()
-                    }) { Text("Sil", color = C.Err, fontWeight = FontWeight.Bold) }
-                },
-                dismissButton = { TextButton({ removing = null }) { Text("Vazgeç") } },
-            )
-        }
+
+    if (leaveAsk) {
+        AlertDialog(
+            onDismissRequest = { leaveAsk = false },
+            title = { Text("Okutulanlar raftan alınsın mı?") },
+            text = { Text("${cart.size} kalem okutuldu, henüz raftan alınmadı.") },
+            confirmButton = {
+                TextButton({ leaveAsk = false; commit(); vm.back() }, Modifier.focusProperties { canFocus = false }) { Text("Raftan al", fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                Row {
+                    TextButton({ leaveAsk = false }, Modifier.focusProperties { canFocus = false }) { Text("Vazgeç") }
+                    TextButton({ leaveAsk = false; cart.clear(); vm.back() }, Modifier.focusProperties { canFocus = false }) { Text("Atıp çık", color = C.Err) }
+                }
+            },
+        )
+    }
+    if (confirm) {
+        AlertDialog(
+            onDismissRequest = { confirm = false },
+            title = { Text("Raftaki miktardan fazla var, yine de alınsın mı?") },
+            text = {
+                Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("${over.size} satırda raftaki miktardan fazla okutuldu:", fontWeight = FontWeight.SemiBold, color = C.Err)
+                    over.forEach { c ->
+                        val p = db.productById(c.productId)
+                        Text("• ${p?.name ?: c.productId} · ${p?.code ?: ""} ${c.shelf} ${fmt(c.qty)}/${fmt(db.qtyAt(c.productId, c.shelf))}", fontSize = 14.sp, color = C.Err)
+                    }
+                    Text("Raf sıfırda kesilir; raf kaydı mal fiziken az ya da fazlaysa sayımla düzeltilir.", fontSize = 13.sp, color = C.Muted, modifier = Modifier.padding(top = 4.dp))
+                }
+            },
+            confirmButton = {
+                TextButton({ confirm = false; commit() }, Modifier.focusProperties { canFocus = false }) { Text("Yine de al", fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = { TextButton({ confirm = false }, Modifier.focusProperties { canFocus = false }) { Text("Vazgeç") } },
+        )
     }
 }

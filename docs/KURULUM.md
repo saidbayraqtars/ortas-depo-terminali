@@ -78,8 +78,8 @@ düzeltilir. Önizlemede atlanacak satırlar nedeniyle listelenir. Boş şablon:
 
 | İş | Terminalde | Yönetici programında |
 |---|---|---|
-| Rafa kaldırma | Rafa Kaldır → belge seç ya da okut → ürün → raf → miktar | Mal kabul: belge belge ilerleme; mal başka yere konduysa **Elle kapat** |
-| Raf transferi | Raf Transferi → kaynak raf → ürün → miktar → hedef raf | Hareketler |
+| Rafa kaldırma | Rafa Kaldır → belge seç ya da okut → raf okut → ürünleri peş peşe okut → Rafa kaldır | Mal kabul: belge belge ilerleme; mal başka yere konduysa **Elle kapat** |
+| Raf transferi | Raf Transferi → kaynak raf → ürünleri peş peşe okut → hedef raf | Hareketler |
 | Ürün / raf sorgu | Ana menüde ne okutulursa açılır | Ürün ve stok, Raflar |
 | Sayım | Sayım → sayım seç → raf okut → ürünleri okut → Sayımı bitir → Gönder | Sayımlar → aç, kapat, **onayla** |
 

@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -31,6 +33,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -72,6 +75,13 @@ import tr.arcteknik.depo.sync.UserActivity
 
 // ---- Ekran iskeleti ------------------------------------------------------------------------
 
+/**
+ * Üst çubuk + içerik + sabit alt alan. [scroll] açıkken içerik ekrana sığmazsa kayar (küçük ekran, büyük yazı); [footer]
+ * kayan alanın dışında olduğundan hep görünür. [scroll] açıkken içerikte `LazyColumn`, `verticalScroll` ya da dikey
+ * `weight`/`fillMaxHeight` olmamalı (sonsuz yükseklik hatasıyla çöker): uzun listede [LimitedList] kullanılır; kendi
+ * kaydırması ya da dolduran listesi olan ekran `scroll = false` verir. [scrollKey] değişince kaydırma başa döner
+ * (adım değişen ekranlarda yeni adımın okutma alanı görünsün).
+ */
 @Composable
 fun Screen(
     title: String,
@@ -80,12 +90,16 @@ fun Screen(
     onBack: (() -> Unit)?,
     monoTitle: Boolean = false,
     footer: (@Composable ColumnScope.() -> Unit)? = null,
+    scroll: Boolean = true,
+    scrollKey: Any? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(Modifier.fillMaxSize().background(C.Ground)) {
         TopBar(title, sub, online, onBack, monoTitle)
+        val scrollState = rememberScrollState()
+        if (scroll) LaunchedEffect(scrollKey) { scrollState.scrollTo(0) }
         Column(
-            Modifier.weight(1f).fillMaxWidth().padding(12.dp),
+            Modifier.weight(1f).fillMaxWidth().then(if (scroll) Modifier.verticalScroll(scrollState) else Modifier).padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
             content = content,
         )
@@ -155,6 +169,26 @@ fun Card(
     var m = modifier.fillMaxWidth().clip(shape).background(bg).border(borderWidth, border, shape)
     if (onClick != null) m = m.clickable(onClick = onClick)
     Column(m.padding(padding), verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
+}
+
+/**
+ * Kayan [Screen] içindeki uzun liste: `LazyColumn` iç içe kaydırmada çöktüğü için satırlar düz sütunda çizilir; ilk
+ * [limit] satırdan sonrası "Daha fazla göster" ile açılır (bileşim maliyeti sınırlı kalır).
+ */
+@Composable
+fun <T> LimitedList(items: List<T>, keyOf: (T) -> Any, limit: Int = 60, row: @Composable (T) -> Unit) {
+    var shown by remember { mutableStateOf(limit) }
+    Column {
+        items.take(shown).forEach { key(keyOf(it)) { row(it) } }
+        if (items.size > shown) {
+            Divider()
+            Text(
+                "Daha fazla göster (${items.size - shown})",
+                Modifier.fillMaxWidth().focusProperties { canFocus = false }.clickable { shown = if (shown > Int.MAX_VALUE - limit) Int.MAX_VALUE else shown + limit }.padding(vertical = 12.dp),
+                color = C.Info, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, textAlign = TextAlign.Center,
+            )
+        }
+    }
 }
 
 @Composable

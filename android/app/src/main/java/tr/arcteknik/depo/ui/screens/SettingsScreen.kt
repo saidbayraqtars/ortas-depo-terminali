@@ -76,7 +76,7 @@ fun SettingsScreen(vm: AppVm, online: Boolean) {
         return true
     }
 
-    Screen("Ayarlar", online = online, onBack = { vm.back() }, footer = {
+    Screen("Ayarlar", online = online, onBack = { vm.back() }, scroll = false, footer = {
         MessageBar(vm.message?.first, vm.message?.second == true)
         PrimaryButton("Kaydet ve eşitle", {
             // QR alanına elle yazılıp Enter'a basılmamış metin varsa (ekran klavyesi Enter'ı yutabiliyor) önce o uygulanır.

@@ -150,6 +150,8 @@ fun ProductScanField(
     onOther: ((String) -> Boolean)? = null,
     /** Alana yazılıp henüz gönderilmemiş metin (Rafa Kaldır listesi yazarken süzülür). */
     onTextChange: ((String) -> Unit)? = null,
+    /** Alttaki "İsimle ara" bağlantısı; küçük ekranda yer açmak için kapatılabilir (klavye düğmesiyle yazılan ad yine aranır). */
+    showSearchLink: Boolean = true,
 ) {
     var search by remember { mutableStateOf<Pair<String, String?>?>(null) }
     ScanField(title, hint, search == null, vm.repo.prefs.cameraButton, onTextChange = onTextChange, onScan = { code ->
@@ -162,12 +164,14 @@ fun ProductScanField(
             else -> { vm.feedback.error(); search = code to "\"$code\" kod ya da barkod olarak bulunamadı. Benzer adlar:" }
         }
     })
-    Text(
-        "İsimle ara",
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { search = "" to null }.padding(vertical = 8.dp),
-        color = C.Info, fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
-        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-    )
+    if (showSearchLink) {
+        Text(
+            "İsimle ara",
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { search = "" to null }.padding(vertical = 8.dp),
+            color = C.Info, fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        )
+    }
     search?.let { (initial, note) ->
         ProductSearchDialog(vm, initial, note, onPick = { search = null; onProduct(it) }, onDismiss = { search = null })
     }
