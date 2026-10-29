@@ -116,6 +116,10 @@ function depoEsle(deger, liste) {
   return icerir.length === 1 ? icerir[0].ind : null;
 }
 
+/**
+ * Ürün kodu ya da barkoddan kart numaraları (dizi), bulunamazsa null. Kod boşluk, tire ve nokta gözetmeden eşlenir; Vega'da
+ * `PSB-53205` ile `PSB53205` (ya da sonunda satır sonu olan kopya) ayrı kartlar olabilir, bu yüzden birden çok kart dönebilir.
+ */
 function urunEsle(deger) {
   const s = String(deger || '').trim();
   if (!s) return null;
@@ -123,8 +127,12 @@ function urunEsle(deger) {
   if (!g) return null;
   if (!urunEsle.kod || urunEsle.surum !== g.at) {
     urunEsle.kod = new Map();
-    for (const p of g.products) urunEsle.kod.set(fuzzy.norm(p.code).replace(/ /g, ''), p.id);
-    for (const [id, bcs] of Object.entries(g.barcodes)) for (const b of bcs) urunEsle.kod.set(b, id);
+    for (const p of g.products) {
+      const k = fuzzy.norm(p.code).replace(/ /g, '');
+      if (urunEsle.kod.has(k)) urunEsle.kod.get(k).push(p.id);
+      else urunEsle.kod.set(k, [p.id]);
+    }
+    for (const [id, bcs] of Object.entries(g.barcodes)) for (const b of bcs) urunEsle.kod.set(b, [id]);
     urunEsle.surum = g.at;
   }
   return urunEsle.kod.get(s) || urunEsle.kod.get(fuzzy.norm(s).replace(/ /g, '')) || null;
@@ -140,9 +148,13 @@ function sayiOku(x) {
 
 const HEPSI = 'hepsi';
 
-/** Depo seçimi → depo numaraları. "hepsi" kullanılan bütün depolar; boş ya da geçersiz → null. */
+/** Depo seçimi → depo numaraları. "hepsi" kullanılan bütün depolar; sayı dizisi olduğu gibi; boş ya da geçersiz → null. */
 function hedefDepolar(deger, liste) {
   if (deger === HEPSI) return liste.map((d) => d.ind);
+  if (Array.isArray(deger)) {
+    const ds = deger.map(Number).filter(Number.isInteger);
+    return ds.length ? ds : null;
+  }
   if (deger === null || deger === undefined || deger === '') return null;
   const d = Number(deger);
   return Number.isInteger(d) ? [d] : null;
@@ -159,6 +171,7 @@ function coz({ satirlar, eslesme, depoEslesme = {}, sabitDepo = null }) {
   const sonuc = [];
   const depoDegerleri = new Map();
   const hatalar = [];
+  const eslesmeyen = [];
   satirlar.forEach((r, i) => {
     const satirNo = i + 2;
     const hucreRaf = al(r, 'raf');
@@ -174,22 +187,28 @@ function coz({ satirlar, eslesme, depoEslesme = {}, sabitDepo = null }) {
     }
     if (!ds || !ds.length) return hatalar.push({ satir: satirNo, hata: dosyaDepo ? `Depo eşleşmedi: ${dosyaDepo}` : 'Depo yok' });
     const urunDeger = al(r, 'urun');
-    let productId = null;
+    let idler = null;
     if (urunDeger) {
-      productId = urunEsle(urunDeger);
-      if (!productId) return hatalar.push({ satir: satirNo, hata: `Ürün Vega'da bulunamadı: ${urunDeger}` });
+      idler = urunEsle(urunDeger);
+      if (!idler) {
+        eslesmeyen.push(urunDeger);
+        return hatalar.push({ satir: satirNo, hata: `Ürün Vega'da bulunamadı: ${urunDeger}` });
+      }
     }
     const mk = al(r, 'miktar');
     const qty = mk === '' ? null : sayiOku(mk);
     if (Number.isNaN(qty) || (qty !== null && qty < 0)) return hatalar.push({ satir: satirNo, hata: `Miktar okunamadı: ${mk}` });
-    if (qty !== null && productId && (raflar.length > 1 || ds.length > 1)) {
+    if (qty !== null && idler && (raflar.length > 1 || ds.length > 1)) {
       return hatalar.push({ satir: satirNo, hata: 'Miktar tek raf ve tek depo için yazılır; bu satırda birden çok raf ya da depo var' });
     }
-    for (const d of ds) for (const raf of raflar) sonuc.push({ satir: satirNo, depo: d, raf, bolge: al(r, 'bolge'), not: al(r, 'not'), productId, qty });
+    // Miktar tek karta yazılır (aynı kodlu kartlarda sonuncusu); miktarsız asıl rafı aynı kodlu bütün kartlar alır.
+    const urunler = idler ? (qty !== null ? [idler[idler.length - 1]] : idler) : [null];
+    for (const d of ds) for (const raf of raflar) for (const productId of urunler) sonuc.push({ satir: satirNo, depo: d, raf, bolge: al(r, 'bolge'), not: al(r, 'not'), productId, qty });
   });
   return {
     satirlar: sonuc,
     hatalar,
+    eslesmeyen,
     depolar: [...depoDegerleri.values()].map((x) => ({ ...x, depoAd: x.depo === HEPSI ? 'Bütün depolar' : x.depo !== null ? depo.depoAdi(x.depo) : null })),
   };
 }
@@ -239,10 +258,18 @@ function uygula(c, { miktarModu = 'ayarla' } = {}) {
 
 // ---- Güncellemeyle gelen liste ---------------------------------------------------------------
 // Pakete konan `ice-aktar/b2b-raf-listesi.tsv` (her satır: ürün kodu, sekme, raflar ";" ile; bkz. scripts/raf-listesi-hazirla.js)
-// Vega ilk okunduktan sonra, içeriği bir kez, kullanılan bütün depolara miktarsız (ürünün asıl rafı) aktarılır.
-// Aynı dosya ikinci kez aktarılmaz; yeni liste gelince (içerik değişince) yeniden aktarılır.
+// Vega okunduktan sonra, kullanılan depolara miktarsız (ürünün asıl rafı) aktarılır. Terminal ürünün adresini yalnız çalışılan
+// depodan okur; bu yüzden aktarım depo bazlıdır ve eksik kalanı sonradan tamamlar:
+//   - Liste yeni (içerik değişti) ise bütün kullanılan depolara aktarılır.
+//   - Liste aynıysa programda hiç IMPORT zimmeti olmayan kullanılan depolara (sonradan kullanıma alınan depo; Ortaş: önce yalnız
+//     106, sonra Merkez/Toybelen) bütün liste aktarılır.
+//   - Diğer depolara yalnız eksik kalanlar eklenir: önceki turda Vega'da kartı bulunamayan satırlar (kart sonradan açılınca) ve
+//     aynı kodlu birden çok karttan adres almamış olanlar. Eklenen yalnız o depoda hiç IMPORT zimmeti olmayan ürünlerdir, yani
+//     terminalden silinen adres bu yolla geri gelmez.
+// Eşleşmeyen kodlar meta'da listenin imzasıyla saklanır; kayıt yoksa (eski kurulum) bir kez bütün satırlar eksik için taranır.
 
 const OTO_ANAHTAR = 'b2bOtoAktarim';
+const OTO_ESLESMEYEN = `${OTO_ANAHTAR}Eslesmeyen`;
 let otoKontrol = null;
 
 function otomatikDosya() {
@@ -252,25 +279,83 @@ function otomatikDosya() {
   return adaylar.find((f) => fs.existsSync(f)) || null;
 }
 
+/** Aynı listenin önceki turunda kartı bulunamayan kodlar; kayıt yok ya da başka listeye aitse null. */
+function eslesmeyenOku(imza) {
+  try {
+    const j = JSON.parse(db.meta(OTO_ESLESMEYEN) || 'null');
+    return j && j.imza === imza && Array.isArray(j.kodlar) ? new Set(j.kodlar) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `depo|ürün` anahtarlarıyla, IMPORT zimmeti olan ürünler (verilen depolarda). */
+function importluUrunler(depolar) {
+  const ds = depolar.map(Number).filter(Number.isInteger);
+  if (!ds.length) return new Set();
+  return new Set(db.all(`SELECT DISTINCT depo, product_id FROM product_home WHERE source='IMPORT' AND depo IN (${ds.join(',')})`).map((r) => `${r.depo}|${r.product_id}`));
+}
+
 /** Dönen: null (yapılacak iş yok) ya da { dosya, satir, hata, ...uygula sonucu }. */
 function otomatik({ dosya = process.versions.electron ? otomatikDosya() : null } = {}) {
-  if (!dosya || !depo.goruntu() || !depo.depolar().length) return null;
+  const g = depo.goruntu();
+  const kullanilan = depo.depolar().map((d) => Number(d.ind)).filter(Number.isInteger);
+  if (!dosya || !g || !kullanilan.length) return null;
   const st = fs.statSync(dosya);
-  const kisa = `${dosya}|${st.size}|${st.mtimeMs}`;
+  // Önbellek anahtarı dosyayla birlikte kullanılan depoları ve Vega kart sayısını da içerir: depo eklenince ya da kartlar
+  // sonradan gelince yeniden bakılır, yoksa aynı kalan görüntüde dosya her 2 dakikada okunmaz.
+  const kisa = `${dosya}|${st.size}|${st.mtimeMs}|${kullanilan.join(',')}|${g.products.length}`;
   if (otoKontrol === kisa) return null;
   const icerik = fs.readFileSync(dosya);
   const imza = `${crypto.createHash('sha1').update(icerik).digest('hex').slice(0, 16)}:${icerik.length}`;
   otoKontrol = kisa;
-  if (db.meta(OTO_ANAHTAR) === imza) return null;
+
+  const yeniListe = db.meta(OTO_ANAHTAR) !== imza;
   const satirlar = icerik.toString('utf8').split(/\r?\n/).filter(Boolean).map((s) => s.split('\t'));
-  const c = coz({ satirlar, eslesme: { urun: 0, raf: 1 }, sabitDepo: HEPSI });
+  const onceki = yeniListe ? null : eslesmeyenOku(imza);
+  const eksikDepo = yeniListe ? kullanilan : kullanilan.filter((d) => !db.get("SELECT 1 AS var FROM product_home WHERE depo=? AND source='IMPORT' LIMIT 1", d));
+  const digerDepo = kullanilan.filter((d) => !eksikDepo.includes(d));
   const bas = Date.now();
-  const sonuc = uygula(c);
-  const bulunamayan = c.hatalar.filter((h) => /Vega'da bulunamadı/.test(h.hata)).length;
-  const ozetSonuc = { dosya: path.basename(dosya), satir: satirlar.length, hata: c.hatalar.length, bulunamayan, ...sonuc, sureMs: Date.now() - bas, at: Date.now() };
+  const sonuc = { yeniRaf: 0, miktar: 0, asilRaf: 0 };
+  const ekle = (c) => {
+    if (!c.satirlar.length) return;
+    const s = uygula(c);
+    sonuc.yeniRaf += s.yeniRaf;
+    sonuc.asilRaf += s.asilRaf;
+  };
+  let eslesmeyen = null;
+  let hata = 0;
+  let tamamlanan = 0;
+  if (eksikDepo.length) {
+    const c = coz({ satirlar, eslesme: { urun: 0, raf: 1 }, sabitDepo: eksikDepo });
+    ekle(c);
+    eslesmeyen = c.eslesmeyen;
+    hata = c.hatalar.length;
+  }
+  if (digerDepo.length) {
+    const aday = onceki ? satirlar.filter((s) => onceki.has(String(s[0] || '').trim())) : satirlar;
+    if (aday.length) {
+      const c = coz({ satirlar: aday, eslesme: { urun: 0, raf: 1 }, sabitDepo: digerDepo });
+      const var_ = importluUrunler(digerDepo);
+      c.satirlar = c.satirlar.filter((s) => !var_.has(`${s.depo}|${s.productId}`));
+      const once = sonuc.asilRaf;
+      ekle(c);
+      tamamlanan = sonuc.asilRaf - once;
+      if (eslesmeyen === null) {
+        eslesmeyen = c.eslesmeyen;
+        hata = c.hatalar.length;
+      }
+    }
+  }
+  if (eslesmeyen === null) eslesmeyen = onceki ? [...onceki] : [];
   db.set(OTO_ANAHTAR, imza);
+  db.set(OTO_ESLESMEYEN, JSON.stringify({ imza, kodlar: eslesmeyen }));
+  if (!yeniListe && !eksikDepo.length && !tamamlanan) return null;
+
+  const ozetSonuc = { dosya: path.basename(dosya), satir: satirlar.length, depolar: eksikDepo, tamamlanan, hata, bulunamayan: eslesmeyen.length, ...sonuc, sureMs: Date.now() - bas, at: Date.now() };
   db.set(`${OTO_ANAHTAR}Sonuc`, JSON.stringify(ozetSonuc));
-  log.bilgi(`Paketle gelen raf listesi aktarıldı: ${satirlar.length} ürün satırı, ${sonuc.asilRaf} adres, ${sonuc.yeniRaf} yeni raf, ${bulunamayan} ürün Vega'da yok, ${c.hatalar.length - bulunamayan} satır atlandı (${ozetSonuc.sureMs} ms)`);
+  const kapsam = yeniListe ? `depo ${eksikDepo.join(', ')}` : `${eksikDepo.length ? `mevcut liste yeni depoya: ${eksikDepo.join(', ')}; ` : ''}${tamamlanan} eksik adres tamamlandı`;
+  log.bilgi(`Paketle gelen raf listesi aktarıldı (${kapsam}): ${satirlar.length} ürün satırı, ${sonuc.asilRaf} adres, ${sonuc.yeniRaf} yeni raf, ${eslesmeyen.length} ürün Vega'da yok (${ozetSonuc.sureMs} ms)`);
   return ozetSonuc;
 }
 
