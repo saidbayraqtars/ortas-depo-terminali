@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
+import { GeriAl } from './VegaYazimlari.jsx';
 import { api, Btn, Durum, Icon, miktar, Rozet, SayfaBaslik, Secim, tarihSaat, useApp, useOnay, useVeri } from '../lib.jsx';
 
 const DURUM = {
   BEKLIYOR: ['Vega\'ya yazılacak', 'b-warn'],
   YAZILDI: ['Vega\'ya yazıldı', 'b-ok'],
   HATA: ['Yazılamadı', 'b-err'],
+  GERI: ['Geri alındı', 'b-mute'],
 };
 
 const FARK_DURUM = {
@@ -74,6 +76,7 @@ function IslemSatiri({ t, yukle }) {
   const { toast } = useApp();
   const [ac, setAc] = useState(false);
   const [mesgul, setMesgul] = useState(false);
+  const [geriAl, setGeriAl] = useState(false);
   const [ad, tur] = DURUM[t.durum] || [t.durum, 'b-mute'];
   const gonder = t.kind === 'SEND';
   const yeniden = async () => {
@@ -100,9 +103,18 @@ function IslemSatiri({ t, yukle }) {
         <td>
           <Rozet tur={tur}>{ad}</Rozet>
           {t.hata && <div className="muted small" style={{ marginTop: 4, color: 'var(--err)' }}>{t.hata}{t.deneme ? ` (deneme ${t.deneme})` : ''}</div>}
+          {t.geri_at && <div className="muted small" style={{ marginTop: 4 }}>{tarihSaat(t.geri_at)} · {t.geri_user}{t.geri_not ? ` · ${t.geri_not}` : ''}</div>}
         </td>
         <td style={{ textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
           {(t.durum === 'HATA' || t.durum === 'BEKLIYOR') && <Btn size="sm" busy={mesgul} icon="refresh" onClick={yeniden}>Yeniden dene</Btn>}
+          {t.durum !== 'GERI' && <Btn size="sm" kind="danger" icon="undo" onClick={() => setGeriAl(true)}>Geri al</Btn>}
+          {geriAl && (
+            <GeriAl
+              y={{ tur: gonder ? 'TRANSFER_GONDERIM' : 'TRANSFER_KABUL', durum: t.durum, id: t.id, tanim: gonder ? 'Depo gönderim fişi (128)' : 'Gönderim kabul fişi (129)', belgeNo: t.belge_no || t.sevk_no, depo: `${t.fromAd} → ${t.toAd}`, kalem: t.satirlar.length, adet: t.toplam }}
+              kapat={() => setGeriAl(false)}
+              tamam={() => { setGeriAl(false); yukle(); }}
+            />
+          )}
         </td>
       </tr>
       {ac && (

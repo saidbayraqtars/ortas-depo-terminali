@@ -30,6 +30,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import tr.arcteknik.depo.App
+import tr.arcteknik.depo.data.Depot
+import tr.arcteknik.depo.data.Perm
 import tr.arcteknik.depo.data.Repo
 import tr.arcteknik.depo.data.TransferLine
 import tr.arcteknik.depo.data.User
@@ -167,7 +169,53 @@ class AppVm(app: Application) : AndroidViewModel(app) {
         if (repo.db.isEmpty()) viewModelScope.launch { sync.run() }
     }
 
+    // ---- Kullanıcı yetkisi (yönetici programı Kullanıcılar sayfası; docs/API.md "Kullanıcı yetkisi") --------
+
+    /** Oturumdaki kullanıcı bu işlemi yapabilir mi. Giriş yapılmamışsa ya da yetki bilgisi yoksa (eski sunucu) kısıt yok. */
+    fun can(perm: String): Boolean = user?.perms?.contains(perm) ?: true
+
+    /** Kullanıcı bu depoda çalışabilir mi. */
+    fun canDepot(depot: Int): Boolean = user?.depots?.contains(depot) ?: true
+
+    /** Kullanıcının çalışabileceği depolar (ana veride tanımlı olanlar). */
+    fun depots(): List<Depot> = repo.db.depots().filter { canDepot(it.id) }
+
+    /** Çalışılan depo kullanıcıya kapalıysa ilk izinli depoya geçilir (Toybelen kullanıcısı Merkez açıkken girerse). */
+    private fun ensureWorkingDepot() {
+        val d = depots()
+        if (d.isNotEmpty() && d.none { it.id == repo.db.depot }) repo.selectDepot(d.first().id)
+    }
+
+    /** Ana veri yenilenince yöneticinin değiştirdiği yetki açık oturuma da yansır. */
+    fun refreshUser() {
+        val u = user ?: return
+        val n = repo.db.user(u.username) ?: return
+        if (n.perms != u.perms || n.depots != u.depots) {
+            user = u.copy(perms = n.perms, depots = n.depots)
+            ensureWorkingDepot()
+        }
+    }
+
+    /** Ekranı açmak için gereken izin; birden çoksa herhangi biri yeter. Kısıtsız ekran null. */
+    private fun needed(r: Route): List<String>? = when (r) {
+        Route.Receipts, is Route.PutAway, is Route.PutAwayProduct -> listOf(Perm.PUTAWAY)
+        Route.Pick -> listOf(Perm.PICK)
+        is Route.Transfer -> listOf(Perm.TRANSFER)
+        Route.Counts, is Route.Count, is Route.CountDiff -> listOf(Perm.COUNT, Perm.COUNT_FREE)
+        Route.SendDepot -> listOf(Perm.DEPOT_SEND)
+        Route.ReceiveList, is Route.ReceiveDoc -> listOf(Perm.DEPOT_RECEIVE)
+        else -> null
+    }
+
+    private fun allowed(r: Route): Boolean {
+        val need = needed(r) ?: return true
+        if (need.any { can(it) }) return true
+        error("Bu işlem için yetkiniz yok")
+        return false
+    }
+
     fun go(r: Route) {
+        if (!allowed(r)) return
         stack += r
         routed()
     }
@@ -179,6 +227,7 @@ class AppVm(app: Application) : AndroidViewModel(app) {
 
     /** Geçerli ekranı [r] ile değiştirir; "rafa kaldır → belge listesine dön" gibi akışlar için. */
     fun replace(r: Route) {
+        if (!allowed(r)) return
         stack[stack.lastIndex] = r
         routed()
     }
@@ -190,6 +239,7 @@ class AppVm(app: Application) : AndroidViewModel(app) {
 
     fun login(u: User) {
         user = u
+        ensureWorkingDepot()
         stack.clear()
         stack += Route.Home
         routed()
@@ -289,7 +339,7 @@ class AppVm(app: Application) : AndroidViewModel(app) {
         val s = code.trim().uppercase()
         val where = repo.db.depotName(depot).takeIf { it.isNotBlank() && repo.db.depots().size > 1 }?.let { "$it deposunda " } ?: ""
         error("\"$s\" ${where}tanımlı bir raf değil")
-        if (Repo.validShelfCode(s)) shelfAsk = ShelfAsk(s, depot, onAdded)
+        if (Repo.validShelfCode(s) && can(Perm.SHELF_ADD)) shelfAsk = ShelfAsk(s, depot, onAdded)
     }
 
     fun confirmShelf(add: Boolean) {
@@ -312,6 +362,7 @@ class AppVm(app: Application) : AndroidViewModel(app) {
 
     /** Etiket sunucu bilgisayarındaki yazıcıdan çıkar; bağlantı yoksa kuyruğa alınmaz (sonradan basılması kafa karıştırır). */
     fun printLabel(type: String, id: String, copies: Int) {
+        if (!can(Perm.LABEL)) return error("Etiket basma yetkiniz yok")
         viewModelScope.launch {
             val r = withContext(Dispatchers.IO) { runCatching { sync.backend().printLabel(type, id, copies, userName, repo.db.depot) } }
             r.onSuccess { ok(it) }.onFailure { error(it.message ?: "Etiket basılamadı") }
@@ -326,6 +377,8 @@ fun DepoApp(vm: AppVm) {
     // Ekranlar veri değiştiğinde yeniden okusun diye sürüm izlenir.
     val version by vm.repo.version.collectAsState()
     val online = net && reach
+    // Yönetici yetkiyi değiştirdiyse açık oturum da bir sonraki eşitlemede yeni yetkiyle devam eder.
+    androidx.compose.runtime.LaunchedEffect(version) { vm.refreshUser() }
 
     BackHandler(enabled = vm.stack.size > 1) { vm.back() }
 

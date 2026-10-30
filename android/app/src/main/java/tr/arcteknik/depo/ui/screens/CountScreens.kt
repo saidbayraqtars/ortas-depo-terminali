@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import tr.arcteknik.depo.data.Kapsam
 import tr.arcteknik.depo.data.Repo.Companion.fmt
+import tr.arcteknik.depo.data.Perm
 import tr.arcteknik.depo.ui.AppVm
 import tr.arcteknik.depo.ui.C
 import tr.arcteknik.depo.ui.Caption
@@ -55,10 +56,10 @@ import tr.arcteknik.depo.ui.Tone
 
 @Composable
 fun CountListScreen(vm: AppVm, online: Boolean, version: Int) {
-    val sessions = remember(version) { vm.repo.db.countSessions() }
-    Screen("Sayım", online = online, onBack = { vm.back() }, scroll = false, footer = {
+    val sessions = remember(version, vm.user) { vm.repo.db.countSessions().filter { vm.canDepot(it.depot) } }
+    Screen("Sayım", online = online, onBack = { vm.back() }, scroll = false, footer = if (vm.can(Perm.COUNT_FREE) && vm.canDepot(vm.repo.db.depot)) ({
         SecondaryButton("Serbest sayım başlat", { vm.go(Route.Count(vm.repo.startFreeCount().id)) })
-    }) {
+    }) else null) {
         Hint("Yönetici programında açılan sayımlar burada görünür.")
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(sessions, key = { it.id }) { s ->

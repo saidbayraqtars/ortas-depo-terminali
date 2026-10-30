@@ -15,8 +15,11 @@ import java.io.Reader
 import java.io.StringReader
 import java.util.concurrent.TimeUnit
 
-/** Bir işlemin sunucudaki sonucu. `ok=false` kalıcı ret demek; işlem kuyrukta hata olarak kalır. */
-data class OpResult(val id: String, val ok: Boolean, val error: String?)
+/**
+ * Bir işlemin sunucudaki sonucu. `ok=false` kalıcı ret demek; işlem kuyrukta hata olarak kalır. [code] ret nedeni:
+ * "YETKI" kullanıcının bu işleme ya da depoya yetkisi yok (1.9.0+ sunucu); eski sunucuda hep null.
+ */
+data class OpResult(val id: String, val ok: Boolean, val error: String?, val code: String? = null)
 
 /**
  * Belge kilidi cevabı (1.8.0+ sunucu, docs/API.md "Belge kilidi"). [supported] false: sunucu kilidi bilmiyor (eski yönetici
@@ -174,7 +177,7 @@ class HttpBackend(private val baseUrl: String, private val deviceKey: String, pr
             val res = JSONObject(r.body!!.string()).getJSONArray("results")
             return (0 until res.length()).map {
                 val o = res.getJSONObject(it)
-                OpResult(o.getString("id"), o.getBoolean("ok"), o.optString("error").ifBlank { null })
+                OpResult(o.getString("id"), o.getBoolean("ok"), o.optString("error").ifBlank { null }, o.optString("code").ifBlank { null })
             }
         }
     }

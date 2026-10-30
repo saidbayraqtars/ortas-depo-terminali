@@ -1,5 +1,7 @@
 package tr.arcteknik.depo.ui
 
+import android.os.Build
+import android.os.SystemClock
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -36,6 +38,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -51,10 +54,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onInterceptKeyBeforeSoftKeyboard
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -66,10 +71,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import tr.arcteknik.depo.data.Repo
 import tr.arcteknik.depo.scan.CameraScanner
 import tr.arcteknik.depo.scan.ScanBus
+import tr.arcteknik.depo.scan.ScanKeys
 import tr.arcteknik.depo.diag.Diag
 import tr.arcteknik.depo.sync.UserActivity
 
@@ -304,14 +313,49 @@ fun ScanField(
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     val handler by rememberUpdatedState(onScan)
+    val view = LocalView.current
+    // Tanı izi için; API 30'dan eski Android'de pencere ekleri klavyeyi güvenilir bildirmez.
+    fun keyboardState() = when {
+        Build.VERSION.SDK_INT < 30 -> "?"
+        ViewCompat.getRootWindowInsets(view)?.isVisible(WindowInsetsCompat.Type.ime()) == true -> "açık"
+        else -> "kapalı"
+    }
+    // Odak kaybı izi (en çok birkaç kez): klavye kapalıyken ikinci okutmanın kaybolması alanın odağı yitirmesinden mi?
+    var focusTrace by remember { mutableStateOf(0) }
 
-    fun submit(v: String) {
+    // IME'den önce yakalanıp gönderilen son okutma: IME aynı okumayı geç de olsa alana yazarsa ikinci kez sayılmasın.
+    var lastRescue by remember { mutableStateOf("" to 0L) }
+    val scope = rememberCoroutineScope()
+
+    fun submit(v: String, rescued: Boolean = false) {
         val c = v.trim()
         text = ""
+        ScanKeys.clearShadow()
         if (c.isEmpty()) return
+        val now = SystemClock.uptimeMillis()
+        if (!rescued && c == lastRescue.first && now - lastRescue.second < 800) return
+        if (rescued) lastRescue = c to now
         UserActivity.touch()
-        Diag.crumb("okutma ($title): $c")
+        Diag.crumb("okutma ($title): $c · klavye ${keyboardState()}" + if (rescued) " · IME'den önce yakalandı" else "")
         handler(c)
+    }
+
+    // Enter: alana yazılan gönderilir; alan boşsa okuyucunun IME'den önce ya da hiç işlenmeden yakalanan tuşları (bkz. ScanKeys).
+    fun submitEnter() {
+        if (text.isNotBlank()) return submit(text)
+        val rescued = ScanKeys.takeShadow() ?: ScanKeys.takePending()
+        submit(rescued.orEmpty(), rescued != null)
+    }
+
+    // Enter IME'den önce görülünce kısa bir süre beklenir: IME okumayı alana yazıp Enter'ı iletirse alan kendisi gönderir
+    // (yukarıdaki submitEnter); IME Enter'ı da yutarsa okuma buradan gönderilir.
+    fun armRescue() {
+        val code = ScanKeys.peekShadow() ?: return
+        scope.launch {
+            delay(120)
+            // Bu arada alan bir okutmayı kabul ettiyse (submit tamponu boşaltır) ya da IME alana yazdıysa dokunulmaz.
+            if (text.isBlank() && ScanKeys.shadowIs(code)) submit(code, rescued = true)
+        }
     }
 
     if (active) {
@@ -352,12 +396,19 @@ fun ScanField(
                 textStyle = TextStyle(fontFamily = Mono, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = C.Ink),
                 cursorBrush = SolidColor(C.Ink),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done, keyboardType = KeyboardType.Ascii, showKeyboardOnFocus = false),
-                keyboardActions = KeyboardActions(onDone = { submit(text) }),
-                modifier = Modifier.fillMaxWidth().focusRequester(focus).onPreviewKeyEvent { e ->
-                    if ((e.key == Key.Enter || e.key == Key.NumPadEnter) && e.type == KeyEventType.KeyUp) {
-                        submit(text); true
-                    } else e.key == Key.Enter || e.key == Key.NumPadEnter
-                },
+                keyboardActions = KeyboardActions(onDone = { submitEnter() }),
+                modifier = Modifier.fillMaxWidth().focusRequester(focus)
+                    .onInterceptKeyBeforeSoftKeyboard { e ->
+                        ScanKeys.shadow(e.nativeKeyEvent)
+                        if ((e.key == Key.Enter || e.key == Key.NumPadEnter) && e.type == KeyEventType.KeyDown) armRescue()
+                        false
+                    }
+                    .onFocusChanged { if (!it.isFocused && active && focusTrace < 5) { focusTrace++; Diag.crumb("okutma alanı odağı yitirdi ($title) · klavye ${keyboardState()}") } }
+                    .onPreviewKeyEvent { e ->
+                        if ((e.key == Key.Enter || e.key == Key.NumPadEnter) && e.type == KeyEventType.KeyUp) {
+                            submitEnter(); true
+                        } else e.key == Key.Enter || e.key == Key.NumPadEnter
+                    },
             )
         }
         IconButton(onClick = { runCatching { focus.requestFocus() }; keyboard?.show() }, modifier = Modifier.size(44.dp)) {

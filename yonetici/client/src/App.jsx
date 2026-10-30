@@ -6,6 +6,7 @@ import Urunler, { UrunDetay } from './sayfalar/Urunler.jsx';
 import Raflar, { RafDetay } from './sayfalar/Raflar.jsx';
 import Sayimlar, { SayimDetay } from './sayfalar/Sayimlar.jsx';
 import Transferler from './sayfalar/Transferler.jsx';
+import VegaYazimlari from './sayfalar/VegaYazimlari.jsx';
 import Hareketler from './sayfalar/Hareketler.jsx';
 import Kullanicilar from './sayfalar/Kullanicilar.jsx';
 import Cihazlar from './sayfalar/Cihazlar.jsx';
@@ -19,6 +20,7 @@ const MENU = [
   ['/sayimlar', 'count', 'Sayımlar', (d) => d?.sayilar.onayBekleyen],
   ['/transfer', 'truck', 'Depo transferi', (d) => d?.sayilar.transferDikkat],
   ['/hareketler', 'history', 'Hareketler'],
+  ['/vega-yazimlari', 'undo', "Vega'ya yazılanlar"],
   ['/kullanicilar', 'users', 'Kullanıcılar'],
   ['/cihazlar', 'mobile', 'Cihazlar'],
   ['/ayarlar', 'settings', 'Ayarlar'],
@@ -46,6 +48,8 @@ function Sayfa({ yol }) {
       return <Transferler />;
     case 'hareketler':
       return <Hareketler />;
+    case 'vega-yazimlari':
+      return <VegaYazimlari />;
     case 'kullanicilar':
       return <Kullanicilar />;
     case 'cihazlar':

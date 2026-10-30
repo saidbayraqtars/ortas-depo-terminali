@@ -7,8 +7,10 @@ import android.content.IntentFilter
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Build
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.view.KeyEvent
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -30,7 +32,12 @@ object ScanBus {
         if (c.isEmpty()) return
         UserActivity.touch()
         Diag.crumb("okutma (yayın): $c")
-        if (!_scans.tryEmit(c)) Diag.crumb("okutma kuyruğu dolu, atlandı")
+        emitRaw(c)
+    }
+
+    /** İzi çağıran yazmış olur ([emit], [ScanKeys]). */
+    fun emitRaw(code: String) {
+        if (!_scans.tryEmit(code)) Diag.crumb("okutma kuyruğu dolu, atlandı")
     }
 
     /** Bilinen terminal markalarının yayın eylemleri. */
@@ -71,6 +78,113 @@ object ScanBus {
 
     fun unregister(context: Context) {
         runCatching { context.unregisterReceiver(receiver) }
+    }
+}
+
+/**
+ * Klavye modundaki okuyucunun tuşları odaktaki okutma alanına yazılır. Alan olayı almazsa okutma kaybolurdu: odak başka
+ * yerdeyken, ya da okuyucu barkodu tek bir "toplu" tuş olayı (ACTION_MULTIPLE) olarak yolladığında; Compose bunu yazı saymaz,
+ * ekran klavyesi açıkken IME alana yazar, kapalıyken kimse işlemez. [tr.arcteknik.depo.MainActivity.dispatchKeyEvent]
+ * hiçbir yerin işlemediği tuşları buraya verir: okuyucu hızında gelen bir dizi (karakterler arası [GAP_MS]'den kısa) ve
+ * ardından Enter okutma sayılıp [ScanBus]'a gider. Elle yazma yavaş olduğundan bu yola girmez.
+ */
+object ScanKeys {
+    private const val GAP_MS = 80L
+    private const val ENTER_GAP_MS = 300L
+    private const val MIN_LEN = 3
+    private const val MAX_TRACE = 40
+    private val buf = StringBuilder()
+    private var last = 0L
+    private var traced = 0
+
+    fun onUnhandled(e: KeyEvent) {
+        val now = e.eventTime.takeIf { it > 0 } ?: SystemClock.uptimeMillis()
+        val chars = if (e.action == KeyEvent.ACTION_MULTIPLE) e.characters else null
+        val enter = e.keyCode == KeyEvent.KEYCODE_ENTER || e.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
+        val printable = e.action == KeyEvent.ACTION_DOWN && e.unicodeChar >= 32 && !e.isCtrlPressed && !e.isAltPressed
+        // Sürekli tuşa basılan/elle yazılan olaylar izi doldurmasın: yalnız ilk birkaçı kaydedilir.
+        if (traced < MAX_TRACE && (chars != null || printable || (enter && e.action == KeyEvent.ACTION_DOWN))) {
+            traced++
+            val action = when (e.action) { KeyEvent.ACTION_DOWN -> "DOWN"; KeyEvent.ACTION_UP -> "UP"; else -> "MULTIPLE" }
+            Diag.crumb("tuş işlenmedi: $action ${KeyEvent.keyCodeToString(e.keyCode)} aygıt ${e.deviceId}" + (chars?.let { " metin ${it.length} karakter" } ?: ""))
+        }
+        when {
+            chars != null -> {
+                if (now - last > GAP_MS) buf.setLength(0)
+                last = now
+                val nl = chars.indexOfFirst { it == '\n' || it == '\r' }
+                buf.append(if (nl >= 0) chars.substring(0, nl) else chars)
+                if (nl >= 0) flush()
+            }
+            printable -> {
+                if (now - last > GAP_MS) buf.setLength(0)
+                buf.append(e.unicodeChar.toChar())
+                last = now
+            }
+            enter && e.action == KeyEvent.ACTION_DOWN -> if (now - last <= ENTER_GAP_MS) flush() else buf.setLength(0)
+        }
+    }
+
+    // ---- Ekran klavyesinden (IME) önce görülen tuşlar -------------------------------------------------------------
+    // Odaktaki okutma alanı her tuşu IME'den ÖNCE görür. Okuyucunun karakterlerini IME alana yazmazsa (iData K1'de klavye
+    // kapalıyken ikinci okutma kaybolabiliyordu) ya da Enter'ı yutarsa, okutma yine de buradan kurtarılır. Normalde IME alana
+    // yazar, alan dolu olduğundan buradaki kopya kullanılmaz ve her okutmada silinir.
+    private val shadow = StringBuilder()
+    private var shadowLast = 0L
+
+    /** Okutma alanının IME'den önce gördüğü tuş; hiçbir şeyi tüketmez. */
+    fun shadow(e: KeyEvent) {
+        val now = e.eventTime.takeIf { it > 0 } ?: SystemClock.uptimeMillis()
+        val chars = if (e.action == KeyEvent.ACTION_MULTIPLE) e.characters else null
+        val printable = e.action == KeyEvent.ACTION_DOWN && e.unicodeChar >= 32 && !e.isCtrlPressed && !e.isAltPressed
+        if (chars == null && !printable) return
+        if (now - shadowLast > GAP_MS) shadow.setLength(0)
+        shadowLast = now
+        if (chars != null) shadow.append(chars.filter { it != '\n' && it != '\r' }) else shadow.append(e.unicodeChar.toChar())
+    }
+
+    /** Enter geldiğinde IME'den önce yakalanmış, okuyucu hızında yazılmış okuma var mı (okumadan çekmeden). */
+    fun hasShadow(): Boolean = shadow.trim().length >= MIN_LEN && SystemClock.uptimeMillis() - shadowLast <= ENTER_GAP_MS
+
+    /** Enter anında yakalanmış taze okuma (tamponu boşaltmaz); yoksa null. */
+    fun peekShadow(): String? = if (hasShadow()) shadow.toString().trim() else null
+
+    /** [code] hâlâ tamponda mı (bu arada alan bir okutmayı kabul edip tamponu boşaltmadıysa). */
+    fun shadowIs(code: String): Boolean = shadow.toString().trim() == code
+
+    /** Yakalanmış okumayı verir ve her iki tamponu da boşaltır. Yoksa ya da eskiyse null. */
+    fun takeShadow(): String? {
+        val code = if (hasShadow()) shadow.toString().trim() else null
+        clearShadow()
+        return code
+    }
+
+    /** Alan bir okutmayı kabul etti: yakalanan kopya bir daha kullanılmasın. */
+    fun clearShadow() {
+        shadow.setLength(0)
+        buf.setLength(0)
+    }
+
+    /**
+     * Odaktaki okutma alanı Enter'ı kendisi tükettiğinde ([onUnhandled] hiç görmez) alana yazılmamış, yakalanmış okumayı verir.
+     * Yoksa ya da eskiyse null.
+     */
+    fun takePending(): String? {
+        val code = buf.toString().trim()
+        val fresh = SystemClock.uptimeMillis() - last <= ENTER_GAP_MS
+        buf.setLength(0)
+        if (!fresh || code.length < MIN_LEN) return null
+        Diag.crumb("okutma (tuş yakalandı, alan Enter): $code")
+        return code
+    }
+
+    private fun flush() {
+        val code = buf.toString().trim()
+        buf.setLength(0)
+        if (code.length < MIN_LEN) return
+        UserActivity.touch()
+        Diag.crumb("okutma (tuş yakalandı): $code")
+        ScanBus.emitRaw(code)
     }
 }
 

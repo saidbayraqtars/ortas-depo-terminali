@@ -19,7 +19,7 @@ import java.io.Reader
  * Çok depo: raf, raf stoku, Vega stoku ve asıl raf depoya bağlıdır. [depot] terminalin çalıştığı depodur
  * (transfer, sayım, sorgu); mal kabul belgesi kendi deposunu taşır ve rafa kaldırma orada olur.
  */
-class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 7) {
+class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 8) {
 
     init {
         // Eşitleme ana veriyi yazarken ekranlar (ana iş parçacığı) beklemeden son kaydedilmiş hali okusun.
@@ -38,7 +38,8 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 7) {
         db.execSQL("CREATE TABLE op(id TEXT PRIMARY KEY, type TEXT NOT NULL, payload TEXT NOT NULL, summary TEXT NOT NULL, created_at INTEGER NOT NULL, status TEXT NOT NULL, error TEXT)")
         db.execSQL("CREATE TABLE movement(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, product_id TEXT NOT NULL, text TEXT NOT NULL, qty REAL NOT NULL)")
         db.execSQL("CREATE INDEX ix_movement_product ON movement(product_id, ts)")
-        db.execSQL("CREATE TABLE app_user(username TEXT PRIMARY KEY, name TEXT NOT NULL, pin_hash TEXT NOT NULL, salt TEXT NOT NULL)")
+        // perms / depots: virgülle ayrılmış liste; NULL = sınırsız (bkz. [User]).
+        db.execSQL("CREATE TABLE app_user(username TEXT PRIMARY KEY, name TEXT NOT NULL, pin_hash TEXT NOT NULL, salt TEXT NOT NULL, perms TEXT, depots TEXT)")
         createParts(db)
     }
 
@@ -75,11 +76,29 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 7) {
         db.execSQL("CREATE INDEX ix_receipt_line ON receipt_line(receipt_id)")
     }
 
+    /** [table] tablosunda [column] sütunu var mı. */
+    private fun hasColumn(db: SQLiteDatabase, table: String, column: String): Boolean =
+        db.rawQuery("PRAGMA table_info($table)", null).use { c ->
+            val name = c.getColumnIndexOrThrow("name")
+            var found = false
+            while (c.moveToNext()) if (c.getString(name).equals(column, ignoreCase = true)) found = true
+            found
+        }
+
+    /**
+     * Sütunu yoksa ekler. Ana veri tabloları (`createMaster`) hep güncel şemayla kurulduğundan, eski sürümden gelen bir
+     * yükseltmede sütun çoktan olabilir; düz `ALTER TABLE` o zaman "duplicate column name" ile yükseltmeyi, yani uygulamanın
+     * açılışını çökertir (1.0–1.2'den 1.8.2'ye atlayan terminal).
+     */
+    private fun addColumn(db: SQLiteDatabase, table: String, column: String, definition: String) {
+        if (!hasColumn(db, table, column)) db.execSQL("ALTER TABLE $table ADD COLUMN $column $definition")
+    }
+
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         // 2: ürün kartında barkod araması ürün kimliğiyle yapılıyor (isimle arama sonuçları).
         if (oldVersion < 2) db.execSQL("CREATE INDEX IF NOT EXISTS ix_barcode_product ON barcode(product_id)")
         // 3: çok depo.
-        if (oldVersion < 3) db.execSQL("ALTER TABLE count_session ADD COLUMN depot INTEGER NOT NULL DEFAULT 0")
+        if (oldVersion < 3) addColumn(db, "count_session", "depot", "INTEGER NOT NULL DEFAULT 0")
         // 3 çok depo, 4 ürün birden çok rafa zimmetli. Ana veri tabloları boşalır, sunucudan yeniden gelir
         // (boş ürün tablosu tam liste ister); kuyruk ve süren sayım korunur.
         // 5: ana veri kovalara bölünmüş gelir (ürün, konum ve zimmette kova sütunu).
@@ -90,17 +109,24 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 7) {
             db.execSQL("DELETE FROM master_part")
         }
         // 7: isimle arama SQL'de (product.search) ve kod araması indeksli; ürün listesi artık belleğe alınmıyor.
-        // Arama sütunu ürünler yeniden inerken dolar, bu yüzden bütün parçalar yeniden istenir.
+        // Arama sütunu ürünler yeniden inerken dolar, bu yüzden bütün parçalar yeniden istenir. 5'ten eski sürümden gelende
+        // ürün tablosu yukarıda güncel şemayla yeniden kurulduğundan sütun zaten vardır.
         if (oldVersion < 7) {
-            db.execSQL("ALTER TABLE product ADD COLUMN search TEXT NOT NULL DEFAULT ''")
+            addColumn(db, "product", "search", "TEXT NOT NULL DEFAULT ''")
             db.execSQL("CREATE INDEX IF NOT EXISTS ix_product_code_nc ON product(code COLLATE NOCASE)")
             db.execSQL("DELETE FROM master_part")
         }
         // 6: sayım kapsamı (raf önekleri) ve boş sayılan raf. Baş parça yeniden istensin: kapsam gelsin,
         // yöneticide kapatılıp cihazda açık kalmış sayımlar temizlensin.
         if (oldVersion < 6) {
-            db.execSQL("ALTER TABLE count_session ADD COLUMN scope TEXT NOT NULL DEFAULT ''")
+            addColumn(db, "count_session", "scope", "TEXT NOT NULL DEFAULT ''")
             createCountShelf(db)
+            db.execSQL("DELETE FROM master_part WHERE key='head'")
+        }
+        // 8: kullanıcı yetkisi (izin ve çalışabileceği depolar). Baş parça yeniden istensin: yetkiler gelsin.
+        if (oldVersion < 8) {
+            addColumn(db, "app_user", "perms", "TEXT")
+            addColumn(db, "app_user", "depots", "TEXT")
             db.execSQL("DELETE FROM master_part WHERE key='head'")
         }
     }
@@ -187,6 +213,25 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 7) {
     /** Sonraki eşitlemede bütün parçalar yeniden istensin (sunucu bir işlemi reddettiğinde). */
     fun clearMasterParts() {
         writableDatabase.delete("master_part", null, null)
+    }
+
+    /**
+     * Sunucu işlemi yetki nedeniyle reddedince: işlemin cihazdaki etkisi (raf miktarı, belge ilerlemesi) sunucudaki haliyle
+     * düzelsin diye yalnız ilgili parçalar yeniden istenir (head, raflar ve işlemdeki ürünlerin kovaları). Bütün ana veri
+     * (130 bin ürün) yeniden inmez. Ürünleri anlaşılamayan işlemde (sayım) hepsi istenir.
+     */
+    fun clearPartsFor(op: Op) {
+        val ids = mutableSetOf<String>()
+        runCatching {
+            val p = JSONObject(op.payload)
+            p.optString("productId").takeIf { it.isNotBlank() }?.let { ids += it }
+            val lines = p.optJSONArray("lines")
+            for (i in 0 until (lines?.length() ?: 0)) lines!!.getJSONObject(i).optString("productId").takeIf { it.isNotBlank() }?.let { ids += it }
+        }
+        if (op.type == OpType.COUNT_SUBMIT || (ids.isEmpty() && op.type != OpType.SHELF_ADD)) return clearMasterParts()
+        val w = writableDatabase
+        w.delete("master_part", "key IN ('head', 'shelves')", null)
+        for (b in ids.map { Buckets.of(it) }.toSet()) w.delete("master_part", "key=? OR key=?", arrayOf("b$b", "q$b"))
     }
 
     /** [applyParts] sonucu: sunucuda kalan değişmiş kova sayısı ve geldiyse "head" (depo, belge, uygulama sürümü). */
@@ -393,6 +438,11 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 7) {
                 put("name", u.optString("name", u.getString("username")))
                 put("pin_hash", u.getString("pinHash"))
                 put("salt", u.getString("salt"))
+                // Sunucu null gönderirse (ya da alan hiç yoksa: eski sunucu) kullanıcı sınırsızdır.
+                val perms = u.optJSONArray("perms")
+                if (perms != null) put("perms", (0 until perms.length()).joinToString(",") { perms.getString(it) }) else putNull("perms")
+                val depots = u.optJSONArray("depots")
+                if (depots != null) put("depots", (0 until depots.length()).joinToString(",") { depots.getInt(it).toString() }) else putNull("depots")
             })
         }
     }
@@ -682,8 +732,12 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 7) {
         }
 
     fun user(username: String): User? =
-        query("SELECT username, name, pin_hash, salt FROM app_user WHERE username=?", username.trim().lowercase()) {
-            User(it.getString(0), it.getString(1), it.getString(2), it.getString(3))
+        query("SELECT username, name, pin_hash, salt, perms, depots FROM app_user WHERE username=?", username.trim().lowercase()) {
+            User(
+                it.getString(0), it.getString(1), it.getString(2), it.getString(3),
+                perms = if (it.isNull(4)) null else it.getString(4).split(',').filter { s -> s.isNotBlank() }.toSet(),
+                depots = if (it.isNull(5)) null else it.getString(5).split(',').mapNotNull { s -> s.trim().toIntOrNull() }.toSet(),
+            )
         }.firstOrNull()
 
     // ---- Yazma (Repo üzerinden, işlem kuyruğuyla birlikte) -------------------------------

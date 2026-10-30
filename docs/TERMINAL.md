@@ -89,6 +89,17 @@ Uygulama iki yolu da dinler; terminale göre biri seçilir.
 
 Okuyucu okuduğu barkodu klavyeden yazılmış gibi gönderir ve sonuna **Enter** ekler.
 Çoğu terminal fabrikadan böyle gelir. Okuyucu ayarında "suffix / son ek: Enter (CR/LF)" açık olmalı.
+**Peş peşe okutma (Gönderim Kabul, Depoya Gönder, Rafa Kaldır, Raftan Al) için yayın modu önerilir.** iData K1'de (Toybelen,
+2026-10-30) klavye modunda ekran klavyesi kapalıyken ekrana girişteki ilk okutmadan sonrası kayboluyordu (klavye açılınca düzeliyordu);
+neden doğrulanmadı, yayın modu klavyeye hiç bağlı olmadığından bu sorunu yaşamaz.
+
+Ekran klavyesinin açık olması gerekmez. Okutma alanı her tuşu ekran klavyesinden (IME) **önce** de görür (1.9.0). IME karakterleri alana
+yazmazsa ya da Enter'ı yutarsa okuma bu kopyadan okutma sayılır (Enter'dan 120 ms sonra, alan hâlâ boşsa); IME çalışıyorsa alan kendisi gönderir ve
+kopya kullanılmaz, aynı okuma iki kez sayılmaz. Okuyucu tuşları okutma alanına hiç ulaşmazsa (odak başka yerdeyse, ya da okuyucu barkodu tek
+parça "toplu" tuş olayı olarak yolluyorsa) uygulama okuyucu hızında gelen karakter dizisini Enter'la birlikte okutma sayar; elle yazma bu yollara girmez
+(karakterler arası 80 ms'den uzun, 3 karakterden kısa diziler okuma sayılmaz).
+Sorun sürerse Ayarlar › Tanı raporu gönder: izde `okutma (…) · IME'den önce yakalandı` satırları kurtarma yolunun kullanıldığını (IME okumayı almamış),
+`tuş işlenmedi: …` satırları okuyucunun ne yolladığını gösterir.
 
 ### 2. Yayın (broadcast) modu (daha sağlam)
 

@@ -19,7 +19,9 @@ Sistem iki parçadır:
 4. Raflar: B2B'deki depo/raf listesi varsa **Raflar › Excel'den içe aktar** (aşağıda), yoksa **Toplu raf oluştur**
    (ör. A-C bölge, 1-10 koridor, 1-4 kat) → **Etiket yazdır** (PDF ya da etiket yazıcısı).
    Yazdırırken ölçek **%100 / gerçek boyut**.
-5. **Kullanıcılar › Yeni kullanıcı**: depo personeli, 4-8 haneli şifre.
+5. **Kullanıcılar › Yeni kullanıcı**: depo personeli, 4-8 haneli şifre, **yetkiler** ve **çalışabileceği depolar**. Şube personeline (Toybelen) yalnız kendi deposunu
+   verin: başka depodan mal çıkaramaz, başka depoya gelen gönderimi kabul edemez. Hazır şablonlar (Depo görevlisi, Şube deposu, Sevkiyat, Sayım, Yalnız sorgu) kutuları doldurur.
+   Terminal yetkiye göre menüyü daraltır; yetkisiz işlem sunucuda da reddedilir. Yanlış yazılan depo fişini **Vega'ya yazılanlar** sayfasından geri alabilirsiniz.
 6. **Cihazlar › Yeni cihaz** (TRM-01…): açılan pencerede iki QR var (aşağıda).
 7. İstenirse **Ayarlar › Vega'daki raf adresi**: stok kartı alanı (Ortaş: KOD10), raflar hangi depoda, **Program bu alana yazsın**.
    Terminalde rafa kaldırılan, transfer edilen ya da sayımda bulunan ürünün rafı o ürünün adresi olur ve ~3 sn sonra karta yazılır

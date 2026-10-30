@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import tr.arcteknik.depo.data.Perm
 import tr.arcteknik.depo.data.Product
 import tr.arcteknik.depo.data.Repo.Companion.fmt
 import tr.arcteknik.depo.ui.AppVm
@@ -68,8 +69,8 @@ fun ProductQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String
     Screen("Ürün Sorgu", online = online, onBack = { vm.back() }, scroll = false, footer = product?.let { p ->
         {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SecondaryButton("Etiket bas", { label = true }, Modifier.weight(1f), icon = Ic.Barcode)
-                SecondaryButton("Transfer", { vm.go(Route.Transfer(p.id, locs.firstOrNull()?.shelf)) }, Modifier.weight(1f), icon = Ic.Transfer)
+                if (vm.can(Perm.LABEL)) SecondaryButton("Etiket bas", { label = true }, Modifier.weight(1f), icon = Ic.Barcode)
+                if (vm.can(Perm.TRANSFER)) SecondaryButton("Transfer", { vm.go(Route.Transfer(p.id, locs.firstOrNull()?.shelf)) }, Modifier.weight(1f), icon = Ic.Transfer)
             }
         }
     }) {
@@ -100,7 +101,7 @@ fun ProductQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String
                                 MonoText(h)
                                 Hint(if (here > 0) "rafta ${fmt(here)}" else "rafta stok yok")
                             }
-                            Text(
+                            if (vm.can(Perm.HOME_REMOVE)) Text(
                                 "Sil", color = C.Err, fontWeight = FontWeight.SemiBold, fontSize = 15.sp,
                                 modifier = Modifier.focusProperties { canFocus = false }.clickable { removing = h }.padding(horizontal = 14.dp, vertical = 12.dp),
                             )
@@ -193,8 +194,8 @@ fun ShelfQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String?)
         // Düğmeler altta sabit: uzun raf listesi bunları ekran dışına itmesin.
         footer = if (shelf != null) ({
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SecondaryButton("Raf etiketi bas", { shelfLabel = true }, Modifier.weight(1f), icon = Ic.Barcode)
-                SecondaryButton("Transfer başlat", { vm.go(Route.Transfer(from = shelf)) }, Modifier.weight(1f), icon = Ic.Transfer)
+                if (vm.can(Perm.LABEL)) SecondaryButton("Raf etiketi bas", { shelfLabel = true }, Modifier.weight(1f), icon = Ic.Barcode)
+                if (vm.can(Perm.TRANSFER)) SecondaryButton("Transfer başlat", { vm.go(Route.Transfer(from = shelf)) }, Modifier.weight(1f), icon = Ic.Transfer)
             }
         }) else null,
     ) {

@@ -8,6 +8,7 @@ const vega = require('./vega');
 const log = require('./log');
 const fuzzy = require('./fuzzy');
 const kapsam = require('./kapsam');
+const yetki = require('./yetki');
 
 const EPS = 1e-9;
 // Depo hareket fişinden gelen belge türleri (ayarda "D37" gibi seçilir); vega.js ile aynı.
@@ -314,7 +315,13 @@ function miktarEkle(depo, productId, shelf, delta, hareket) {
 
 // ---- Terminal işlemleri ----------------------------------------------------------------------
 
-class Ret extends Error {}
+/** İşlem kalıcı reddedildi. `code` verilirse terminal nedene göre davranır (YETKI: ana veriyi baştan indirmez). */
+class Ret extends Error {
+  constructor(mesaj, code = null) {
+    super(mesaj);
+    this.code = code;
+  }
+}
 
 function sayi(x, ad) {
   const n = Number(x);
@@ -629,6 +636,13 @@ function rafBosalt(depo, code, hedef) {
   return { urun, zimmet };
 }
 
+/** İşlemi yapan kullanıcının yetki nesnesi; kayıtlı değilse (silinmiş, bilinmeyen ad) null = sınırsız. */
+function yetkiBaglam(kullanici) {
+  const ad = String(kullanici || '').trim().toLowerCase();
+  if (!ad) return null;
+  return yetki.baglam(db.get('SELECT username, perms, depots FROM app_user WHERE username=?', ad), depoAdi);
+}
+
 function islemUygula(op, cihaz, kullanici) {
   const p = op.payload || {};
   const user = String(p.user || kullanici || '');
@@ -639,6 +653,16 @@ function islemUygula(op, cihaz, kullanici) {
   const bilinen = (pid) => {
     if (goruntu && !urun(pid)) throw new Ret(`Ürün Vega'da bulunamadı (${pid})`);
   };
+  // Kullanıcı yetkisi (yetki.js): izin ve çalışabileceği depo. Kayıtlı olmayan kullanıcı sınırsız sayılır.
+  const yk = yetkiBaglam(user);
+  const yetkiDenetle = (izin, depoNo = null) => {
+    const m = yk && yk.denetle(izin, depoNo);
+    if (m) {
+      log.uyari(`Yetkisiz işlem ${op.type} ${op.id}: ${m} · ${device}`);
+      throw new Ret(m, 'YETKI');
+    }
+  };
+  yetkiDenetle(yetki.ISLEM_IZNI[op.type] || null);
 
   switch (op.type) {
     case 'PUTAWAY': {
@@ -652,6 +676,7 @@ function islemUygula(op, cihaz, kullanici) {
       // Belge depo bazlı: mal belgenin deposunda rafa kalkar.
       const belge = p.receiptId ? receiptById(String(p.receiptId)) : null;
       const depo = belge ? belge.depo : depoCoz(p.depot);
+      yetkiDenetle(null, depo);
       // Mal fiziken rafa kondu; raf tanımı sonradan silinmiş olsa bile kayıt kaybolmasın.
       if (!rafVarMi(depo, shelf)) rafEkle(depo, shelf, { source: 'TERMINAL', note: 'Terminalden geldi' });
       miktarEkle(depo, pid, shelf, qty, { ...h, kind: 'PUTAWAY', ref: belge ? belge.docNo : p.receiptId || null });
@@ -678,6 +703,7 @@ function islemUygula(op, cihaz, kullanici) {
       if (!pid || !from || !to) throw new Ret('Eksik bilgi');
       bilinen(pid);
       const depo = depoCoz(p.depot);
+      yetkiDenetle(null, depo);
       if (from === to) throw new Ret('Kaynak ve hedef raf aynı');
       if (!rafVarMi(depo, to)) rafEkle(depo, to, { source: 'TERMINAL', note: 'Terminalden geldi' });
       // Sunucudaki miktar terminalin gördüğünden azsa eksiye düşmez; fazlası hareket kaydında görünür.
@@ -696,6 +722,7 @@ function islemUygula(op, cihaz, kullanici) {
       if (!pid || !shelf) throw new Ret('Eksik bilgi');
       bilinen(pid);
       const depo = depoCoz(p.depot);
+      yetkiDenetle(null, depo);
       // Sunucuda raftaki miktar terminalin gördüğünden azsa eksiye düşmez (miktarAyarla sıfırda keser).
       miktarEkle(depo, pid, shelf, -qty, { ...h, kind: 'PICK', ref: String(p.note || '').slice(0, 120) || null });
       if (miktar(depo, pid, shelf) <= EPS) terminalZimmetBosalt(depo, pid, shelf);
@@ -708,17 +735,21 @@ function islemUygula(op, cihaz, kullanici) {
       if (!pid || !shelf) throw new Ret('Eksik bilgi');
       bilinen(pid);
       const d = depoCoz(p.depot);
+      yetkiDenetle(null, d);
       if (zimmetSil(d, pid, shelf)) log.bilgi(`Raf adresi silindi: ${shelf} · ürün ${pid} (${depoAdi(d)}) · ${device} · ${user}`);
       return;
     }
     case 'COUNT_SUBMIT':
-      sayimKaydet(op, p, { ...h, ts: now() }, ts);
+      // Terminalde kendiliğinden açılan serbest sayım ayrı izin ister (yönetici açtığı sayıma gönderim `count`).
+      if (String(p.sessionId || '').startsWith('LOCAL-')) yetkiDenetle('count_free');
+      sayimKaydet(op, p, { ...h, ts: now() }, ts, yetkiDenetle);
       return;
     case 'SHELF_ADD': {
       // Terminalde okutulan tanımsız raf etiketi orada raf olarak eklenir.
       const kod = rafKodu(p.code);
       if (!rafKoduGecerli(kod)) throw new Ret(`Geçersiz raf kodu: ${kod}`);
       const d = depoCoz(p.depot);
+      yetkiDenetle(null, d);
       if (!rafVarMi(d, kod)) {
         rafEkle(d, kod, { source: 'TERMINAL', note: `${device} · ${user}` });
         log.bilgi(`Terminalden raf eklendi: ${kod} (${depoAdi(d)}) · ${device} · ${user}`);
@@ -728,14 +759,15 @@ function islemUygula(op, cihaz, kullanici) {
     case 'TRANSFER_SEND':
     case 'TRANSFER_RECEIVE':
       // Depolar arası transfer: raf stoku burada, Vega'ya 128/129 fişi arka planda yazılır (transfer.js).
-      require('./transfer').uygula(op, p, h, { Ret, bilinen });
+      // Gönderimde gönderen (çıkış) depo, kabulde alan depo kullanıcının çalışabileceği depo olmalı.
+      require('./transfer').uygula(op, p, h, { Ret, bilinen, yetkiDenetle });
       return;
     default:
       throw new Ret(`Bilinmeyen işlem türü: ${op.type}`);
   }
 }
 
-function sayimKaydet(op, p, h, olusturma) {
+function sayimKaydet(op, p, h, olusturma, yetkiDenetle = () => {}) {
   const sid = String(p.sessionId || '');
   if (!sid) throw new Ret('Sayım kimliği yok');
   let s = db.get('SELECT * FROM count_session WHERE id=?', sid);
@@ -760,6 +792,7 @@ function sayimKaydet(op, p, h, olusturma) {
   if (s.status === 'CANCELLED') throw new Ret(`${s.no} yönetici programında iptal edildi`);
   if (s.status === 'APPROVED') throw new Ret(`${s.no} onaylandı; artık sayım gönderilemez`);
   const depo = s.depo;
+  yetkiDenetle(null, depo);
   const ref = s.no;
   const raflar = [...new Set((p.shelves || []).map(rafKodu).filter(Boolean))];
   // Vega'da olmayan ürün satırı (demo verisi) yok sayılır; sayımın geri kalanı geçerli.
@@ -824,14 +857,14 @@ function islemler(cihaz, kullanici, ops) {
   for (const op of Array.isArray(ops) ? ops : []) {
     const id = String((op && op.id) || '');
     if (!id) continue;
-    const eski = db.get('SELECT ok, error FROM op WHERE id=?', id);
+    const eski = db.get('SELECT ok, error, code FROM op WHERE id=?', id);
     if (eski) {
-      sonuc.push({ id, ok: Boolean(eski.ok), ...(eski.ok ? {} : { error: eski.error }) });
+      sonuc.push({ id, ok: Boolean(eski.ok), ...(eski.ok ? {} : { error: eski.error, ...(eski.code ? { code: eski.code } : {}) }) });
       continue;
     }
-    const kayit = (ok, error) =>
+    const kayit = (ok, error, code = null) =>
       db.run(
-        'INSERT INTO op(id, type, payload, device, user, created_at, received_at, ok, error) VALUES(?,?,?,?,?,?,?,?,?)',
+        'INSERT INTO op(id, type, payload, device, user, created_at, received_at, ok, error, code) VALUES(?,?,?,?,?,?,?,?,?,?)',
         id,
         String(op.type || ''),
         JSON.stringify(op.payload || {}),
@@ -841,6 +874,7 @@ function islemler(cihaz, kullanici, ops) {
         now(),
         ok ? 1 : 0,
         error || null,
+        code,
       );
     try {
       db.tx(() => {
@@ -852,8 +886,8 @@ function islemler(cihaz, kullanici, ops) {
       if (op.type === 'TRANSFER_SEND' || op.type === 'TRANSFER_RECEIVE') transferVar = true;
     } catch (e) {
       if (e instanceof Ret) {
-        kayit(false, e.message);
-        sonuc.push({ id, ok: false, error: e.message });
+        kayit(false, e.message, e.code);
+        sonuc.push({ id, ok: false, error: e.message, ...(e.code ? { code: e.code } : {}) });
         log.uyari(`İşlem reddedildi ${op.type} ${id}: ${e.message}`);
       } else {
         // Beklenmeyen hata kalıcı ret değildir; cevapta yer almayan işlem terminalde bekler, sonra yeniden gelir.
@@ -958,9 +992,10 @@ function masterGovde() {
   const counts = db
     .all("SELECT id, no, title, blind, depo, scope FROM count_session WHERE status='OPEN' ORDER BY created_at")
     .map((c) => ({ id: c.id, no: c.no, title: c.title, blind: Boolean(c.blind), depot: c.depo, scope: c.scope ? c.scope.split(',') : [] }));
+  // Yetki (yetki.js): perms / depots null = sınırsız. Eski terminal bu alanları yok sayar; asıl denetim sunucuda.
   const users = db
-    .all('SELECT username, name, salt, pin_hash FROM app_user WHERE active=1 ORDER BY username')
-    .map((u) => ({ username: u.username, name: u.name, salt: u.salt, pinHash: u.pin_hash }));
+    .all('SELECT username, name, salt, pin_hash, role, perms, depots FROM app_user WHERE active=1 ORDER BY username')
+    .map((u) => ({ username: u.username, name: u.name, salt: u.salt, pinHash: u.pin_hash, ...yetki.terminalGorunumu(u) }));
 
   const govde = {
     warehouse: depoAdi(vars),

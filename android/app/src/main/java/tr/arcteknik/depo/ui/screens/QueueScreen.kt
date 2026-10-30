@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import tr.arcteknik.depo.data.Op
 import tr.arcteknik.depo.data.OpStatus
+import tr.arcteknik.depo.data.Perm
 import tr.arcteknik.depo.ui.AppVm
 import tr.arcteknik.depo.ui.C
 import tr.arcteknik.depo.ui.Caption
@@ -59,7 +60,8 @@ fun QueueScreen(vm: AppVm, online: Boolean, version: Int) {
     Screen("Gönderim Kuyruğu", online = online, onBack = { vm.back() }, footer = {
         MessageBar(vm.message?.first, vm.message?.second == true)
         SecondaryButton(if (busy) "Gönderiliyor…" else "Şimdi dene", {
-            vm.repo.db.resetOpErrors()
+            // Reddedilmiş (hatalı) işlemleri yeniden denemek yetki ister; bekleyenler her zaman gönderilir.
+            if (vm.can(Perm.QUEUE_MANAGE)) vm.repo.db.resetOpErrors()
             scope.launch {
                 val err = vm.sync.run()
                 if (err == null) vm.ok("Eşitleme tamam") else vm.error("Gönderilemedi: $err")
@@ -113,7 +115,7 @@ fun QueueScreen(vm: AppVm, online: Boolean, version: Int) {
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
+                if (vm.can(Perm.QUEUE_MANAGE)) TextButton(onClick = {
                     vm.repo.db.deleteOp(op.id); vm.repo.changed(); selected = null
                     scope.launch { vm.sync.run() }
                 }) { Text("İşlemi sil") }

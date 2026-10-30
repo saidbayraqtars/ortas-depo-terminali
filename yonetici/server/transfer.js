@@ -82,7 +82,7 @@ function acikHesapla(oku, bas) {
   const bekleyen = new Map();
   for (const r of db.all(
     `SELECT t.from_depo, t.to_depo, l.product_id, SUM(l.qty) AS q FROM transfer t JOIN transfer_line l ON l.transfer_id = t.id
-     WHERE t.kind = 'RECEIVE' AND t.created_at >= ? AND (t.durum <> 'YAZILDI' OR t.yazildi_at > ?)
+     WHERE t.kind = 'RECEIVE' AND t.created_at >= ? AND t.durum <> 'GERI' AND (t.durum <> 'YAZILDI' OR t.yazildi_at > ?)
      GROUP BY t.from_depo, t.to_depo, l.product_id`,
     bas.getTime(), gorunum.okumaBasi || 0,
   )) {
@@ -247,13 +247,15 @@ function gonderRafla(from, to, pid, raflar, rafsiz, h) {
   return out;
 }
 
-function gonderUygula(op, p, h, { Ret, bilinen }) {
+function gonderUygula(op, p, h, { Ret, bilinen, yetkiDenetle = () => {} }) {
   const cfg = config.load();
   const c = ac(cfg, Ret);
   const from = kur(p, 'from');
   const to = kur(p, 'to');
   if (from === null || to === null) throw new Ret('Gönderen ya da alan depo yok');
   if (from === to) throw new Ret('Gönderen ve alan depo aynı');
+  // Mal gönderen depodan çıkar: kullanıcı o depoda çalışabiliyor olmalı (Toybelen kullanıcısı Merkez'den gönderemez).
+  yetkiDenetle(null, from);
   if (!c.includes(from) || !c.includes(to)) throw new Ret(`Transfer yalnız ${ciftAdi(c)} arasında yapılır`);
   if (from === gorunum.yolda || to === gorunum.yolda) throw new Ret('Yoldaki depo gönderen ya da alan olamaz');
   if (!gorunum.depolar.some((d) => Number(d.ind) === to) || !gorunum.depolar.some((d) => Number(d.ind) === from)) throw new Ret('Depo Vega\'da bulunamadı');
@@ -279,7 +281,7 @@ function gonderUygula(op, p, h, { Ret, bilinen }) {
   }
 }
 
-function kabulUygula(op, p, h, { Ret, bilinen }) {
+function kabulUygula(op, p, h, { Ret, bilinen, yetkiDenetle = () => {} }) {
   const cfg = config.load();
   const c = ac(cfg, Ret);
   const sevk = gorunum.sevkler.find((s) => String(s.ind) === String(p.sevkId));
@@ -288,6 +290,8 @@ function kabulUygula(op, p, h, { Ret, bilinen }) {
     throw new Ret('Gönderim açık görünmüyor (kabul edilmiş, iptal edilmiş ya da Vega henüz okunmamış olabilir)');
   }
   if (!c.includes(sevk.kaynak) || !c.includes(sevk.hedef)) throw new Ret(`Transfer yalnız ${ciftAdi(c)} arasında yapılır`);
+  // Mal alan depoya girer: kullanıcı o depoda çalışabiliyor olmalı.
+  yetkiDenetle(null, sevk.hedef);
   // partial: kısmi kabul — okutulanlar alınır, gönderim açık kalır, eksik kaydı açılmaz. Eksik yalnız "Kabulü bitir" ile (partial değil) açılır;
   // önceden kısmi alınmış gönderimde bitirirken yeni satır olmayabilir (kalan hepsi eksik olur).
   const kismi = p.partial === true || p.partial === 1 || p.partial === 'true';
@@ -409,7 +413,7 @@ async function yaz() {
           kalemler,
           aciklama: `Depo terminali · ${t.device || ''} · ${t.user || ''}`.slice(0, 200),
         });
-        db.run("UPDATE transfer SET durum='YAZILDI', vega_ind=?, belge_no=?, hata=NULL, yazildi_at=? WHERE id=?", r.ind, r.belgeNo, now(), t.id);
+        db.run("UPDATE transfer SET durum='YAZILDI', vega_ind=?, belge_no=?, firma_donem=?, hata=NULL, yazildi_at=? WHERE id=?", r.ind, r.belgeNo, r.firmaDonem || null, now(), t.id);
         log.bilgi(`Transfer Vega'ya yazıldı: ${gonderim ? 'gönderim 128' : 'kabul 129'} ${r.belgeNo} (${r.kalem} kalem, ${depo().depoAdi(t.from_depo)} → ${depo().depoAdi(t.to_depo)})${r.negatif ? `; gönderen depoda stoğu yetmeyen ${r.negatif} kart` : ''}`);
         // Gönderim Vega'da göründü; alan depodaki terminaller en geç bir sonraki okumada alır, hemen okuyalım.
         yenile().catch(() => {});
@@ -440,7 +444,7 @@ async function yaz() {
 /** Programın kendi yazdığı 129 fişleri mal kabulde ikinci kez rafa kaldırılacak belge olarak çıkmasın. */
 function programKabulBelgeleri() {
   return new Set(
-    db.all("SELECT vega_ind, to_depo FROM transfer WHERE kind='RECEIVE' AND vega_ind IS NOT NULL").map((r) => `D129-${r.vega_ind}-${r.to_depo}`),
+    db.all("SELECT vega_ind, to_depo FROM transfer WHERE kind='RECEIVE' AND vega_ind IS NOT NULL AND durum<>'GERI'").map((r) => `D129-${r.vega_ind}-${r.to_depo}`),
   );
 }
 
@@ -456,7 +460,7 @@ function programKabulFisleri() {
   const satirlar = db.all(
     `SELECT t.id, t.from_depo, t.to_depo, t.sevk_no, t.belge_no, t.created_at, l.product_id, SUM(l.qty) AS q
      FROM transfer t JOIN transfer_line l ON l.transfer_id = t.id
-     WHERE t.kind = 'RECEIVE' AND t.created_at >= ?
+     WHERE t.kind = 'RECEIVE' AND t.created_at >= ? AND t.durum <> 'GERI'
      GROUP BY t.id, l.product_id ORDER BY t.created_at, t.id, l.product_id`,
     bas,
   );
@@ -565,9 +569,97 @@ function acikKapat(ind, kim) {
   return true;
 }
 
+// ---- Geri alma (yalnız yönetici) ---------------------------------------------------------------
+
+const hataYap = (mesaj, status = 400) => Object.assign(new Error(mesaj), { status });
+
+/**
+ * Yönetici, terminalden gelen bir transferi geri alır (yanlış depodan gönderim, yanlış kabul):
+ *  - Fiş Vega'ya henüz yazılmamışsa (BEKLIYOR / HATA) yalnız programdaki etkisi geri alınır, fiş hiç yazılmaz.
+ *  - Yazılmışsa Vega'daki fiş (128/129) silinir (vega.transferGeriAl: başlık, satır, envanter) ve programdaki etkisi geri alınır.
+ * Gönderimde (128) raflardan düşen miktar rafa geri konur; kabulde (129) rafa giren miktar düşülür, gelmeyen miktar
+ * (eksik) kaydı silinir ve gönderim terminallerde yeniden açılır. Kabulü başlamış bir gönderim geri alınmaz: önce kabul geri alınmalı.
+ * Dönen: { belgeNo, vegaSilindi, uyarilar }.
+ */
+async function geriAl(id, kim = 'yönetici', not = '') {
+  const t = db.get('SELECT * FROM transfer WHERE id=?', String(id));
+  if (!t) throw hataYap('Transfer kaydı bulunamadı', 404);
+  if (t.durum === 'GERI') throw hataYap('Bu transfer zaten geri alınmış');
+  const gonderim = t.kind === 'SEND';
+  const cfg = config.load();
+  if (t.durum === 'BEKLIYOR' && yaziyor) throw hataYap('Fiş şu an Vega\'ya yazılıyor; birkaç saniye sonra yeniden deneyin');
+  const satirlar = db.all('SELECT product_id, qty, shelf FROM transfer_line WHERE transfer_id=? ORDER BY product_id, shelf', t.id);
+  const kodu = (pid) => depo().urun(pid)?.code || pid;
+  // Yazılacak satırı olmayan kabul (kısmi kabulün ardından boş bitirme) YAZILDI görünür ama Vega'da fişi yoktur.
+  const yazilmis = t.durum === 'YAZILDI' && Number.isInteger(t.vega_ind);
+  if (t.durum === 'YAZILDI' && !yazilmis && satirlar.length) throw hataYap('Fişin Vega numarası kayıtlı değil; Vega\'da elle silin');
+
+  if (yazilmis) {
+    if (!cfg.transfer?.aktif || !vega.hazirMi(cfg.vega)) throw hataYap('Vega bağlantısı ya da transfer ayarı kapalı; fiş geri alınamaz');
+    if (gonderim) {
+      // Gönderimin hiç kabul edilmemiş olması şart: kabul edilen mal alan depoda rafa girmiş olabilir. Güncel durumu Vega'dan okuyup bakılır.
+      await yenile();
+      const sevk = gorunum.sevkler.find((s) => s.ind === t.vega_ind);
+      if (!sevk) throw hataYap(`${t.belge_no || 'Gönderim'} açık görünmüyor (kabul edilmiş, kapatılmış ya da Vega okunamamış). Kabulü varsa önce kabulü geri alın`);
+      const gonderilen = new Map();
+      for (const l of satirlar) gonderilen.set(l.product_id, yuvarla((gonderilen.get(l.product_id) || 0) + l.qty));
+      for (const [pid, q] of gonderilen) {
+        const acik = sevk.satirlar.find((l) => l.productId === pid)?.open || 0;
+        if (acik + EPS < q) throw hataYap(`${kodu(pid)} için gönderimin ${yuvarla(q - acik)} adedi kabul edilmiş; önce kabul fişini geri alın`);
+      }
+    }
+    // Aynı fişin kabulden önce silinmesi: bu gönderime bağlı bir kabul programda kayıtlıysa onu önce geri almak gerekir (yukarıdaki açık miktar denetimi bunu yakalar).
+    await vega.transferGeriAl(cfg, { tip: gonderim ? 128 : 129, ind: t.vega_ind, belgeNo: t.belge_no, firmaDonem: t.firma_donem });
+  }
+
+  const uyarilar = [];
+  const h = { ts: now(), user: kim, device: 'PC' };
+  const d = depo();
+  const ref = `${t.belge_no || t.id} geri alındı`;
+  try {
+    db.tx(() => {
+      if (gonderim) {
+        // Gönderimde raflardan düşen miktar geri konur; rafsız satırın programda raf stoku yoktu.
+        for (const l of satirlar) {
+          if (!l.shelf) continue;
+          d.miktarEkle(t.from_depo, l.product_id, l.shelf, l.qty, { ...h, kind: 'TRANSFER_GERI', ref });
+          d.terminalZimmet(t.from_depo, l.product_id, l.shelf);
+        }
+      } else {
+        const rafliToplam = satirlar.filter((l) => l.shelf).reduce((a, l) => a + l.qty, 0);
+        for (const l of satirlar) {
+          if (!l.shelf) continue;
+          const mevcut = d.miktar(t.to_depo, l.product_id, l.shelf);
+          const al = Math.min(mevcut, l.qty);
+          if (al > EPS) d.miktarEkle(t.to_depo, l.product_id, l.shelf, -al, { ...h, kind: 'TRANSFER_GERI', ref });
+          if (l.qty - al > EPS) uyarilar.push(`${kodu(l.product_id)} · ${l.shelf}: ${l.qty} adet girmişti, rafta ${mevcut} vardı, ${yuvarla(al)} düşüldü`);
+          if (d.miktar(t.to_depo, l.product_id, l.shelf) <= EPS) d.terminalZimmetBosalt(t.to_depo, l.product_id, l.shelf);
+        }
+        // Belge olarak rafa kaldırılacak miktar (rafsız alınanlar) kalkar; sonradan rafa kaldırılmış kısım raf stokunda kalır, elle düzeltilir.
+        const rafaKalkan = Number(db.get('SELECT COALESCE(SUM(shelved),0) AS q FROM receipt_shelved WHERE receipt_id=?', `TRF-${t.id}`).q);
+        if (rafaKalkan - rafliToplam > EPS) uyarilar.push(`Rafsız alınan ${yuvarla(rafaKalkan - rafliToplam)} adet sonradan rafa kaldırılmıştı; o rafların stokunu Raflar sayfasından düzeltin`);
+        db.run('DELETE FROM receipt_shelved WHERE receipt_id=?', `TRF-${t.id}`);
+        // Kabulde açılan eksik kayıtları ve "kabulü bitti" işareti de kalkar: gönderim yeniden açık görünür.
+        db.run('DELETE FROM transfer_fark WHERE transfer_id=?', t.id);
+        db.run('DELETE FROM transfer_kapali WHERE transfer_id=?', t.id);
+      }
+      db.run("UPDATE transfer SET durum='GERI', geri_at=?, geri_user=?, geri_not=?, hata=NULL WHERE id=?", now(), String(kim || ''), String(not || '').slice(0, 300) || null, t.id);
+    });
+  } catch (e) {
+    if (yazilmis) log.hata(`Transfer ${t.belge_no} Vega'dan silindi ama program kaydı geri alınamadı (${t.id}); elle düzeltin`, e);
+    throw e;
+  }
+  fisOnbellek.surum = -1;
+  log.bilgi(`Transfer geri alındı: ${gonderim ? 'gönderim' : 'kabul'} ${t.belge_no || t.id} (${depo().depoAdi(t.from_depo)} → ${depo().depoAdi(t.to_depo)}) · ${kim}${yazilmis ? ' · Vega fişi silindi' : ' · Vega\'ya yazılmamıştı'}${uyarilar.length ? ' · ' + uyarilar.join('; ') : ''}`);
+  depo().degisti();
+  if (yazilmis) yenile().catch(() => {});
+  return { belgeNo: t.belge_no || null, vegaSilindi: yazilmis, uyarilar };
+}
+
 module.exports = {
   programKabulFisleri,
   acikKapat,
+  geriAl,
   uygula, yaz, yaziciTetikle, yenile, terminalGorunumu, programKabulBelgeleri, liste, yenidenDene, farkCoz, farkAc,
   yoldaDepo, tumDepolar, cift,
   // Testler için

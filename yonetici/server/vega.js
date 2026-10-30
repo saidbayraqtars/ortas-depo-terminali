@@ -920,6 +920,45 @@ async function transferYaz(cfg, { tip, depo, karsi, yolda, kalemler, aciklama = 
 }
 
 /**
+ * Programın yazdığı depo hareket fişini (128 gönderim / 129 kabul) Vega'dan siler: envanter satırları, belge satırları, başlık;
+ * tek SERIALIZABLE işlemde. Fişin hâlâ programın yazdığı fiş olduğu doğrulanır (aynı numara ve tür, satır sayısı); kullanıcı
+ * Vega'da değiştirmişse ya da silmişse hiçbir şey silinmez. `firmaDonem`: fişin yazıldığı tablo öneki (kayıtlı değilse güncel).
+ * Dönen: { satir, envanter }.
+ */
+async function transferGeriAl(cfg, { tip, ind, belgeNo, firmaDonem }) {
+  if (![128, 129].includes(tip)) throw new Error('Geçersiz transfer belge türü');
+  if (!Number.isInteger(ind)) throw new Error('Fişin Vega numarası yok');
+  const { p, FD } = await baglam(cfg.vega);
+  const fd = String(firmaDonem || FD);
+  if (!/^F\d+D\d+$/.test(fd)) throw new Error('Firma/dönem öneki geçersiz');
+  const tB = `${fd}TBLDEPOHARBASLIK`, tH = `${fd}TBLDEPOHARHAREKET`, tE = `${fd}TBLDEPOENVANTER`;
+  const t = new sql.Transaction(p);
+  await t.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+  try {
+    const rq = () => new sql.Request(t).input('ind', sql.Int, ind).input('tip', sql.SmallInt, tip);
+    const b = await rq().query(`SELECT BELGENO, BELGETIPI FROM [${tB}] WITH (UPDLOCK, HOLDLOCK) WHERE IND=@ind`);
+    if (!b.recordset.length) throw new Error(`${belgeNo || ind} Vega'da bulunamadı (silinmiş ya da değiştirilmiş olabilir)`);
+    const baslik = b.recordset[0];
+    if (Number(baslik.BELGETIPI) !== tip || (belgeNo && String(baslik.BELGENO || '').trim() !== String(belgeNo).trim())) {
+      throw new Error(`Vega'daki ${ind} numaralı belge programın yazdığı fiş değil (${String(baslik.BELGENO || '').trim()}); silinmedi`);
+    }
+    // Envanter satırı satır başına iki tane (çıkış ve giriş depo). Sayı tutmuyorsa fiş sonradan değiştirilmiş demektir.
+    const sayim = (await rq().query(`
+      SELECT (SELECT COUNT(*) FROM [${tH}] WHERE EVRAKNO=@ind) AS S,
+             (SELECT COUNT(*) FROM [${tE}] WHERE BELGEIND=@ind AND BELGETIPI=@tip) AS E`)).recordset[0];
+    if (sayim.E !== sayim.S * 2) throw new Error(`Vega fişinde beklenmeyen kayıt sayısı (satır ${sayim.S}, envanter ${sayim.E}); fiş değiştirilmiş olabilir, silinmedi`);
+    await rq().query(`DELETE FROM [${tE}] WHERE BELGEIND=@ind AND BELGETIPI=@tip`);
+    await rq().query(`DELETE FROM [${tH}] WHERE EVRAKNO=@ind`);
+    await rq().query(`DELETE FROM [${tB}] WHERE IND=@ind`);
+    await t.commit();
+    return { satir: sayim.S, envanter: sayim.E };
+  } catch (e) {
+    await t.rollback().catch(() => {});
+    throw e;
+  }
+}
+
+/**
  * Açık gönderimlerin Vega'daki durumu. Gönderim (128) ile kabul (129) arasında belge bağı yoktur, ikisi de yoldaki
  * depo üzerinden gider; bu yüzden her (gönderen, alan, ürün) için toplam gönderilen ve toplam alınan döner, hangi
  * gönderimin açık olduğu depo tarafında bu toplamlardan çıkarılır. `bas`: bu tarihten sonraki belgeler,
@@ -964,4 +1003,4 @@ async function transferOku(cfg, { bas, alanlar, kaynaklar }) {
   return { sevkler: [...belgeler.values()], havuz: [...havuz.values()] };
 }
 
-module.exports = { transferYaz, transferOku, kullanilanDepolar, dene, firmalar, donemler, depolar, donemCoz, hazirMi, goruntu, stokTani, BELGE_TURU, anlikStok, sayimYaz, sayimGeriAl, fisVarsayilanlari, PASIF_AD, kartAlanUzunluk, kartAlanYaz, kapat, oleTarih };
+module.exports = { transferYaz, transferGeriAl, transferOku, kullanilanDepolar, dene, firmalar, donemler, depolar, donemCoz, hazirMi, goruntu, stokTani, BELGE_TURU, anlikStok, sayimYaz, sayimGeriAl, fisVarsayilanlari, PASIF_AD, kartAlanUzunluk, kartAlanYaz, kapat, oleTarih };

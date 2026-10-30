@@ -98,7 +98,33 @@ data class TransferLine(val productId: String, val qty: Double, val shelf: Strin
 
 data class Movement(val ts: Long, val text: String, val qty: Double)
 
-data class User(val username: String, val name: String, val pinHash: String, val salt: String)
+/**
+ * Terminal kullanıcısı. [perms] ve [depots] yönetici programında verilen yetkidir (docs/API.md "Kullanıcı yetkisi");
+ * null = sınırsız (eski sunucu yetki göndermez, yönetici tam yetki verdiyse de null gelir).
+ */
+data class User(
+    val username: String,
+    val name: String,
+    val pinHash: String,
+    val salt: String,
+    val perms: Set<String>? = null,
+    val depots: Set<Int>? = null,
+)
+
+/** Kullanıcı izinleri; kimlikler sunucudaki `yetki.js` kataloğuyla aynıdır. */
+object Perm {
+    const val PUTAWAY = "putaway"
+    const val PICK = "pick"
+    const val TRANSFER = "transfer"
+    const val SHELF_ADD = "shelf_add"
+    const val HOME_REMOVE = "home_remove"
+    const val COUNT = "count"
+    const val COUNT_FREE = "count_free"
+    const val DEPOT_SEND = "depot_send"
+    const val DEPOT_RECEIVE = "depot_receive"
+    const val LABEL = "label"
+    const val QUEUE_MANAGE = "queue_manage"
+}
 
 object OpStatus {
     const val PENDING = "PENDING"

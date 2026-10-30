@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
 import tr.arcteknik.depo.BuildConfig
+import tr.arcteknik.depo.data.Perm
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -51,8 +52,9 @@ import java.util.Locale
 @Composable
 fun HomeScreen(vm: AppVm, online: Boolean, version: Int) {
     val db = vm.repo.db
-    val openReceipts = remember(version) { db.receipts(true).size }
-    val openCounts = remember(version) { db.countSessions().size }
+    // Kullanıcının çalışamayacağı depoların belge ve sayımları sayılmaz (yetki: yönetici programı Kullanıcılar).
+    val openReceipts = remember(version, vm.user) { db.receipts(true).count { vm.canDepot(it.depot) } }
+    val openCounts = remember(version, vm.user) { db.countSessions().count { vm.canDepot(it.depot) } }
     val pending = remember(version) { db.pendingOpCount() }
     val transfer = remember(version) { vm.repo.transferInfo() }
     val lastSync = vm.repo.prefs.lastSync
@@ -66,7 +68,7 @@ fun HomeScreen(vm: AppVm, online: Boolean, version: Int) {
             Box(Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).background(C.Accent), contentAlignment = Alignment.Center) {
                 Text(vm.user?.name?.take(1)?.uppercase() ?: "?", color = C.Bar, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             }
-            val depots = remember(version) { vm.repo.db.depots() }
+            val depots = remember(version, vm.user) { vm.depots() }
             var pickDepot by remember { mutableStateOf(false) }
             Column(Modifier.weight(1f).clickable(enabled = depots.size > 1) { pickDepot = true }) {
                 Text(vm.user?.name ?: "", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
@@ -98,28 +100,26 @@ fun HomeScreen(vm: AppVm, online: Boolean, version: Int) {
                     Text("Yeni sürüm ${vm.repo.prefs.updateName} hazır · indirmek için dokunun", color = C.InfoText, fontWeight = FontWeight.SemiBold)
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Tile("Rafa Kaldır", "Kabul edilen mal", Ic.Inbox, openReceipts, Modifier.weight(1f)) { vm.go(Route.Receipts) }
-                Tile("Raftan Al", "Raftaki malı eksilt", Ic.Outbox, 0, Modifier.weight(1f)) { vm.go(Route.Pick) }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Tile("Raf Transferi", "Raftan rafa taşı", Ic.Transfer, 0, Modifier.weight(1f)) { vm.go(Route.Transfer()) }
-                Tile("Sayım", "Raf ya da tam sayım", Ic.Clipboard, openCounts, Modifier.weight(1f)) { vm.go(Route.Counts) }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Tile("Ürün Sorgu", "Hangi rafta, kaç adet", Ic.Search, 0, Modifier.weight(1f)) { vm.go(Route.ProductQuery()) }
-                Tile("Raf Sorgu", "Rafta neler var", Ic.Pin, 0, Modifier.weight(1f)) { vm.go(Route.ShelfQuery()) }
-            }
-            if (transfer.on) {
-                val waiting = transfer.incoming.count { it.to == db.depot }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Tile("Depoya Gönder", "Başka depoya mal", Ic.Truck, 0, Modifier.weight(1f)) { vm.go(Route.SendDepot) }
-                    Tile("Gönderim Kabul", "Gelen mal", Ic.Inbox, waiting, Modifier.weight(1f)) { vm.go(Route.ReceiveList) }
+            // Kullanıcının yetkisi olmayan işlemlerin kartı görünmez; boşalan yer yanındaki kartla dolar. Sorgu ve kuyruk herkese açık.
+            val tiles = buildList<@Composable (Modifier) -> Unit> {
+                if (vm.can(Perm.PUTAWAY)) add { m -> Tile("Rafa Kaldır", "Kabul edilen mal", Ic.Inbox, openReceipts, m) { vm.go(Route.Receipts) } }
+                if (vm.can(Perm.PICK)) add { m -> Tile("Raftan Al", "Raftaki malı eksilt", Ic.Outbox, 0, m) { vm.go(Route.Pick) } }
+                if (vm.can(Perm.TRANSFER)) add { m -> Tile("Raf Transferi", "Raftan rafa taşı", Ic.Transfer, 0, m) { vm.go(Route.Transfer()) } }
+                if (vm.can(Perm.COUNT) || vm.can(Perm.COUNT_FREE)) add { m -> Tile("Sayım", "Raf ya da tam sayım", Ic.Clipboard, openCounts, m) { vm.go(Route.Counts) } }
+                add { m -> Tile("Ürün Sorgu", "Hangi rafta, kaç adet", Ic.Search, 0, m) { vm.go(Route.ProductQuery()) } }
+                add { m -> Tile("Raf Sorgu", "Rafta neler var", Ic.Pin, 0, m) { vm.go(Route.ShelfQuery()) } }
+                if (transfer.on) {
+                    val waiting = transfer.incoming.count { it.to == db.depot && vm.canDepot(it.to) }
+                    if (vm.can(Perm.DEPOT_SEND)) add { m -> Tile("Depoya Gönder", "Başka depoya mal", Ic.Truck, 0, m) { vm.go(Route.SendDepot) } }
+                    if (vm.can(Perm.DEPOT_RECEIVE)) add { m -> Tile("Gönderim Kabul", "Gelen mal", Ic.Inbox, waiting, m) { vm.go(Route.ReceiveList) } }
                 }
+                add { m -> Tile("Kuyruk", "Bekleyen işlemler", Ic.CloudUp, pending, m) { vm.go(Route.Queue) } }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Tile("Kuyruk", "Bekleyen işlemler", Ic.CloudUp, pending, Modifier.weight(1f)) { vm.go(Route.Queue) }
-                Box(Modifier.weight(1f))
+            tiles.chunked(2).forEach { pair ->
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    pair.forEach { tile -> tile(Modifier.weight(1f)) }
+                    if (pair.size == 1) Box(Modifier.weight(1f))
+                }
             }
         }
 

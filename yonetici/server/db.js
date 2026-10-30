@@ -305,6 +305,23 @@ function migrate() {
     `);
     set('surum', '7');
   }
+  if (Number(get("SELECT value FROM meta WHERE key='surum'")?.value) < 8) {
+    // 8: kullanıcı yetkisi (bkz. yetki.js). Göçte herkes tam yetkili kalır ('*' = hepsi): izin listesi ve çalışabileceği depolar.
+    // op.code: reddedilen işlemin nedeni (YETKI); terminal buna göre ana verisini silmez.
+    // transfer.firma_donem: Vega fişinin yazıldığı firma/dönem öneki (geri almada aynı tabloya gidilsin);
+    // geri_*: yönetici fişi Vega'dan geri aldı (durum GERI), kim, ne zaman, neden.
+    db.exec(`
+      ALTER TABLE app_user ADD COLUMN role TEXT NOT NULL DEFAULT 'tam';
+      ALTER TABLE app_user ADD COLUMN perms TEXT NOT NULL DEFAULT '*';
+      ALTER TABLE app_user ADD COLUMN depots TEXT NOT NULL DEFAULT '*';
+      ALTER TABLE op ADD COLUMN code TEXT;
+      ALTER TABLE transfer ADD COLUMN firma_donem TEXT;
+      ALTER TABLE transfer ADD COLUMN geri_at INTEGER;
+      ALTER TABLE transfer ADD COLUMN geri_user TEXT;
+      ALTER TABLE transfer ADD COLUMN geri_not TEXT;
+    `);
+    set('surum', '8');
+  }
 }
 
 function get(sql, ...args) {

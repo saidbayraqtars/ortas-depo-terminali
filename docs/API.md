@@ -32,7 +32,7 @@ Bu yüzden sunucu, kabul ettiği her işlemi `master` cevabına hemen yansıtmal
   "receipts":  [{"id": "R4182", "docNo": "İRS-004182", "supplier": "…", "date": "14.10.2026",
                  "lines": [{"id": "R4182-1", "productId": "P1", "accepted": 24, "shelved": 12}]}],
   "counts":    [{"id": "C7", "no": "SAY-0007", "title": "Koridor A", "blind": true}],
-  "users":     [{"username": "ismail", "name": "İsmail", "salt": "…", "pinHash": "…"}]
+  "users":     [{"username": "ismail", "name": "İsmail", "salt": "…", "pinHash": "…", "role": "tam", "perms": null, "depots": null}]
 }
 ```
 
@@ -57,7 +57,9 @@ sunucudaki APK cihazdakinden yeniyse terminal "Yeni sürüm" gösterir, indirme 
   sonda `*` düz önektir. Kural `yonetici/server/kapsam.js` ve terminalde `Kapsam.kt`. Listede olmayan oturum
   (kapatılan, iptal edilen) terminalden silinir.
 - `users`: terminal kullanıcıları. `pinHash = sha256(salt + pin)` küçük harf hex. Şifre düz gönderilmez;
-  terminal internetsiz giriş için listeyi saklar.
+  terminal internetsiz giriş için listeyi saklar. **Yetki (1.9.0+):** `perms` izin kimlikleri dizisi, `depots` kullanıcının çalışabileceği
+  Vega depo numaraları; `null` = sınırsız (alan hiç yoksa da sınırsız: eski sunucu). `role` yalnız görüntü içindir (hazır şablon adı).
+  Aşağıda "Kullanıcı yetkisi".
 
 ## `POST /api/master/parts` (1.3.0+)
 
@@ -191,7 +193,9 @@ Cevap: her işlem için bir satır.
 
 - `id` terminalde üretilen UUID'dir. Sunucu aynı `id`'yi ikinci kez alırsa yeniden işlemez, `ok: true` döner
   (bağlantı cevap gelmeden koparsa terminal aynı işlemi tekrar yollar).
-- `ok: false` kalıcı ret demektir; terminal işlemi "Hata" olarak gösterir, kullanıcı silebilir.
+- `ok: false` kalıcı ret demektir; terminal işlemi "Hata" olarak gösterir, kullanıcı silebilir. `code` (1.9.0+, isteğe bağlı) ret
+  nedenidir: `"YETKI"` = kullanıcının bu işleme ya da depoya yetkisi yok. Terminal bu durumda ana veriyi baştan indirmez, yalnız işlemin
+  dokunduğu parçaları (`head`, `shelves`, ürünlerin kovaları) yeniden ister; yetkisiz işlemi Vega'ya hiçbir şey yazılmadan reddeder.
 - Cevapta olmayan işlem terminalde bekler ve sonra yeniden gönderilir.
 
 ### İşlem türleri
@@ -219,6 +223,44 @@ Miktarlar ondalıklı olabilir (litre, metre); sayı olarak gelir.
 - `COUNT_SUBMIT`: sayılan raflarda, sunucuda olup terminalin saymadığı ürün sayımdan **önce** yerleştiyse 0 kabul edilir,
   sonra yerleştiyse (başka terminal) dokunulmaz. İptal edilmiş ya da onaylanmış sayıma gelen gönderim kalıcı ret alır;
   kapatılmış (onay bekleyen) sayıma geç gelen gönderim alınır.
+
+## Kullanıcı yetkisi (1.9.0+)
+
+Her terminal kullanıcısının iki sınırı vardır; ikisi de yönetici programında Kullanıcılar sayfasından verilir.
+
+- **`perms` (izin):** `putaway` rafa kaldır, `pick` raftan al, `transfer` raf transferi, `shelf_add` terminalden raf ekle, `home_remove` raf adresi sil,
+  `count` sayım gönder, `count_free` serbest sayım başlat, `depot_send` depoya gönder (Vega 128), `depot_receive` gönderim kabul (Vega 129),
+  `label` etiket bas, `queue_manage` kuyruktaki hatalı işlemi yeniden dene/sil. Ürün ve raf sorgusu herkese açıktır.
+  İşlem türü → izin: `PUTAWAY`→putaway, `PICK`→pick, `TRANSFER`→transfer, `SHELF_ADD`→shelf_add, `HOME_REMOVE`→home_remove,
+  `COUNT_SUBMIT`→count (`sessionId` `LOCAL-` ile başlıyorsa ayrıca count_free), `TRANSFER_SEND`→depot_send, `TRANSFER_RECEIVE`→depot_receive,
+  `POST /api/label`→label.
+- **`depots` (depo):** kullanıcı yalnız bu depolarda işlem yapabilir. Sunucu işlemin deposuna bakar: `payload.depot` (rafa kaldırmada belgenin deposu,
+  sayımda sayımın deposu), `TRANSFER_SEND`'de **gönderen** `from` (mal çıkan depo), `TRANSFER_RECEIVE`'de **alan** depo (gönderimin hedefi).
+  Toybelen personeline yalnız Toybelen verilirse Merkez'den mal çıkaramaz, Merkez'e gelen gönderimi kabul edemez.
+
+Denetim sunucudadır (`yonetici/server/yetki.js`, `depo.islemUygula`): kullanıcı `payload.user`'dan alınır, kayıtlı değilse (silinmiş, boş) sınırsız sayılır
+ki kuyruktaki iş kaybolmasın. Cihaz anahtarı doğrulanmış cihaza güvenilir; kullanıcının şifresi işlem başına sınanmaz. Terminal aynı bilgiyi
+ana veriyle alıp menüyü, depo seçimini ve belge/sayım listelerini daraltır (arayüz kolaylığı); açık oturum yetki değişikliğini bir sonraki
+eşitlemede alır. Eski terminal (1.9.0 öncesi) yetkiyi bilmez: işlemini sunucu reddeder (`code: YETKI`), Cihazlar sayfasında sürümü görünür.
+
+Yönetici ucu (terminal kullanmaz): `GET /yonetim/api/izinler` katalog, şablonlar ve depolar; `POST /yonetim/api/kullanicilar`,
+`PUT /yonetim/api/kullanici/:u` gövdesinde `perms` (dizi ya da `"*"`), `depots` (dizi ya da `"*"`), `role`.
+
+## Vega'ya yazılan fişleri geri alma (yönetici, 1.9.0+)
+
+Program Vega'ya üç şey yazar: depo gönderim fişi (128), gönderim kabul fişi (129) ve onaylanan sayımın fark fişleri. Hepsi yönetici programında
+**Vega'ya yazılanlar** sayfasından geri alınır (`GET /yonetim/api/vega-yazimlari`; `POST /yonetim/api/transfer/:id/geri-al` `{not}`;
+`POST /yonetim/api/sayim/:id/geri-al`). Terminal kullanmaz.
+
+- Fiş Vega'ya henüz yazılmadıysa (`BEKLIYOR`, `HATA`) yalnız programdaki etkisi geri alınır, fiş hiç yazılmaz.
+- Yazılmışsa Vega'dan silinir (`vega.transferGeriAl`: envanter, satır, başlık; tek SERIALIZABLE işlem). Fişin hâlâ programın yazdığı fiş olduğu
+  doğrulanır (numara, tür, satır ve envanter sayısı); Vega'da değiştirilmiş ya da silinmişse hiçbir şey silinmez.
+- **Gönderim (128):** raflardan düşen mal rafa geri konur. Gönderimin **kabulü başlamışsa** (açık miktar gönderilenden azsa ya da gönderim açık
+  görünmüyorsa) geri alınmaz; önce kabul geri alınır.
+- **Kabul (129):** rafa giren mal raflardan düşülür (rafta azalmışsa olan kadarı, yönetici uyarılır), o kabulde açılan eksik kayıtları ve "kabulü bitti"
+  işareti silinir, gönderim terminallerde yeniden açık görünür.
+- Geri alınan kayıt `transfer.durum = GERI` olur (kim, ne zaman, neden: `geri_user`, `geri_at`, `geri_not`); açık gönderim hesaplarından çıkar.
+- Sayım: `sayimGeriAl` fark fişlerini siler, sayım "Onay bekliyor"a döner (raf miktarları sayılan değerde kalır).
 
 ## Diğer uçlar
 

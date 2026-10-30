@@ -151,15 +151,17 @@ fun SendDepotScreen(vm: AppVm, online: Boolean, version: Int) {
     val db = vm.repo.db
     val info = remember(version) { vm.repo.transferInfo() }
     val draft = vm.sendDraft
-    // Çıkış deposu her gönderimde sorulur; ilk açılışta çalışılan depo öneri olarak işaretli gelir.
-    var pickFrom by remember { mutableStateOf(!draft.fromConfirmed) }
+    // Çıkış deposu her gönderimde sorulur; ilk açılışta çalışılan depo öneri olarak işaretli gelir. Kullanıcı yalnız kendi
+    // depolarından çıkış yapabilir (yetki); tek deposu varsa sorulmaz.
+    val fromChoices = remember(info, vm.user) { info.depots.filter { vm.canDepot(it.id) } }
+    var pickFrom by remember { mutableStateOf(!draft.fromConfirmed && fromChoices.size > 1) }
     var confirm by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Product?>(null) }
     var scanTick by remember { mutableStateOf(0) }
 
     // Transfer iki depo arasındadır (sunucu ayarı): çıkış bu ikiliden biri, varış diğeri.
     val pair = info.depots
-    val from = pair.firstOrNull { it.id == draft.from }?.id ?: pair.firstOrNull { it.id == db.depot }?.id ?: pair.firstOrNull()?.id ?: 0
+    val from = fromChoices.firstOrNull { it.id == draft.from }?.id ?: fromChoices.firstOrNull { it.id == db.depot }?.id ?: fromChoices.firstOrNull()?.id ?: 0
     val toDepot = pair.firstOrNull { it.id != from }
     val fromName = pair.firstOrNull { it.id == from }?.name ?: db.depotName(from).ifBlank { from.toString() }
     val toName = toDepot?.name ?: ""
@@ -171,6 +173,14 @@ fun SendDepotScreen(vm: AppVm, online: Boolean, version: Int) {
     if (!info.on || pair.size != 2) {
         Screen("Depoya Gönder", online = online, onBack = { vm.back() }) {
             Notice("Depolar arası transfer bu sunucuda açık değil ya da iki depo seçilmemiş. Yönetici programında Ayarlar › Depolar arası transfer.", Tone.Warn, icon = Ic.Warning)
+            SecondaryButton("Geri", { vm.back() })
+        }
+        return
+    }
+
+    if (fromChoices.isEmpty()) {
+        Screen("Depoya Gönder", online = online, onBack = { vm.back() }) {
+            Notice("Bu kullanıcının bu iki depodan hiçbirinde gönderim yetkisi yok. Yetkiyi yönetici programında Kullanıcılar sayfasından verin.", Tone.Warn, icon = Ic.Warning)
             SecondaryButton("Geri", { vm.back() })
         }
         return
@@ -215,7 +225,7 @@ fun SendDepotScreen(vm: AppVm, online: Boolean, version: Int) {
             Column(Modifier.weight(1f).fillMaxWidth().clip(shape).background(C.Surface).border(1.dp, C.Line, shape)) {
                 Row(Modifier.padding(start = 14.dp, end = 4.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Caption(if (groups.isEmpty()) "Gönderilecekler" else "${groups.size} kalem · ${fmt(lines.sumOf { it.qty })} adet", Modifier.weight(1f))
-                    if (lines.isEmpty()) LinkText("Çıkışı değiştir") { pickFrom = true } else LinkText("Sıfırla", C.Err) { lines.clear() }
+                    if (lines.isEmpty()) { if (fromChoices.size > 1) LinkText("Çıkışı değiştir") { pickFrom = true } } else LinkText("Sıfırla", C.Err) { lines.clear() }
                 }
                 if (groups.isEmpty()) Hint("Okutulan her ürün burada listelenir; raf kendiliğinden seçilir.", Modifier.padding(start = 14.dp, end = 14.dp, bottom = 10.dp))
                 // Anahtarlı liste başa eklenen satırda eski konumunu korur; her okutmada başa dönülür ki son okutulan görünsün.
@@ -254,7 +264,7 @@ fun SendDepotScreen(vm: AppVm, online: Boolean, version: Int) {
 
     if (pickFrom) {
         DepotDialog(
-            pair, from,
+            fromChoices, from,
             { draft.from = it; draft.fromConfirmed = true; pickFrom = false },
             { if (draft.fromConfirmed) pickFrom = false else vm.back() },
             title = "Hangi depodan çıkıyor?",
@@ -429,8 +439,9 @@ fun ReceiveListScreen(vm: AppVm, online: Boolean, version: Int) {
     val db = vm.repo.db
     val info = remember(version) { vm.repo.transferInfo() }
     val d = db.depot
-    val mine = info.incoming.filter { it.to == d }
-    val others = info.incoming.filter { it.to != d }
+    // Kullanıcının çalışamayacağı depoya gelen gönderimler hiç görünmez (yetki).
+    val mine = info.incoming.filter { it.to == d && vm.canDepot(it.to) }
+    val others = info.incoming.filter { it.to != d && vm.canDepot(it.to) }
     LocksPoller(vm)
     Screen("Gönderim Kabul", sub = db.depotName(d).ifBlank { null }, online = online, onBack = { vm.back() }, scroll = false) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {

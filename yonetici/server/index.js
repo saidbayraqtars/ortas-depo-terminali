@@ -23,6 +23,7 @@ const rapor = require('./rapor');
 const kapsam = require('./kapsam');
 const transfer = require('./transfer');
 const kilit = require('./kilit');
+const yetki = require('./yetki');
 
 const SURUM = require('../package.json').version;
 let yedekKlasoru = null;
@@ -301,6 +302,11 @@ function terminalApi() {
     '/label',
     sar(async (req) => {
       const b = req.body || {};
+      // Etiket de kullanıcı yetkisine tabidir (kayıtlı olmayan kullanıcı sınırsız, bkz. yetki.js).
+      const ad = String(b.user || '').trim().toLowerCase();
+      const yk = ad ? yetki.baglam(db.get('SELECT username, perms, depots FROM app_user WHERE username=?', ad), depo.depoAdi) : null;
+      const red = yk && yk.denetle('label', b.depot === undefined || b.depot === null || b.depot === '' ? null : depo.depoCoz(b.depot));
+      if (red) throw Object.assign(new Error(red), { status: 403, kod: 'YETKI' });
       const adet = Math.max(1, Math.min(100, Number(b.copies) || 1));
       const govde = b.type === 'SHELF' ? { tur: 'raf', kodlar: [b.shelf], depo: b.depot, adet } : { tur: 'urun', urunler: [b.productId], depo: b.depot, adet };
       return await etiketBas(govde, sunucu.address().port, `${req.cihaz.name} · ${b.user || ''}`);
@@ -615,6 +621,49 @@ function yoneticiApi() {
     if (!transfer.yenidenDene(req.params.id)) throw Object.assign(new Error('Kayıt bulunamadı ya da zaten yazıldı'), { status: 404 });
     return { ok: true };
   }));
+  // Yönetici: terminalden gelen transferi geri alır (Vega fişi silinir, raf stoku eski haline döner). Ayrıntı: transfer.geriAl.
+  r.post('/transfer/:id/geri-al', sar(async (req) => ({ ok: true, ...(await transfer.geriAl(req.params.id, 'yönetici', req.body?.not)) })));
+  // Programın Vega'ya yazdığı fişler tek listede (sayım fişleri + depo transferleri); "Vega'ya yazılanlar" sayfası.
+  r.get('/vega-yazimlari', sar(() => {
+    const ad = (d) => depo.depoAdi(d);
+    const transferler = db
+      .all("SELECT * FROM transfer WHERE durum IN ('YAZILDI','GERI','BEKLIYOR','HATA') AND (vega_ind IS NOT NULL OR durum<>'YAZILDI' OR geri_at IS NOT NULL) ORDER BY created_at DESC LIMIT 300")
+      .map((t) => {
+        const satir = db.all('SELECT product_id, SUM(qty) AS q FROM transfer_line WHERE transfer_id=? GROUP BY product_id', t.id);
+        return {
+          tur: t.kind === 'SEND' ? 'TRANSFER_GONDERIM' : 'TRANSFER_KABUL',
+          tanim: t.kind === 'SEND' ? 'Depo gönderim fişi (128)' : 'Gönderim kabul fişi (129)',
+          id: t.id,
+          belgeNo: t.belge_no || t.sevk_no || '',
+          durum: t.durum,
+          hata: t.hata,
+          zaman: t.yazildi_at || t.created_at,
+          depo: t.kind === 'SEND' ? `${ad(t.from_depo)} → ${ad(t.to_depo)}` : `${ad(t.from_depo)} → ${ad(t.to_depo)} (kabul)`,
+          kullanici: t.user,
+          cihaz: t.device,
+          kalem: satir.length,
+          adet: Math.round(satir.reduce((a, b) => a + b.q, 0) * 10000) / 10000,
+          geriAt: t.geri_at,
+          geriKullanici: t.geri_user,
+          geriNot: t.geri_not,
+        };
+      });
+    const sayimlar = db.all("SELECT * FROM count_session WHERE vega_docs IS NOT NULL OR vega_written_at IS NOT NULL ORDER BY vega_written_at DESC LIMIT 200").map((s) => {
+      const docs = s.vega_docs ? JSON.parse(s.vega_docs).docs || [] : [];
+      return {
+        tur: 'SAYIM',
+        tanim: 'Sayım fişi (fark)',
+        id: s.id,
+        belgeNo: docs.map((d) => d.belgeNo).join(', ') || s.no,
+        durum: s.status === 'APPROVED' ? 'YAZILDI' : s.status,
+        zaman: s.vega_written_at,
+        depo: ad(s.depo),
+        sayimNo: s.no,
+        kalem: docs.length,
+      };
+    });
+    return { liste: [...transferler, ...sayimlar].sort((a, b) => (b.zaman || 0) - (a.zaman || 0)) };
+  }));
   r.post('/transfer/acik/:ind/kapat', sar((req) => {
     if (!transfer.acikKapat(req.params.ind, 'yönetici')) throw Object.assign(new Error('Gönderim açık görünmüyor'), { status: 404 });
     return { ok: true };
@@ -816,7 +865,15 @@ function yoneticiApi() {
   }));
 
   // Kullanıcılar
-  r.get('/kullanicilar', sar(() => db.all('SELECT username, name, active, created_at FROM app_user ORDER BY username')));
+  // Yetki kataloğu (yetki.js): izinler, hazır şablonlar ve seçilebilir depolar. Kullanıcılar sayfasındaki form bunu kullanır.
+  r.get('/izinler', sar(() => ({ izinler: yetki.IZINLER, sablonlar: yetki.SABLONLAR, depolar: depo.depolar().map((d) => ({ ind: d.ind, ad: d.ad })) })));
+  const kullaniciListesi = () =>
+    db.all('SELECT username, name, active, created_at, role, perms, depots FROM app_user ORDER BY username').map((u) => ({
+      ...u,
+      perms: u.perms === '*' ? null : u.perms.split(',').filter(Boolean),
+      depots: u.depots === '*' ? null : u.depots.split(',').filter(Boolean).map(Number),
+    }));
+  r.get('/kullanicilar', sar(() => kullaniciListesi()));
   r.post('/kullanicilar', sar((req) => {
     const b = req.body || {};
     const u = String(b.username || '').trim().toLowerCase();
@@ -824,14 +881,20 @@ function yoneticiApi() {
     if (!/^[a-z0-9._ğüşıöç-]{2,24}$/.test(u)) throw Object.assign(new Error('Kullanıcı adı 2-24 karakter: harf, rakam, nokta, tire'), { status: 400 });
     if (!/^\d{4,8}$/.test(pin)) throw Object.assign(new Error('Şifre 4-8 haneli rakam olmalı'), { status: 400 });
     if (db.get('SELECT 1 FROM app_user WHERE username=?', u)) throw Object.assign(new Error('Bu kullanıcı adı var'), { status: 400 });
+    // Yetki verilmezse tam yetkili açılır (eski davranış); yönetici formda daraltır.
+    const perms = b.perms === undefined ? '*' : yetki.izinlerDogrula(b.perms);
+    const depots = b.depots === undefined ? '*' : yetki.depolariDogrula(b.depots);
     const salt = crypto.randomBytes(12).toString('hex');
-    db.run('INSERT INTO app_user(username, name, salt, pin_hash, active, created_at) VALUES(?,?,?,?,1,?)', u, String(b.name || u).trim().slice(0, 40), salt, pinOzeti(salt, pin), Date.now());
+    db.run(
+      'INSERT INTO app_user(username, name, salt, pin_hash, active, created_at, role, perms, depots) VALUES(?,?,?,?,1,?,?,?,?)',
+      u, String(b.name || u).trim().slice(0, 40), salt, pinOzeti(salt, pin), Date.now(), perms === '*' ? 'tam' : yetki.rolDogrula(b.role), perms, depots,
+    );
     depo.degisti();
     return { ok: true };
   }));
   r.put('/kullanici/:u', sar((req) => {
     const b = req.body || {};
-    const u = req.params.u;
+    const u = String(req.params.u || '').trim().toLowerCase();
     if (!db.get('SELECT 1 FROM app_user WHERE username=?', u)) throw Object.assign(new Error('Kullanıcı yok'), { status: 404 });
     if (b.pin) {
       if (!/^\d{4,8}$/.test(String(b.pin))) throw Object.assign(new Error('Şifre 4-8 haneli rakam olmalı'), { status: 400 });
@@ -840,11 +903,16 @@ function yoneticiApi() {
     }
     if (b.name !== undefined) db.run('UPDATE app_user SET name=? WHERE username=?', String(b.name).trim().slice(0, 40) || u, u);
     if (b.active !== undefined) db.run('UPDATE app_user SET active=? WHERE username=?', b.active ? 1 : 0, u);
+    if (b.perms !== undefined) {
+      const perms = yetki.izinlerDogrula(b.perms);
+      db.run('UPDATE app_user SET perms=?, role=? WHERE username=?', perms, perms === '*' ? 'tam' : yetki.rolDogrula(b.role), u);
+    }
+    if (b.depots !== undefined) db.run('UPDATE app_user SET depots=? WHERE username=?', yetki.depolariDogrula(b.depots), u);
     depo.degisti();
     return { ok: true };
   }));
   r.delete('/kullanici/:u', sar((req) => {
-    db.run('DELETE FROM app_user WHERE username=?', req.params.u);
+    db.run('DELETE FROM app_user WHERE username=?', String(req.params.u || '').trim().toLowerCase());
     depo.degisti();
     return { ok: true };
   }));

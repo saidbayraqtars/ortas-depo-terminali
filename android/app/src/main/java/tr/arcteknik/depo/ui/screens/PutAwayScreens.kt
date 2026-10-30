@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import tr.arcteknik.depo.data.Fuzzy
+import tr.arcteknik.depo.data.Perm
 import tr.arcteknik.depo.data.Product
 import tr.arcteknik.depo.data.Repo
 import tr.arcteknik.depo.data.ReceiptLine
@@ -85,15 +86,16 @@ fun ReceiptListScreen(vm: AppVm, online: Boolean, version: Int) {
     // Yazılan (henüz gönderilmemiş) metin ve okutulup tam eşleşmeyen metin listeyi süzer.
     var typed by remember { mutableStateOf("") }
     var query by remember { mutableStateOf("") }
-    val multiDepot = remember(version) { db.depots().size > 1 }
+    val multiDepot = remember(version, vm.user) { vm.depots().size > 1 }
     // Belgeler çok birikince yalnız çalışılan deponunkiler gösterilir (varsayılan).
     var onlyHere by remember { mutableStateOf(true) }
-    val all = remember(version, open) { db.receipts(open) }
+    // Kullanıcının çalışamayacağı depoların belgeleri hiç görünmez (yetki: yönetici programı Kullanıcılar).
+    val all = remember(version, open, vm.user) { db.receipts(open).filter { vm.canDepot(it.depot) } }
     val q = typed.ifBlank { query }
     val receipts = remember(all, q, onlyHere) {
         all.filter { (!multiDepot || !onlyHere || it.depot == db.depot) && receiptMatches(it, q) }
     }
-    val openCount = remember(version) { db.receipts(true).count { !multiDepot || !onlyHere || it.depot == db.depot } }
+    val openCount = remember(version, vm.user) { db.receipts(true).count { vm.canDepot(it.depot) && (!multiDepot || !onlyHere || it.depot == db.depot) } }
 
     // Başka terminallerin açtığı belgeler kilit simgesiyle görünür (belge kilidi).
     LocksPoller(vm)
@@ -108,7 +110,7 @@ fun ReceiptListScreen(vm: AppVm, online: Boolean, version: Int) {
             onProduct = { vm.go(Route.PutAwayProduct(it.id)) },
             onOther = { raw ->
                 val code = eInvoiceNo(raw) ?: raw
-                val open0 = db.receipts(true)
+                val open0 = db.receipts(true).filter { vm.canDepot(it.depot) }
                 val r = open0.firstOrNull { it.docNo.equals(code, true) || it.id == code }
                 when {
                     r != null -> { query = ""; vm.go(Route.PutAway(r.id)); true }
@@ -544,7 +546,7 @@ private fun ShelfChoices(vm: AppVm, productId: String, d: Int, typed: String, on
                         1 -> "asıl raf"
                         else -> "${o.depotName.ifBlank { "başka depo" }}${if (o.qty > 0) " · ${fmt(o.qty)}" else ""}"
                     }
-                    ShelfChoiceRow(o.shelf, note, onPick, if (o.shelf in homes) ({ removing = o.shelf }) else null)
+                    ShelfChoiceRow(o.shelf, note, onPick, if (o.shelf in homes && vm.can(Perm.HOME_REMOVE)) ({ removing = o.shelf }) else null)
                 }
             } else {
                 if (found.isEmpty()) Hint("\"$typed\" ile başlayan ya da içeren raf yok.", Modifier.padding(vertical = 10.dp))

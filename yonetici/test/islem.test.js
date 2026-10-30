@@ -369,13 +369,19 @@ test('eski tek depolu veritabanı göçü: raflar ve stok varsayılan depoya ba�
     CREATE TABLE location(product_id TEXT NOT NULL, shelf TEXT NOT NULL, qty REAL NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(product_id, shelf));
     CREATE TABLE movement(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, product_id TEXT NOT NULL, shelf TEXT NOT NULL, delta REAL NOT NULL, after REAL NOT NULL, kind TEXT NOT NULL, ref TEXT, user TEXT, device TEXT, op_id TEXT);
     CREATE TABLE count_session(id TEXT PRIMARY KEY, no TEXT NOT NULL, title TEXT NOT NULL, blind INTEGER NOT NULL DEFAULT 1, kind TEXT NOT NULL DEFAULT 'RAF', status TEXT NOT NULL DEFAULT 'OPEN', source TEXT NOT NULL DEFAULT 'ADMIN', note TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, closed_at INTEGER, vega_docs TEXT, vega_written_at INTEGER);
+    CREATE TABLE app_user(username TEXT PRIMARY KEY, name TEXT NOT NULL, salt TEXT NOT NULL, pin_hash TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL);
+    CREATE TABLE op(id TEXT PRIMARY KEY, type TEXT NOT NULL, payload TEXT NOT NULL, device TEXT, user TEXT, created_at INTEGER NOT NULL, received_at INTEGER NOT NULL, ok INTEGER NOT NULL, error TEXT);
+    INSERT INTO app_user VALUES('ismail', 'İsmail', 's', 'h', 1, 0);
     INSERT INTO shelf(code, created_at) VALUES('X-1', 0); INSERT INTO location VALUES('9', 'X-1', 3, 0);`);
   e.close();
   db.close();
   db.open(f, { varsayilanDepo: 7 });
   assert.strictEqual(db.get("SELECT depo FROM shelf WHERE code='X-1'").depo, 7);
   assert.strictEqual(db.get("SELECT depo, qty FROM location WHERE product_id='9'").depo, 7);
-  assert.strictEqual(db.meta('surum'), '7');
+  assert.strictEqual(db.meta('surum'), '8');
+  // Yetki göçü: eski kullanıcı tam yetkili ve her depoda çalışabilir kalır.
+  const u = db.get("SELECT role, perms, depots FROM app_user WHERE username='ismail'");
+  assert.deepStrictEqual({ ...u }, { role: 'tam', perms: '*', depots: '*' });
   db.close();
   db.open(path.join(dir, 'depo.db'), { varsayilanDepo: 1 });
 });

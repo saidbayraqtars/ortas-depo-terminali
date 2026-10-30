@@ -204,6 +204,12 @@ class Sync(private val context: Context, private val repo: Repo) {
                             val r = results[op.id] ?: continue
                             if (r.ok) {
                                 db.deleteOp(op.id)
+                            } else if (r.code == "YETKI") {
+                                // Yetkisiz işlem (yönetici izni değiştirdi ya da cihazın yetki bilgisi eskiydi). Cihazdaki etkisi
+                                // sunucudaki haliyle düzelsin diye yalnız ilgili parçalar yeniden alınır; ana veri baştan inmez.
+                                db.markOpError(op.id, r.error ?: "Bu işlem için yetkiniz yok")
+                                db.clearPartsFor(op)
+                                repo.prefs.masterEtag = ""
                             } else {
                                 db.markOpError(op.id, r.error ?: "Sunucu reddetti")
                                 // Reddedilen işlem cihazdaki hali sunucudan farklı bıraktı; sunucunun ana verisi
