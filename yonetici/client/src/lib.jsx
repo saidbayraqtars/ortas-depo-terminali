@@ -89,6 +89,7 @@ export function once(ts) {
 
 export const HAREKET = {
   PUTAWAY: ['Rafa kaldırma', 'b-ok'],
+  PUTAWAY_GERI: ['Rafa kaldırma geri alındı', 'b-mute'],
   TRANSFER_IN: ['Transfer giriş', 'b-info'],
   TRANSFER_OUT: ['Transfer çıkış', 'b-info'],
   PICK: ['Raftan alma', 'b-warn'],

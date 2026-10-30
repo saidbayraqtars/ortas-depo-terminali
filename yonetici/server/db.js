@@ -322,6 +322,15 @@ function migrate() {
     `);
     set('surum', '8');
   }
+  if (Number(get("SELECT value FROM meta WHERE key='surum'")?.value) < 9) {
+    // 9: yönetici terminalden yapılan rafa kaldırmayı geri aldı (hareket satırı bir kez geri alınır): kim, ne zaman, neden.
+    db.exec(`
+      ALTER TABLE movement ADD COLUMN geri_at INTEGER;
+      ALTER TABLE movement ADD COLUMN geri_user TEXT;
+      ALTER TABLE movement ADD COLUMN geri_not TEXT;
+    `);
+    set('surum', '9');
+  }
 }
 
 function get(sql, ...args) {

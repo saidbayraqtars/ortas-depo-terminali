@@ -430,8 +430,10 @@ fun ProductPutAwayScreen(vm: AppVm, online: Boolean, version: Int, productId: St
     val onShelves = remember(version) { db.shelvedTotal(productId, d) }
     val elsewhere = remember(version) { db.pendingElsewhere(productId, d) }
     val available = pending + free
-    var qty by remember { mutableStateOf(available) }
-    var qtyDone by remember { mutableStateOf(false) }
+    // Sepet mantığı (1.8.2'deki diğer okutma ekranları gibi): ilk okutma 1 adet, ürün tekrar okutulunca +1; çok adet için "Değiştir".
+    // Eskiden miktar kalan stoğun tamamıyla (ör. 24) açılıyordu.
+    var qty by remember { mutableStateOf(minOf(1.0, available)) }
+    var qtyDone by remember { mutableStateOf(true) }
     var shelf by remember { mutableStateOf<String?>(null) }
     var conflict by remember { mutableStateOf<Pair<String, String>?>(null) }
     var typed by remember { mutableStateOf("") }
@@ -439,7 +441,15 @@ fun ProductPutAwayScreen(vm: AppVm, online: Boolean, version: Int, productId: St
 
     fun onShelf(code: String) {
         val s = code.uppercase()
-        if (db.findProduct(code) != null) return vm.error("Raf barkodu okutun; bu bir ürün barkodu")
+        val scanned = db.findProduct(code)
+        if (scanned != null) {
+            // Aynı ürün tekrar okutuldu: adet +1 (kalan stoğu aşamaz). Başka ürün raf alanında anlamsız.
+            if (scanned.id != productId) return vm.error("Raf barkodu okutun; bu bir ürün barkodu")
+            val unit = product?.unit?.lowercase().orEmpty()
+            if (qty + 1 > available + 1e-9) return vm.error("Rafa kaldırılacak en çok ${fmt(available)} $unit var")
+            qty += 1
+            return vm.ok("${fmt(qty)} $unit")
+        }
         if (!db.shelfExists(s, d)) return vm.unknownShelf(s, d) { onShelf(it) }
         if (suggested != null && suggested != s) {
             vm.feedback.error()
@@ -507,7 +517,7 @@ fun ProductPutAwayScreen(vm: AppVm, online: Boolean, version: Int, productId: St
         } else {
             QtyDoneRow(qty, product.unit) { qtyDone = false; shelf = null }
             if (shelf == null) {
-                ScanField("Raf okutun", suggested?.let { "Önerilen raf: $it" } ?: "Ürün henüz hiçbir rafta yok", true, vm.repo.prefs.cameraButton, ::onShelf, onTextChange = { typed = it })
+                ScanField("Raf okutun", (suggested?.let { "Önerilen raf: $it" } ?: "Ürün henüz hiçbir rafta yok") + " · ürünü tekrar okutunca +1", true, vm.repo.prefs.cameraButton, ::onShelf, onTextChange = { typed = it })
                 MessageBar(vm.message?.first, vm.message?.second == true)
                 ShelfChoices(vm, productId, d, typed, ::onShelf)
             } else {

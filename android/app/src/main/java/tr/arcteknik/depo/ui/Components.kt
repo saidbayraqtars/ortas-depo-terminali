@@ -73,6 +73,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import tr.arcteknik.depo.data.Repo
@@ -333,7 +334,10 @@ fun ScanField(
         ScanKeys.clearShadow()
         if (c.isEmpty()) return
         val now = SystemClock.uptimeMillis()
-        if (!rescued && c == lastRescue.first && now - lastRescue.second < 800) return
+        if (!rescued && c == lastRescue.first && now - lastRescue.second < 800) {
+            Diag.crumb("okutma yinelendi sayıldı, atlandı ($title): $c · klavye ${keyboardState()}")
+            return
+        }
         if (rescued) lastRescue = c to now
         UserActivity.touch()
         Diag.crumb("okutma ($title): $c · klavye ${keyboardState()}" + if (rescued) " · IME'den önce yakalandı" else "")
@@ -347,14 +351,34 @@ fun ScanField(
         submit(rescued.orEmpty(), rescued != null)
     }
 
-    // Enter IME'den önce görülünce kısa bir süre beklenir: IME okumayı alana yazıp Enter'ı iletirse alan kendisi gönderir
-    // (yukarıdaki submitEnter); IME Enter'ı da yutarsa okuma buradan gönderilir.
+    // Okuyucunun tuşları IME'den önce görüldü ama alan göndermedi: ya IME karakterleri alana hiç yazmadı, ya da yazıp Enter'ı yuttu
+    // (Movfast Ranger2'de ekran klavyesi açıkken: okuma alanda kalıyor, sonraki okuma ona yapışıp "birleşik barkod" oluyordu).
+    // Bu arada alan okutmayı kabul ettiyse (submit tamponu boşaltır) dokunulmaz. Alanda okumanın tamamı varsa o, yoksa IME'den
+    // önce görülen dizi gönderilir.
+    fun rescue(code: String, why: String) {
+        if (!ScanKeys.shadowIs(code)) return
+        val typed = text.trim()
+        Diag.crumb("okutma ($title): kurtarıldı ($why) · alanda ${if (typed.isEmpty()) "yok" else "var"} · klavye ${keyboardState()}")
+        submit(if (typed.endsWith(code)) typed else code, rescued = true)
+    }
+
+    // Enter IME'den önce görülünce kısa bir süre beklenir: alan Enter'ı işlerse kendisi gönderir (submitEnter), işlemezse buradan.
     fun armRescue() {
         val code = ScanKeys.peekShadow() ?: return
         scope.launch {
             delay(120)
-            // Bu arada alan bir okutmayı kabul ettiyse (submit tamponu boşaltır) ya da IME alana yazdıysa dokunulmaz.
-            if (text.isBlank() && ScanKeys.shadowIs(code)) submit(code, rescued = true)
+            rescue(code, "Enter alana ulaşmadı")
+        }
+    }
+
+    // Okuyucu hızındaki karakterlerin ardından Enter hiç görülmezse (ya da toplu tuş olayıyla geldiyse) sessizlik sonrası gönderilir.
+    val quietJob = remember { arrayOfNulls<Job>(1) }
+    fun armQuiet() {
+        quietJob[0]?.cancel()
+        quietJob[0] = scope.launch {
+            delay(250)
+            val code = ScanKeys.burst() ?: return@launch
+            rescue(code, "Enter gelmedi")
         }
     }
 
@@ -400,7 +424,10 @@ fun ScanField(
                 modifier = Modifier.fillMaxWidth().focusRequester(focus)
                     .onInterceptKeyBeforeSoftKeyboard { e ->
                         ScanKeys.shadow(e.nativeKeyEvent)
-                        if ((e.key == Key.Enter || e.key == Key.NumPadEnter) && e.type == KeyEventType.KeyDown) armRescue()
+                        val act = e.nativeKeyEvent.action
+                        if (act == android.view.KeyEvent.ACTION_DOWN || act == android.view.KeyEvent.ACTION_MULTIPLE) {
+                            if (e.key == Key.Enter || e.key == Key.NumPadEnter) { ScanKeys.noteEnter(title, keyboardState()); armRescue() } else armQuiet()
+                        }
                         false
                     }
                     .onFocusChanged { if (!it.isFocused && active && focusTrace < 5) { focusTrace++; Diag.crumb("okutma alanı odağı yitirdi ($title) · klavye ${keyboardState()}") } }

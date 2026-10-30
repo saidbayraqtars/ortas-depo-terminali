@@ -1,5 +1,47 @@
 import React, { useState } from 'react';
-import { Btn, Durum, HAREKET, Icon, indir, miktar, Rozet, SayfaBaslik, tarihSaat, useApp, useDepo, useVeri } from '../lib.jsx';
+import { api, Btn, Durum, HAREKET, Icon, indir, miktar, Modal, Rozet, SayfaBaslik, tarihSaat, useApp, useDepo, useVeri } from '../lib.jsx';
+
+/** Terminalden yapılan rafa kaldırmayı geri alma onayı (POST /hareket/:id/geri-al). */
+function RafaGeriAl({ h, kapat, tamam }) {
+  const { toast } = useApp();
+  const [not, setNot] = useState('');
+  const [mesgul, setMesgul] = useState(false);
+  const onayla = async () => {
+    setMesgul(true);
+    try {
+      const r = await api(`/hareket/${h.id}/geri-al`, { method: 'POST', body: { not } });
+      toast(`Geri alındı: ${r.raf} rafından ${miktar(r.geriAlinan)} adet düşüldü${r.belgeSatiri ? '; belgede yeniden bekliyor' : ''}`);
+      tamam();
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      setMesgul(false);
+    }
+  };
+  return (
+    <Modal
+      baslik="Rafa kaldırma geri alınsın mı?"
+      kapat={kapat}
+      alt={<><Btn onClick={kapat}>Vazgeç</Btn><Btn kind="danger solid" icon="undo" busy={mesgul} onClick={onayla}>Geri al</Btn></>}
+    >
+      <div className="stack">
+        <div>
+          <b>{h.urunAd}</b> · <span className="mono">{h.urunKod}</span>
+          <div className="muted">{h.depoAd} · <span className="mono">{h.shelf}</span> rafı · {miktar(h.delta)} adet · {tarihSaat(h.ts)} · {h.user || '—'}{h.device ? ` · ${h.device}` : ''}</div>
+        </div>
+        <p style={{ margin: 0 }}>
+          Ürün <b>{h.shelf}</b> rafından düşülür{h.ref ? `; ${h.ref} belgesinde bu miktar yeniden "rafa kaldırılacak" görünür, terminalden yeniden rafa kaldırılabilir` : ''}.
+          Raf boşalırsa terminalden verilmiş raf adresi de kalkar (raf adresi yazımı açıksa Vega kartı güncellenir). Vega'da fiş olmadığından Vega'ya başka bir şey yazılmaz.
+        </p>
+        <label className="field">
+          <span>Not (neden geri alındı?)</span>
+          <input className="inp" value={not} onChange={(e) => setNot(e.target.value)} placeholder="Yanlış rafa kaldırıldı" maxLength={300} autoFocus />
+        </label>
+        <div className="notice warn"><Icon name="warning" /><p>Rafta o miktar kalmadıysa (sonradan raftan alındı ya da taşındı) geri alınmaz. Geri alma günlüğe yazılır.</p></div>
+      </div>
+    </Modal>
+  );
+}
 
 const bugun = () => new Date().toISOString().slice(0, 10);
 const gunOnce = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
@@ -10,7 +52,8 @@ export default function Hareketler() {
   const [gorunum, setGorunum] = useState('hareket');
   const { depo, cok } = useDepo();
   const qs = new URLSearchParams(Object.entries({ ...f, depo }).filter(([, v]) => v)).toString();
-  const { veri, hata, yukleniyor } = useVeri(gorunum === 'hareket' ? `/hareketler?${qs}` : null, [qs, gorunum]);
+  const { veri, hata, yukleniyor, yukle } = useVeri(gorunum === 'hareket' ? `/hareketler?${qs}` : null, [qs, gorunum]);
+  const [geriAl, setGeriAl] = useState(null);
   const islem = useVeri(gorunum === 'islem' ? '/islemler?hatali=1' : null, [gorunum]);
   const d = (k) => (e) => setF((x) => ({ ...x, [k]: e.target.value }));
   return (
@@ -30,7 +73,7 @@ export default function Hareketler() {
             <input type="date" className="inp" style={{ width: 150 }} value={f.bit} onChange={d('bit')} />
             <select className="inp" style={{ width: 170 }} value={f.tur} onChange={d('tur')}>
               <option value="">Tüm türler</option>
-              <option value="PUTAWAY">Rafa kaldırma</option>
+              <option value="PUTAWAY,PUTAWAY_GERI">Rafa kaldırma (geri almalar dahil)</option>
               <option value="TRANSFER_IN,TRANSFER_OUT">Transfer (raftan rafa)</option>
               <option value="TRANSFER_OUT_DEPO,TRANSFER_IN_DEPO">Depolar arası transfer</option>
               <option value="COUNT">Sayım</option>
@@ -51,7 +94,7 @@ export default function Hareketler() {
           <Durum yukleniyor={yukleniyor && !veri} hata={hata} bos={veri && veri.liste.length === 0 && 'Bu aralıkta hareket yok.'}>
             <div className="tbl-wrap tbl-scroll" style={{ maxHeight: 'calc(100vh - 220px)' }}>
               <table className="tbl">
-                <thead><tr><th>Zaman</th><th>Tür</th><th>Ürün</th><th>Raf</th>{cok && !depo && <th>Depo</th>}<th className="num">Miktar</th><th className="num">Sonra</th><th>Belge / not</th><th>Kullanıcı</th><th>Cihaz</th></tr></thead>
+                <thead><tr><th>Zaman</th><th>Tür</th><th>Ürün</th><th>Raf</th>{cok && !depo && <th>Depo</th>}<th className="num">Miktar</th><th className="num">Sonra</th><th>Belge / not</th><th>Kullanıcı</th><th>Cihaz</th><th></th></tr></thead>
                 <tbody>
                   {veri?.liste.map((h) => (
                     <tr key={h.id} className="click" onClick={() => (window.location.hash = `/urun/${h.product_id}`)}>
@@ -65,6 +108,11 @@ export default function Hareketler() {
                       <td className="muted">{h.ref || ''}</td>
                       <td>{h.user || '—'}</td>
                       <td className="muted">{h.device || '—'}</td>
+                      <td onClick={(e) => e.stopPropagation()} style={{ whiteSpace: 'nowrap' }}>
+                        {h.kind === 'PUTAWAY' && h.delta > 0 && (h.geri_at
+                          ? <span title={`${tarihSaat(h.geri_at)} · ${h.geri_user || ''}${h.geri_not ? ` · ${h.geri_not}` : ''}`}><Rozet tur="b-mute">Geri alındı</Rozet></span>
+                          : <Btn size="sm" icon="undo" onClick={() => setGeriAl(h)}>Geri al</Btn>)}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -94,6 +142,7 @@ export default function Hareketler() {
           </Durum>
         </div>
       )}
+      {geriAl && <RafaGeriAl h={geriAl} kapat={() => setGeriAl(null)} tamam={() => { setGeriAl(null); yukle(); }} />}
     </>
   );
 }

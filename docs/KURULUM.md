@@ -21,7 +21,7 @@ Sistem iki parçadır:
    Yazdırırken ölçek **%100 / gerçek boyut**.
 5. **Kullanıcılar › Yeni kullanıcı**: depo personeli, 4-8 haneli şifre, **yetkiler** ve **çalışabileceği depolar**. Şube personeline (Toybelen) yalnız kendi deposunu
    verin: başka depodan mal çıkaramaz, başka depoya gelen gönderimi kabul edemez. Hazır şablonlar (Depo görevlisi, Şube deposu, Sevkiyat, Sayım, Yalnız sorgu) kutuları doldurur.
-   Terminal yetkiye göre menüyü daraltır; yetkisiz işlem sunucuda da reddedilir. Yanlış yazılan depo fişini **Vega'ya yazılanlar** sayfasından geri alabilirsiniz.
+   Terminal yetkiye göre menüyü daraltır; yetkisiz işlem sunucuda da reddedilir. Yanlış yazılan depo fişini **Vega'ya yazılanlar** sayfasından, yanlış rafa kaldırılan malı **Hareketler** sayfasında satırdaki **Geri al** ile geri alabilirsiniz.
 6. **Cihazlar › Yeni cihaz** (TRM-01…): açılan pencerede iki QR var (aşağıda).
 7. İstenirse **Ayarlar › Vega'daki raf adresi**: stok kartı alanı (Ortaş: KOD10), raflar hangi depoda, **Program bu alana yazsın**.
    Terminalde rafa kaldırılan, transfer edilen ya da sayımda bulunan ürünün rafı o ürünün adresi olur ve ~3 sn sonra karta yazılır

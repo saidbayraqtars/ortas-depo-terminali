@@ -252,6 +252,12 @@ Program Vega'ya üç şey yazar: depo gönderim fişi (128), gönderim kabul fi�
 **Vega'ya yazılanlar** sayfasından geri alınır (`GET /yonetim/api/vega-yazimlari`; `POST /yonetim/api/transfer/:id/geri-al` `{not}`;
 `POST /yonetim/api/sayim/:id/geri-al`). Terminal kullanmaz.
 
+**Rafa kaldırmayı geri alma (1.9.1+):** Vega'ya fiş yazılmadığından Vega'ya dokunmaz. Hareketler sayfasındaki rafa kaldırma satırında **Geri al**
+(`POST /yonetim/api/hareket/:id/geri-al` `{not}`; `:id` `movement.id`, yalnız `kind=PUTAWAY`). Raf stoku düşülür, belge satırına bağlıysa
+`receipt_shelved` azalır (belgede kalan geri gelir), raf boşalırsa yalnız `TERMINAL` kaynaklı raf adresi kalkar. Rafta o miktar kalmadıysa
+ya da hareket daha önce geri alındıysa `400` döner. Geri alma `PUTAWAY_GERI` hareketi olarak yazılır, asıl satırda `geri_at/geri_user/geri_not` dolar
+(veritabanı sürümü 9).
+
 - Fiş Vega'ya henüz yazılmadıysa (`BEKLIYOR`, `HATA`) yalnız programdaki etkisi geri alınır, fiş hiç yazılmaz.
 - Yazılmışsa Vega'dan silinir (`vega.transferGeriAl`: envanter, satır, başlık; tek SERIALIZABLE işlem). Fişin hâlâ programın yazdığı fiş olduğu
   doğrulanır (numara, tür, satır ve envanter sayısı); Vega'da değiştirilmiş ya da silinmişse hiçbir şey silinmez.

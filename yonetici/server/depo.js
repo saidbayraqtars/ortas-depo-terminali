@@ -636,6 +636,45 @@ function rafBosalt(depo, code, hedef) {
   return { urun, zimmet };
 }
 
+/**
+ * Yönetici: terminalden yapılan rafa kaldırmayı geri alır (yanlış raf, ürün ya da miktar). Raf stoku düşülür; belge satırına bağlıysa
+ * belgede kalan miktar geri gelir (terminalde yeniden rafa kaldırılabilir); raf boşalırsa terminalden verilmiş raf adresi de kalkar.
+ * Vega'ya yazılmış bir fiş olmadığından Vega'ya dokunulmaz (raf adresi yazımı açıksa kartın raf alanı güncellenir).
+ * Rafta o miktar kalmadıysa (sonradan raftan alındı, taşındı) geri alınmaz. Her hareket bir kez geri alınır.
+ */
+function rafaKaldirmaGeriAl(hareketId, kim = 'yönetici', not = '') {
+  const m = db.get('SELECT * FROM movement WHERE id=?', Number(hareketId));
+  if (!m) throw new Ret('Hareket bulunamadı');
+  if (m.kind !== 'PUTAWAY') throw new Ret('Yalnız rafa kaldırma geri alınabilir');
+  if (m.geri_at) throw new Ret('Bu rafa kaldırma zaten geri alındı');
+  const q = yuvarla(m.delta);
+  if (q <= EPS) throw new Ret('Geri alınacak miktar yok');
+  const kayit = m.op_id ? db.get('SELECT payload FROM op WHERE id=?', m.op_id) : null;
+  let p = {};
+  try {
+    p = kayit ? JSON.parse(kayit.payload) : {};
+  } catch {
+    p = {};
+  }
+  const satirId = p.lineId ? String(p.lineId) : null;
+  // Belgeye bağlı olup işlem kaydı kalmamış eski satır: raf düşülür ama belgede "rafa kalktı" görünür kalırdı.
+  if (!kayit && m.ref) throw new Ret('Bu eski kayıt geri alınamaz (işlem kaydı yok); Raflar sayfasından düzeltin');
+  const mevcut = miktar(m.depo, m.product_id, m.shelf);
+  if (q - mevcut > EPS) {
+    throw new Ret(`${m.shelf} rafında şu an ${yuvarla(mevcut)} var; ${q} geri alınamaz (sonradan raftan alınmış, taşınmış ya da sayılmış). Önce Raflar sayfasından düzeltin`);
+  }
+  const notu = String(not || '').trim().slice(0, 300) || null;
+  db.tx(() => {
+    miktarEkle(m.depo, m.product_id, m.shelf, -q, { ts: now(), user: kim, device: 'PC', kind: 'PUTAWAY_GERI', ref: m.ref || null });
+    if (satirId) db.run('UPDATE receipt_shelved SET shelved = MAX(shelved - ?, 0), updated_at=? WHERE line_id=?', q, now(), satirId);
+    if (miktar(m.depo, m.product_id, m.shelf) <= EPS) terminalZimmetBosalt(m.depo, m.product_id, m.shelf);
+    db.run('UPDATE movement SET geri_at=?, geri_user=?, geri_not=? WHERE id=?', now(), kim, notu, m.id);
+  });
+  log.bilgi(`Rafa kaldırma geri alındı: ${m.shelf} · ürün ${m.product_id} · ${q} (${depoAdi(m.depo)}) · ${kim}${notu ? ` · ${notu}` : ''}`);
+  degisti();
+  return { geriAlinan: q, raf: m.shelf, belgeSatiri: Boolean(satirId) };
+}
+
 /** İşlemi yapan kullanıcının yetki nesnesi; kayıtlı değilse (silinmiş, bilinmeyen ad) null = sınırsız. */
 function yetkiBaglam(kullanici) {
   const ad = String(kullanici || '').trim().toLowerCase();
@@ -1564,5 +1603,6 @@ module.exports = {
   sayimOzet,
   sayimOnayla,
   sayimGeriAl,
+  rafaKaldirmaGeriAl,
   Ret,
 };

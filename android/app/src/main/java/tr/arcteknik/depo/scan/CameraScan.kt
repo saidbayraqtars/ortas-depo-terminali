@@ -37,6 +37,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
+import tr.arcteknik.depo.diag.Diag
 import tr.arcteknik.depo.ui.C
 import tr.arcteknik.depo.ui.SecondaryButton
 import java.util.concurrent.Executors
@@ -71,15 +72,22 @@ private fun CameraPreview(onResult: (String) -> Unit) {
     val context = LocalContext.current
     val owner = LocalLifecycleOwner.current
     val executor = remember { Executors.newSingleThreadExecutor() }
-    val scanner = remember { BarcodeScanning.getClient() }
+    // Google Play hizmetleri olmayan ya da ML Kit'i açamayan terminallerde (Movfast Ranger2, iData K1) getClient()
+    // NullPointerException atıp uygulamayı çökertiyordu (1.9.0 sahada); kamera yoksa okuyucu tuşuyla devam edilir.
+    val scanner = remember { runCatching { BarcodeScanning.getClient() }.onFailure { Diag.crumb("kamera okuyucu açılamadı: ${it.javaClass.simpleName}") }.getOrNull() }
     var done by remember { mutableStateOf(false) }
 
     DisposableEffect(Unit) {
         onDispose {
             runCatching { ProcessCameraProvider.getInstance(context).get().unbindAll() }
-            scanner.close()
+            runCatching { scanner?.close() }
             executor.shutdown()
         }
+    }
+
+    if (scanner == null) {
+        Text("Kamerayla okuma bu cihazda kullanılamıyor.\nTerminalin okuyucu tuşunu kullanın.", color = Color.White)
+        return
     }
 
     AndroidView(
@@ -88,6 +96,7 @@ private fun CameraPreview(onResult: (String) -> Unit) {
             val view = PreviewView(ctx)
             val future = ProcessCameraProvider.getInstance(ctx)
             future.addListener({
+                runCatching {
                 val provider = future.get()
                 val preview = Preview.Builder().build().also { it.surfaceProvider = view.surfaceProvider }
                 val analysis = ImageAnalysis.Builder()
@@ -111,6 +120,7 @@ private fun CameraPreview(onResult: (String) -> Unit) {
                 }
                 provider.unbindAll()
                 provider.bindToLifecycle(owner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                }.onFailure { Diag.crumb("kamera açılamadı: ${it.javaClass.simpleName} ${it.message.orEmpty().take(80)}") }
             }, ContextCompat.getMainExecutor(ctx))
             view
         },

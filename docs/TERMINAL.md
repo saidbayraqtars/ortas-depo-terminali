@@ -27,7 +27,8 @@ sıralıdır (son okutulan renkli), satırdaki **−** tek adım geri alır. Bek
   numarasının bir kısmı ya da belgedeki firma (tedarikçi) adı yazılınca liste süzülür: `2014` ya da `npe2014`
   `NPE2026000002014`'ü, `nipar oto` Nipar Otomotiv'den gelen belgeleri bulur (Türkçe harfsiz yazılabilir).
   Tam numara ya da e-Fatura karekodu okutulursa belge açılır.
-- Aynı alana **ürün** okutulursa belge seçmeden rafa kaldırılır: ürün → miktar → raf. Miktar o depodaki açık belgelerden
+- Aynı alana **ürün** okutulursa belge seçmeden rafa kaldırılır: ürün → raf (1.9.1+: ilk okutma **1 adet**, ürün tekrar okutulunca +1,
+  çok adet için **Değiştir**; eskiden miktar kalan stoğun tamamıyla açılırdı). Miktar o depodaki açık belgelerden
   (en eski önce) düşülür; belgede olmayan kısım **belgesiz** kalkar (Vega'da stok var ama mal kabul belgesi yok:
   seçilmemiş belge türü, devir, başlangıç tarihinden eski giriş). En çok "belgede + belgesiz" kadar kaldırılır.
 - Belge içinden rafa kaldırma (1.8.2+): **raf okutulur, ürünler peş peşe okutulur** (her okutma +1), **Rafa kaldır** hepsini işler. Raf
@@ -92,6 +93,9 @@ Okuyucu okuduğu barkodu klavyeden yazılmış gibi gönderir ve sonuna **Enter*
 **Peş peşe okutma (Gönderim Kabul, Depoya Gönder, Rafa Kaldır, Raftan Al) için yayın modu önerilir.** iData K1'de (Toybelen,
 2026-10-30) klavye modunda ekran klavyesi kapalıyken ekrana girişteki ilk okutmadan sonrası kayboluyordu (klavye açılınca düzeliyordu);
 neden doğrulanmadı, yayın modu klavyeye hiç bağlı olmadığından bu sorunu yaşamaz.
+**iData K1 (Toybelen) için doğrulandı (2026-10-30):** Application Setting › *Scan result sending mode* **Focus** iken aynı ürünün
+art arda ikinci okutması kayboluyordu (farklı ürünler okunuyordu); **Broadcast**'e alınınca sorun bitti (uygulama güncellemesi gerekmedi).
+Bu cihazlarda modu Focus'ta bırakmayın.
 
 Ekran klavyesinin açık olması gerekmez. Okutma alanı her tuşu ekran klavyesinden (IME) **önce** de görür (1.9.0). IME karakterleri alana
 yazmazsa ya da Enter'ı yutarsa okuma bu kopyadan okutma sayılır (Enter'dan 120 ms sonra, alan hâlâ boşsa); IME çalışıyorsa alan kendisi gönderir ve

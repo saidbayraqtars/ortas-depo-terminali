@@ -143,6 +143,21 @@ object ScanKeys {
         if (chars != null) shadow.append(chars.filter { it != '\n' && it != '\r' }) else shadow.append(e.unicodeChar.toChar())
     }
 
+    private var enterTraced = 0
+
+    /** Tanı: Enter'ın IME'den önce görüldüğü okutmalar (en çok $MAX_TRACE). Okuma uygulamaya hiç ulaşmadıysa (tarayıcı motoru yinelemeyi engelledi) iz de olmaz. */
+    fun noteEnter(title: String, keyboard: String) {
+        if (enterTraced >= MAX_TRACE) return
+        enterTraced++
+        Diag.crumb("tuş: Enter IME'den önce ($title) · ${shadow.trim().length} karakter · klavye $keyboard")
+    }
+
+    /** Enter beklemeden gönderilecek en kısa okuma uzunluğu: elle yazma bu hızda bu kadar karakter üretemez. */
+    private const val QUIET_MIN_LEN = 6
+
+    /** Okuyucu hızında yazılmış, en az [QUIET_MIN_LEN] karakterlik son dizi (Enter gelmediyse); yoksa null. */
+    fun burst(): String? = shadow.toString().trim().takeIf { it.length >= QUIET_MIN_LEN }
+
     /** Enter geldiğinde IME'den önce yakalanmış, okuyucu hızında yazılmış okuma var mı (okumadan çekmeden). */
     fun hasShadow(): Boolean = shadow.trim().length >= MIN_LEN && SystemClock.uptimeMillis() - shadowLast <= ENTER_GAP_MS
 

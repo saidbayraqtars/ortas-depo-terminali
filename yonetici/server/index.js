@@ -623,6 +623,8 @@ function yoneticiApi() {
   }));
   // Yönetici: terminalden gelen transferi geri alır (Vega fişi silinir, raf stoku eski haline döner). Ayrıntı: transfer.geriAl.
   r.post('/transfer/:id/geri-al', sar(async (req) => ({ ok: true, ...(await transfer.geriAl(req.params.id, 'yönetici', req.body?.not)) })));
+  // Yönetici: terminalden yapılan rafa kaldırmayı geri alır (raf stoku düşer, belgede kalan geri gelir). Ayrıntı: depo.rafaKaldirmaGeriAl.
+  r.post('/hareket/:id/geri-al', sar((req) => ({ ok: true, ...depo.rafaKaldirmaGeriAl(req.params.id, 'yönetici', req.body?.not) })));
   // Programın Vega'ya yazdığı fişler tek listede (sayım fişleri + depo transferleri); "Vega'ya yazılanlar" sayfası.
   r.get('/vega-yazimlari', sar(() => {
     const ad = (d) => depo.depoAdi(d);
