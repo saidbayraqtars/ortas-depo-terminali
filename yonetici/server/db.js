@@ -331,6 +331,22 @@ function migrate() {
     `);
     set('surum', '9');
   }
+  if (Number(get("SELECT value FROM meta WHERE key='surum'")?.value) < 10) {
+    // 10: sanal bekleme deposu (bekleme.js). Grup içi 37 belgesinden rafa kaldırılan miktar açık fatura satırına yazılır;
+    // hangi satıra ne kadar yazıldığı burada durur ki rafa kaldırma geri alınınca fatura satırı da geri dönsün.
+    db.exec(`
+      CREATE TABLE bekleme_mahsup(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kaynak_line TEXT NOT NULL,
+        hedef_line TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        qty REAL NOT NULL,
+        at INTEGER NOT NULL
+      );
+      CREATE INDEX ix_bekleme_mahsup ON bekleme_mahsup(kaynak_line);
+    `);
+    set('surum', '10');
+  }
 }
 
 function get(sql, ...args) {

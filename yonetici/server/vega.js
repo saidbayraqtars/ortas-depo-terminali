@@ -264,6 +264,7 @@ async function goruntu(cfg) {
         GIREN: r.GIREN,
         TARIH: r.TARIH,
         CARI: `${tumDepo.get(Number(r.KAYNAK)) || r.KAYNAK} deposundan`,
+        KAYNAKDEPO: Number(r.KAYNAK),
       });
     }
   }
@@ -294,6 +295,7 @@ async function goruntu(cfg) {
         ts: h.TARIH instanceof Date ? h.TARIH.getTime() : 0,
         depo,
         depoAd: depoAd.get(depo) || String(depo),
+        ...(h.KAYNAKDEPO !== undefined ? { kaynakDepo: h.KAYNAKDEPO } : {}),
         lines: [],
       });
     }
@@ -473,16 +475,17 @@ async function kartAlanYaz(cfg, alan, satirlar, parcaBitti = () => {}) {
   return satirlar.length;
 }
 
-/** Verilen kartların bu andaki depo stoku (sayım fişi kesilmeden hemen önce okunur). */
+/** Verilen kartların bu andaki depo stoku (sayım fişi kesilmeden hemen önce okunur). `depo` tek depo ya da depo listesi (toplamı döner). */
 async function anlikStok(cfg, stoknolar, depo, req) {
   const { p, FD } = await baglam(cfg.vega);
   const out = new Map(stoknolar.map((s) => [Number(s), 0]));
+  const depoIn = [].concat(depo).map(Number).filter(Number.isInteger).join(',');
   for (let i = 0; i < stoknolar.length; i += 500) {
     const parca = stoknolar.slice(i, i + 500).map(Number).filter(Number.isInteger);
     if (!parca.length) continue;
-    const r = await (req ? req() : p.request()).input('depo', sql.Int, Number(depo)).query(`
+    const r = await (req ? req() : p.request()).query(`
       SELECT STOKNO, SUM(ENVANTER) AS KALAN FROM [${FD}TBLDEPOENVANTER] WITH (UPDLOCK, HOLDLOCK)
-      WHERE DEPO=@depo AND ISNULL(BELGETIPI,0)<>67 AND STOKNO IN (${parca.join(',')}) GROUP BY STOKNO`);
+      WHERE DEPO IN (${depoIn}) AND ISNULL(BELGETIPI,0)<>67 AND STOKNO IN (${parca.join(',')}) GROUP BY STOKNO`);
     for (const x of r.recordset) out.set(Number(x.STOKNO), Number(x.KALAN));
   }
   return out;
@@ -566,8 +569,9 @@ async function sonrakiNo(t, tablo, onek) {
  * Sayım fişlerini yazar. `kalemler`: [{stokno, hedef}] — hedef, sayımdan çıkan olması gereken depo stoku.
  * Fark fişin kesildiği anda Vega'daki stoğa göre hesaplanır (Kılavuz §23.7 uygulama kuralı):
  * artı fark giriş (93), eksi fark çıkış (94) fişine. Hepsi tek SQL işleminde; hata olursa hiçbiri yazılmaz.
+ * `stokDepolari`: hedefin karşılaştırılacağı depolar (sanal bekleme deposu varsa grup toplamı); fiş yine `depo`ya yazılır.
  */
-async function sayimYaz(cfg, kalemler, { aciklama = 'Sayım', depo: depoNo } = {}) {
+async function sayimYaz(cfg, kalemler, { aciklama = 'Sayım', depo: depoNo, stokDepolari = null } = {}) {
   const v = cfg.vega;
   const { p, F, FD } = await baglam(v);
   const depo = Number(depoNo ?? v.depo);
@@ -603,7 +607,7 @@ async function sayimYaz(cfg, kalemler, { aciklama = 'Sayım', depo: depoNo } = {
   const t = new sql.Transaction(p);
   await t.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
   try {
-    const simdi = await anlikStok(cfg, stoknolar, depo, () => new sql.Request(t));
+    const simdi = await anlikStok(cfg, stoknolar, stokDepolari || depo, () => new sql.Request(t));
     const satirlar = [];
     for (const k of kalemler) {
       const s = Number(k.stokno);

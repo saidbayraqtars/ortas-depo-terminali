@@ -5,6 +5,7 @@ import Kabul, { KabulDetay } from './sayfalar/Kabul.jsx';
 import Urunler, { UrunDetay } from './sayfalar/Urunler.jsx';
 import Raflar, { RafDetay } from './sayfalar/Raflar.jsx';
 import Sayimlar, { SayimDetay } from './sayfalar/Sayimlar.jsx';
+import Bekleme from './sayfalar/Bekleme.jsx';
 import Transferler from './sayfalar/Transferler.jsx';
 import VegaYazimlari from './sayfalar/VegaYazimlari.jsx';
 import Hareketler from './sayfalar/Hareketler.jsx';
@@ -15,6 +16,7 @@ import Ayarlar from './sayfalar/Ayarlar.jsx';
 const MENU = [
   ['/ozet', 'home', 'Özet'],
   ['/kabul', 'package', 'Mal kabul', (d) => d?.sayilar.acikBelge],
+  ['/bekleme', 'calendar', 'Bekleme depoları'],
   ['/urunler', 'box', 'Ürün ve stok'],
   ['/raflar', 'layers', 'Raflar'],
   ['/sayimlar', 'count', 'Sayımlar', (d) => d?.sayilar.onayBekleyen],
@@ -44,6 +46,8 @@ function Sayfa({ yol }) {
       return <Sayimlar />;
     case 'sayim':
       return <SayimDetay id={p} />;
+    case 'bekleme':
+      return <Bekleme />;
     case 'transfer':
       return <Transferler />;
     case 'hareketler':

@@ -40,6 +40,10 @@ const DEFAULTS = {
   // cift: transfer yapılabilen iki depo (Ortaş: [1, 108] Merkez ↔ Toybelen). Sunucu bu çift dışındaki gönderim ve kabulü
   // reddeder, açık gönderimleri yalnız bu çiftten okur; boşken özellik çalışmaz.
   transfer: { aktif: false, yoldaDepo: null, userno: null, onek: 'A', gun: 45, cift: [] },
+  // Sanal bekleme depoları (Ortaş: 106, 109): mal fiziken `hedef` depoda durur, muhasebe fiyatlandırınca Vega'da 37 ile geçirir.
+  // Açıkken bu depoların belgesi ve raf kaydı hedef depoda çalışır, grup içi 37 iş üretmez (bekleme.js). Yalnız Bekleme
+  // depoları sayfasından açılır, çünkü açılırken raf kayıtları da hedefe taşınır. gecis: son açılışın özeti.
+  bekleme: { aktif: false, depolar: [], hedef: null, gecis: null },
   // Terminale giden ürün listesi: 'aktif' = stoklu, son N günde hareketli ya da rafta olan kartlar.
   urun: { kapsam: 'aktif', gun: 365 },
   sayim: {
@@ -55,6 +59,8 @@ const DEFAULTS = {
     rafBicim: 'y-100x50',
     rafGoster: true, // ürün etiketine bulunduğu raf yazılsın
   },
+  // Program verisinin yedeği (depo.db). Vega yedeği alınmaz. adet: tutulan en çok yedek, fazlası en eskiden silinir.
+  yedek: { klasor: 'C:/ortaşdepo-yedekler', adet: 5 },
   yenileme: 60, // Vega'dan ana veri yenileme aralığı (sn)
   yoneticiParola: '', // scrypt özeti; boşsa program parolasız açılır
 };

@@ -95,6 +95,7 @@ export const HAREKET = {
   PICK: ['Raftan alma', 'b-warn'],
   TRANSFER_OUT_DEPO: ['Depoya gönderim', 'b-info'],
   TRANSFER_IN_DEPO: ['Depodan kabul', 'b-ok'],
+  DEPO_BIRLESTIR: ['Bekleme deposu geçişi', 'b-mute'],
   COUNT: ['Sayım', 'b-acc'],
   IMPORT: ['Excel', 'b-mute'],
   ADJUST: ['Düzeltme', 'b-warn'],

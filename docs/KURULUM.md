@@ -34,8 +34,9 @@ Program kapatılınca saat yanında çalışmaya devam eder; terminaller bağlı
 (Ayarlar › Sunucu'dan kapatılabilir). Sunucu bilgisayarına modemden **sabit IP** verin; adres değişirse terminaller
 bağlanamaz.
 
-Veriler `%APPDATA%\ortas-depo-yonetici` klasöründedir (depo.db, config.json, yedek/, gunluk/). Her gün kendiliğinden
-yedeklenir, son 30 yedek saklanır. Güncellemeler GitHub Releases'tan kendiliğinden iner.
+Veriler `%APPDATA%\ortas-depo-yonetici` klasöründedir (depo.db, config.json, gunluk/). Program verisi her gün kendiliğinden
+`C:/ortaşdepo-yedekler` klasörüne yedeklenir; en çok 5 yedek kalır, fazlası en eskiden silinir (Ayarlar › Yedek ve dosyalar'dan
+değişir; klasör yazılamazsa veri klasöründeki `yedek/` kullanılır). Vega yedeklenmez. Güncellemeler GitHub Releases'tan kendiliğinden iner.
 
 ## 2. Terminal
 
@@ -60,6 +61,23 @@ Raflar, raf stoku, sayım ve hareketler depo bazlıdır (Vega'nın depoları). K
   sorgu ve etiket bu depoda yapılır. Mal kabul listesi bütün depoların belgelerini gösterir (çalışılan depo önce).
 - Yönetim ekranında sol üstteki seçiciyle tek depo ya da bütün depolar görüntülenir.
 - Aynı raf kodu iki depoda olabilir (ör. A-01-01 hem MERKEZ hem FABRİKA'da).
+
+### Sanal bekleme depoları (1.10.0+)
+
+Ortaş'ta 106 ve 109 gerçek bir yer değil: fiyatlandırma bitmeden stoğa geçmesin diye açılmış muhasebe depoları, mal
+fiziken MERKEZ'de durur. **Bekleme depoları** sayfasından bu depolar ve malın durduğu depo seçilir, **Önizle** ile ne
+olacağı görülür, **Bekleme depolarını aç** ile açılır (önce program verisinin yedeği alınır; Vega'ya yazılmaz).
+
+- Bekleme deposunun faturası terminalde MERKEZ belgesi olarak görünür (`MERKEZ · TRANSFER PCC 109`). Çalışan depo
+  değiştirmeden barkod okutur, raf kaydı MERKEZ'e yazılır. 106 ve 109 terminalin depo listesinden kalkar.
+- Muhasebe 37 kesince iş çıkmaz: iki ucu da grupta olan fiş (106→1, 109→1, 109→106, 1→109) yok sayılır, mal yer
+  değiştirmemiştir. Toybelen'den gelen 108→1 gibi gerçek gönderimler normal belge olarak kalır.
+- Vega stoku grup toplamıyla karşılaştırılır (1+106+109); sayım fişi depo 1'e yazılır, ürün o an 109'daysa Vega'da depo 1
+  geçici olarak eksiye düşebilir, muhasebenin 37'si bunu kapatır.
+- Açarken 106/109'daki raf kayıtları, raf tanımları ve adresler MERKEZ'e taşınır; Merkez 37'sinden rafa kalkmış miktar açık
+  faturadan düşülür. Daha önce iki kez rafa kalkmış olabilecek ürünler sayfadaki **Çift şüphesi** sekmesinde listelenir,
+  kendiliğinden düzeltilmez: mal kontrol edilip fazla hareket **Geri al** ile düşülür.
+- Sayfada ayrıca fiyat bekleyen mal (kaç gündür, rafta mı) ve muhasebenin geçirdiği ama rafa kalkmamış mal görünür.
 
 ## 4. Excel'den raf içe aktarma
 

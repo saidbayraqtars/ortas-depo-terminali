@@ -24,9 +24,10 @@ const kapsam = require('./kapsam');
 const transfer = require('./transfer');
 const kilit = require('./kilit');
 const yetki = require('./yetki');
+const bekleme = require('./bekleme');
 
 const SURUM = require('../package.json').version;
-let yedekKlasoru = null;
+let yedekYedekKlasor = null; // ayardaki klasör kullanılamazsa
 let masaustu = {};
 let sunucu = null;
 
@@ -83,17 +84,49 @@ function pinOzeti(salt, pin) {
 
 // ---- Yedek -----------------------------------------------------------------------------------
 
+/**
+ * Yedek klasörü: ayardaki (varsayılan C:/ortaşdepo-yedekler). Klasör açılamıyor ya da yazılamıyorsa veri klasörüne düşülür:
+ * izin sorunu yüzünden yedek hiç alınmamaktansa programın yanında alınsın; günlüğe yazılır.
+ */
+function yedekKlasoru() {
+  const k = String(config.load().yedek?.klasor || '').trim();
+  try {
+    if (!k) throw new Error('Yedek klasörü ayarlanmadı');
+    fs.mkdirSync(k, { recursive: true });
+    fs.accessSync(k, fs.constants.W_OK);
+    return k;
+  } catch (e) {
+    log.uyari(`Yedek klasörü kullanılamıyor (${k}): ${e.message}; ${yedekYedekKlasor} kullanılıyor`);
+    fs.mkdirSync(yedekYedekKlasor, { recursive: true });
+    return yedekYedekKlasor;
+  }
+}
+
 function yedekAl(etiket = 'otomatik') {
   const an = new Date();
   const ad = `depo-${an.getFullYear()}${String(an.getMonth() + 1).padStart(2, '0')}${String(an.getDate()).padStart(2, '0')}-${String(an.getHours()).padStart(2, '0')}${String(an.getMinutes()).padStart(2, '0')}-${etiket}.db`;
-  const hedef = path.join(yedekKlasoru, ad);
+  const klasor = yedekKlasoru();
+  const hedef = path.join(klasor, ad);
   db.backup(hedef);
-  // Otomatik yedeklerin son 30'u kalır; elle alınanlara dokunulmaz.
-  const oto = fs.readdirSync(yedekKlasoru).filter((f) => f.endsWith('-otomatik.db')).sort();
-  for (const f of oto.slice(0, Math.max(0, oto.length - 30))) fs.unlinkSync(path.join(yedekKlasoru, f));
+  // Yeni yedek alındıktan sonra en eskiler silinir; yalnız programın kendi yedekleri, klasördeki başka dosyaya dokunulmaz.
+  const sinir = Math.max(1, Number(config.load().yedek?.adet) || 5);
+  for (const f of yedekListe(klasor).slice(sinir)) fs.unlinkSync(path.join(klasor, f.ad));
   db.set('sonYedek', Date.now());
   log.bilgi(`Yedek alındı: ${ad}`);
   return ad;
+}
+
+/** Programın yedekleri, en yeni önce. Aynı dakikada alınanlar da sırasını şaşırmasın diye dosya zamanına göre. */
+function yedekListe(klasor) {
+  if (!fs.existsSync(klasor)) return [];
+  return fs
+    .readdirSync(klasor)
+    .filter((f) => /^depo-\d{8}-\d{4}-.+\.db$/.test(f))
+    .map((f) => {
+      const d = fs.statSync(path.join(klasor, f));
+      return { ad: f, boyut: d.size, zaman: d.mtimeMs };
+    })
+    .sort((a, b) => b.zaman - a.zaman || (a.ad < b.ad ? 1 : -1));
 }
 
 function yedekZamanla() {
@@ -124,7 +157,7 @@ function etiketOgeleri(tur, { kodlar = [], urunler = [], depo: d }) {
     return kodlar
       .map((k) => {
         const [a, b] = String(k).includes('|') ? String(k).split('|') : [varsDepo, k];
-        return { depo: Number(a), code: depo.rafKodu(b) };
+        return { depo: depo.depoCoz(a), code: depo.rafKodu(b) };
       })
       .filter((x) => x.code)
       .map((x) => {
@@ -415,7 +448,7 @@ function yoneticiApi() {
   );
 
   // Ayarlar
-  r.get('/ayarlar', (req, res) => res.json({ ...config.publicView(), dosyalar: { veri: db.file(), yedek: yedekKlasoru, gunluk: log.klasor() } }));
+  r.get('/ayarlar', (req, res) => res.json({ ...config.publicView(), dosyalar: { veri: db.file(), yedek: yedekKlasoru(), gunluk: log.klasor() } }));
   r.put(
     '/ayarlar',
     sar(async (req) => {
@@ -486,6 +519,19 @@ function yoneticiApi() {
         for (const k of ['urunBicim', 'rafBicim']) if (b.etiket[k] && etiket.BICIM[b.etiket[k]]) yeni.etiket[k] = b.etiket[k];
         if ('rafGoster' in b.etiket) yeni.etiket.rafGoster = Boolean(b.etiket.rafGoster);
       }
+      if (b.yedek) {
+        const y = yeni.yedek || (yeni.yedek = {});
+        if ('klasor' in b.yedek) {
+          const k = String(b.yedek.klasor || '').trim();
+          if (!path.isAbsolute(k)) throw Object.assign(new Error('Yedek klasörü tam yol olmalı (örnek C:/ortaşdepo-yedekler)'), { status: 400 });
+          y.klasor = k;
+        }
+        if ('adet' in b.yedek) {
+          const n = Number(b.yedek.adet);
+          if (!Number.isInteger(n) || n < 1 || n > 60) throw Object.assign(new Error('Yedek sayısı 1-60 arasında olmalı'), { status: 400 });
+          y.adet = n;
+        }
+      }
       if (b.yenileme) yeni.yenileme = Math.max(20, Math.min(3600, Number(b.yenileme) || 60));
       if (b.port) yeni.port = Math.max(1024, Math.min(65535, Number(b.port) || 5480));
       if ('yoneticiParola' in b) {
@@ -548,21 +594,21 @@ function yoneticiApi() {
   r.get('/raflar.csv', sar((req, res) => {
     csv(res, 'raflar.csv', ['Depo', 'Raf', 'Bölge', 'Ürün çeşidi', 'Toplam miktar', 'Not'], depo.raflar(depo.depoSuzgec(req.query.depo)).map((s) => [s.depoAd, s.code, s.zone, s.cesit, s.miktar, s.note]));
   }));
-  r.get('/raf/:depo/:code', sar((req) => depo.rafDetay(Number(req.params.depo), req.params.code)));
+  r.get('/raf/:depo/:code', sar((req) => depo.rafDetay(depo.depoCoz(req.params.depo), req.params.code)));
   r.post('/raflar', sar((req) => {
     const kodlar = Array.isArray(req.body.kodlar) ? req.body.kodlar : [req.body.kod];
     return depo.raflarAc(req.body.depo, kodlar, { zone: req.body.zone || undefined, note: String(req.body.note || '') });
   }));
   r.put('/raf/:depo/:code', sar((req) => {
     const c = depo.rafKodu(req.params.code);
-    const d = Number(req.params.depo);
+    const d = depo.depoCoz(req.params.depo);
     db.run('UPDATE shelf SET zone=COALESCE(?, zone), note=COALESCE(?, note) WHERE depo=? AND code=?', req.body.zone ?? null, req.body.note ?? null, d, c);
     depo.degisti();
     return { ok: true };
   }));
   r.delete('/raf/:depo/:code', sar((req) => {
     const c = depo.rafKodu(req.params.code);
-    const d = Number(req.params.depo);
+    const d = depo.depoCoz(req.params.depo);
     const dolu = db.get('SELECT COUNT(*) AS n FROM location WHERE depo=? AND shelf=? AND qty>0', d, c).n;
     if (dolu) throw Object.assign(new Error(`${c} rafında ${dolu} ürün var; önce başka rafa aktarın`), { status: 400 });
     const vegadan = db.get("SELECT COUNT(*) AS n FROM product_home WHERE depo=? AND shelf=? AND source='VEGA'", d, c).n;
@@ -577,7 +623,7 @@ function yoneticiApi() {
   }));
   // Raftaki her şeyi (ürünler ve zimmetler) başka rafa aktarır; ardından raf silinebilir.
   r.post('/raf/:depo/:code/bosalt', sar((req) => {
-    const s = depo.rafBosalt(Number(req.params.depo), req.params.code, (req.body || {}).hedef);
+    const s = depo.rafBosalt(depo.depoCoz(req.params.depo), req.params.code, (req.body || {}).hedef);
     depo.degisti();
     return s;
   }));
@@ -625,6 +671,18 @@ function yoneticiApi() {
   r.post('/transfer/:id/geri-al', sar(async (req) => ({ ok: true, ...(await transfer.geriAl(req.params.id, 'yönetici', req.body?.not)) })));
   // Yönetici: terminalden yapılan rafa kaldırmayı geri alır (raf stoku düşer, belgede kalan geri gelir). Ayrıntı: depo.rafaKaldirmaGeriAl.
   r.post('/hareket/:id/geri-al', sar((req) => ({ ok: true, ...depo.rafaKaldirmaGeriAl(req.params.id, 'yönetici', req.body?.not) })));
+
+  // Sanal bekleme depoları (106, 109 → Merkez). Açmak raf kayıtlarını taşıdığı için önce yedek alınır.
+  r.get('/bekleme', sar(() => bekleme.rapor()));
+  r.post('/bekleme/onizle', sar((req) => bekleme.onizle(req.body || {})));
+  r.post('/bekleme/ac', sar((req) => {
+    const b = req.body || {};
+    const o = bekleme.onizle(b);
+    if (o.engeller.length) throw Object.assign(new Error(o.engeller[0]), { status: 400 });
+    yedekAl('bekleme');
+    return bekleme.ac({ depolar: b.depolar, hedef: b.hedef, kim: 'yönetici' });
+  }));
+  r.post('/bekleme/kapat', sar(() => bekleme.kapat('yönetici')));
   // Programın Vega'ya yazdığı fişler tek listede (sayım fişleri + depo transferleri); "Vega'ya yazılanlar" sayfası.
   r.get('/vega-yazimlari', sar(() => {
     const ad = (d) => depo.depoAdi(d);
@@ -1005,12 +1063,10 @@ function yoneticiApi() {
 
   // Yedek ve klasörler
   r.post('/yedek', sar(() => ({ ad: yedekAl('elle') })));
-  r.get('/yedekler', sar(() =>
-    fs.readdirSync(yedekKlasoru).filter((f) => f.endsWith('.db')).sort().reverse().slice(0, 60)
-      .map((f) => ({ ad: f, boyut: fs.statSync(path.join(yedekKlasoru, f)).size, zaman: fs.statSync(path.join(yedekKlasoru, f)).mtimeMs }))));
+  r.get('/yedekler', sar(() => yedekListe(yedekKlasoru())));
   r.post('/klasor', sar(async (req) => {
     if (!yerelMi(req) || !masaustu.klasorAc) throw Object.assign(new Error('Yalnız sunucu bilgisayarında'), { status: 400 });
-    const k = { yedek: yedekKlasoru, gunluk: log.klasor(), veri: path.dirname(db.file()) }[req.body?.ne];
+    const k = { yedek: yedekKlasoru(), gunluk: log.klasor(), veri: path.dirname(db.file()) }[req.body?.ne];
     if (!k) throw Object.assign(new Error('Bilinmeyen klasör'), { status: 400 });
     await masaustu.klasorAc(k);
     return { ok: true };
@@ -1067,8 +1123,7 @@ async function baslat({ veriKlasoru, apkKlasoru, arayuz, host = '0.0.0.0', port 
   rapor.kur(veriKlasoru, SURUM);
   config.init(path.join(veriKlasoru, 'config.json'));
   db.open(path.join(veriKlasoru, 'depo.db'), { varsayilanDepo: config.load().vega.depo });
-  yedekKlasoru = path.join(veriKlasoru, 'yedek');
-  fs.mkdirSync(yedekKlasoru, { recursive: true });
+  yedekYedekKlasor = path.join(veriKlasoru, 'yedek');
   apk.kur(apkKlasoru || path.join(__dirname, '..', 'apk'));
 
   depo.goruntuYukleOnbellek();

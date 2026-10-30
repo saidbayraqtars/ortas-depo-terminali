@@ -9,6 +9,7 @@ const log = require('./log');
 const fuzzy = require('./fuzzy');
 const kapsam = require('./kapsam');
 const yetki = require('./yetki');
+const bekleme = require('./bekleme');
 
 const EPS = 1e-9;
 // Depo hareket fişinden gelen belge türleri (ayarda "D37" gibi seçilir); vega.js ile aynı.
@@ -55,13 +56,24 @@ const VEGA_TAKILMA_MS = 10 * 60 * 1000;
 function goruntuKur(g) {
   goruntu = g;
   urunIndex = new Map(g.products.map((p) => [p.id, p]));
-  // depo → (ürün → Vega stoku); toplam ürün başına.
-  goruntu.stokDepo = new Map(Object.entries(g.stock || {}).map(([d, m]) => [Number(d), new Map(Object.entries(m))]));
+  // depo → (ürün → Vega stoku); toplam ürün başına. Sanal bekleme depoları hedef depoda toplanır, belgeleri hedefte görünür
+  // (bekleme.js); ham liste g.receipts, g.depolar, stokHam olarak durur.
+  const gor = bekleme.gorunum(g, bekleme.ayar());
+  goruntu.belgeGorunum = gor.belgeler;
+  goruntu.depoGorunum = gor.depolar;
+  goruntu.stokDepo = gor.stokDepo;
+  goruntu.stokHam = gor.stokHam;
   goruntu.stokToplam = new Map();
   for (const m of goruntu.stokDepo.values()) for (const [pid, q] of m) goruntu.stokToplam.set(pid, (goruntu.stokToplam.get(pid) || 0) + Number(q));
   goruntu.movedSet = new Set(g.moved || []);
   goruntu.depoAd = new Map((g.depolar || []).map((d) => [Number(d.ind), d.ad]));
   aramaIndex = null;
+}
+
+/** Ayar değişince (bekleme depoları) son Vega görüntüsü yeniden yorumlanır; Vega yeniden okunmaz. */
+function yenidenKur() {
+  if (goruntu) goruntuKur(goruntu);
+  degisti();
 }
 
 // İsimle arama alanları; ilk aramada kurulur.
@@ -116,10 +128,12 @@ async function vegaYenile(tetik = 'elle') {
     const ozet0 = ozet(JSON.stringify({ ...g, at: 0 }));
     const ayni = Boolean(goruntu) && ozet0 === sonGoruntuOzet;
     if (!ayni) {
+      // Önbelleğe ham görüntü yazılır; yorumlanmış hali her açılışta o anki ayarla yeniden kurulur.
+      const json = JSON.stringify(g);
       goruntuKur(g);
       db.run(
         "INSERT INTO vega_cache(key, json, updated_at) VALUES('goruntu', ?, ?) ON CONFLICT(key) DO UPDATE SET json=excluded.json, updated_at=excluded.updated_at",
-        JSON.stringify(g),
+        json,
         g.at,
       );
       sonGoruntuOzet = ozet0;
@@ -185,7 +199,7 @@ function vegaStok(id, depo = null) {
 
 /** Kullanılan depolar: Vega'dan; Vega hiç okunmadıysa raflarda geçen depolar. */
 function depolar() {
-  if (goruntu && goruntu.depolar && goruntu.depolar.length) return goruntu.depolar.map((d) => ({ ind: Number(d.ind), ad: d.ad }));
+  if (goruntu && goruntu.depoGorunum && goruntu.depoGorunum.length) return goruntu.depoGorunum.map((d) => ({ ind: Number(d.ind), ad: d.ad }));
   return db.all('SELECT DISTINCT depo FROM shelf ORDER BY depo').map((r) => ({ ind: r.depo, ad: String(r.depo) }));
 }
 
@@ -196,23 +210,23 @@ function depoAdi(depo) {
 
 function varsayilanDepo() {
   const cfg = config.load();
-  const v = Number(cfg.vega.depo);
+  const v = bekleme.fiziksel(cfg.vega.depo);
   const liste = depolar();
   if (Number.isInteger(v) && v > 0 && (!liste.length || liste.some((d) => d.ind === v))) return v;
   return liste[0] ? liste[0].ind : Number.isInteger(v) ? v : 0;
 }
 
-/** İstekten gelen depo; yoksa ya da geçersizse varsayılan. */
+/** İstekten gelen depo; yoksa ya da geçersizse varsayılan. Sanal bekleme deposu malın durduğu depoya çevrilir (kuyruktaki eski işlem de). */
 function depoCoz(x) {
   const n = Number(x);
-  return Number.isInteger(n) && x !== null && x !== '' && x !== undefined ? n : varsayilanDepo();
+  return Number.isInteger(n) && x !== null && x !== '' && x !== undefined ? bekleme.fiziksel(n) : varsayilanDepo();
 }
 
 /** Yönetim ekranı süzgeci: boş / "hepsi" → null (bütün depolar). */
 function depoSuzgec(x) {
   if (x === undefined || x === null || x === '' || x === 'hepsi') return null;
   const n = Number(x);
-  return Number.isInteger(n) ? n : null;
+  return Number.isInteger(n) ? bekleme.fiziksel(n) : null;
 }
 
 // ---- Raf stoku -----------------------------------------------------------------------------
@@ -659,20 +673,26 @@ function rafaKaldirmaGeriAl(hareketId, kim = 'yönetici', not = '') {
   const satirId = p.lineId ? String(p.lineId) : null;
   // Belgeye bağlı olup işlem kaydı kalmamış eski satır: raf düşülür ama belgede "rafa kalktı" görünür kalırdı.
   if (!kayit && m.ref) throw new Ret('Bu eski kayıt geri alınamaz (işlem kaydı yok); Raflar sayfasından düzeltin');
-  const mevcut = miktar(m.depo, m.product_id, m.shelf);
+  // Sanal bekleme deposunda yapılmış eski kayıt: raf kaydı artık malın durduğu depoda.
+  const d = depoCoz(m.depo);
+  const mevcut = miktar(d, m.product_id, m.shelf);
   if (q - mevcut > EPS) {
     throw new Ret(`${m.shelf} rafında şu an ${yuvarla(mevcut)} var; ${q} geri alınamaz (sonradan raftan alınmış, taşınmış ya da sayılmış). Önce Raflar sayfasından düzeltin`);
   }
   const notu = String(not || '').trim().slice(0, 300) || null;
   db.tx(() => {
-    miktarEkle(m.depo, m.product_id, m.shelf, -q, { ts: now(), user: kim, device: 'PC', kind: 'PUTAWAY_GERI', ref: m.ref || null });
-    if (satirId) db.run('UPDATE receipt_shelved SET shelved = MAX(shelved - ?, 0), updated_at=? WHERE line_id=?', q, now(), satirId);
-    if (miktar(m.depo, m.product_id, m.shelf) <= EPS) terminalZimmetBosalt(m.depo, m.product_id, m.shelf);
+    miktarEkle(d, m.product_id, m.shelf, -q, { ts: now(), user: kim, device: 'PC', kind: 'PUTAWAY_GERI', ref: m.ref || null });
+    if (satirId) {
+      db.run('UPDATE receipt_shelved SET shelved = MAX(shelved - ?, 0), updated_at=? WHERE line_id=?', q, now(), satirId);
+      bekleme.mahsupGeri(satirId, q);
+    }
+    if (miktar(d, m.product_id, m.shelf) <= EPS) terminalZimmetBosalt(d, m.product_id, m.shelf);
     db.run('UPDATE movement SET geri_at=?, geri_user=?, geri_not=? WHERE id=?', now(), kim, notu, m.id);
   });
-  log.bilgi(`Rafa kaldırma geri alındı: ${m.shelf} · ürün ${m.product_id} · ${q} (${depoAdi(m.depo)}) · ${kim}${notu ? ` · ${notu}` : ''}`);
+  log.bilgi(`Rafa kaldırma geri alındı: ${m.shelf} · ürün ${m.product_id} · ${q} (${depoAdi(d)}) · ${kim}${notu ? ` · ${notu}` : ''}`);
   degisti();
-  return { geriAlinan: q, raf: m.shelf, belgeSatiri: Boolean(satirId) };
+  // Gizlenen grup içi belge (bekleme.js) yeniden açılmaz; terminalde bekleyen bir satırı yok.
+  return { geriAlinan: q, raf: m.shelf, belgeSatiri: Boolean(satirId && (!p.receiptId || receiptById(String(p.receiptId)))) };
 }
 
 /** İşlemi yapan kullanıcının yetki nesnesi; kayıtlı değilse (silinmiş, bilinmeyen ad) null = sınırsız. */
@@ -714,11 +734,13 @@ function islemUygula(op, cihaz, kullanici) {
       if (!shelf) throw new Ret('Raf yok');
       // Belge depo bazlı: mal belgenin deposunda rafa kalkar.
       const belge = p.receiptId ? receiptById(String(p.receiptId)) : null;
+      // Terminal eşitlemeden önce gizlenmiş grup içi belge (bekleme.js): mal yine rafa kondu, miktar açık fatura satırına yazılır.
+      const gizli = p.receiptId && !belge && goruntu ? goruntu.receipts.find((r) => r.id === String(p.receiptId)) : null;
       const depo = belge ? belge.depo : depoCoz(p.depot);
       yetkiDenetle(null, depo);
       // Mal fiziken rafa kondu; raf tanımı sonradan silinmiş olsa bile kayıt kaybolmasın.
       if (!rafVarMi(depo, shelf)) rafEkle(depo, shelf, { source: 'TERMINAL', note: 'Terminalden geldi' });
-      miktarEkle(depo, pid, shelf, qty, { ...h, kind: 'PUTAWAY', ref: belge ? belge.docNo : p.receiptId || null });
+      miktarEkle(depo, pid, shelf, qty, { ...h, kind: 'PUTAWAY', ref: belge ? belge.docNo : gizli ? gizli.docNo : p.receiptId || null });
       terminalZimmet(depo, pid, shelf);
       if (p.lineId) {
         db.run(
@@ -730,6 +752,7 @@ function islemUygula(op, cihaz, kullanici) {
           qty,
           now(),
         );
+        if (gizli) bekleme.gecikmisKayit(String(p.lineId), pid, qty);
       }
       return;
     }
@@ -953,7 +976,7 @@ function belgeler({ shelved, kapali } = kabulDurumu()) {
   // Terminalden kabul edilip program tarafından yazılan 129 fişi (transfer.js): mal kabulde ikinci kez çıkmaz.
   const programKabul = require('./transfer').programKabulBelgeleri();
   // Terminalden kabul edilen transferler rafa kaldırılacak belge olarak da gelir (raf belirtmeden alınan mal burada bekler).
-  const tumu = [...goruntu.receipts, ...require('./transfer').programKabulFisleri()].sort((a, b) => b.ts - a.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const tumu = [...goruntu.belgeGorunum, ...require('./transfer').programKabulFisleri()].sort((a, b) => b.ts - a.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return tumu.map((r) => {
     const lines = r.lines.map((l) => ({ ...l, shelved: Number(shelved.get(l.id) || 0) }));
     const kalan = lines.reduce((t, l) => t + Math.max(0, l.accepted - l.shelved), 0);
@@ -974,7 +997,7 @@ function belgeler({ shelved, kapali } = kabulDurumu()) {
 
 function receiptById(id) {
   if (!goruntu) return null;
-  return goruntu.receipts.find((r) => r.id === id) || require('./transfer').programKabulFisleri().find((r) => r.id === id) || null;
+  return goruntu.belgeGorunum.find((r) => r.id === id) || require('./transfer').programKabulFisleri().find((r) => r.id === id) || null;
 }
 
 /** Açık belgelerde rafa kaldırılmayı bekleyen miktar, ürün başına (depo verilirse o depoda). Vega stoku bunu içerir. */
@@ -1290,7 +1313,9 @@ function urunDetay(id) {
 async function stokTani(ara) {
   const cfg = config.load();
   const v = await vega.stokTani(cfg, ara);
-  const kullanilan = new Set(depolar().map((d) => d.ind));
+  // Sanal bekleme depoları da kullanılan depodur; yalnız terminalde ayrı depo olarak görünmez.
+  const kullanilan = new Set([...depolar().map((d) => d.ind), ...(goruntu?.depolar || []).map((d) => Number(d.ind))]);
+  const bek0 = bekleme.ayar();
   const secili = new Set((cfg.kabul.izahat || []).map(String));
   const bas = cfg.kabul.baslangic || '';
   const blg = new Map(belgeler().map((r) => [r.id, r]));
@@ -1312,16 +1337,21 @@ async function stokTani(ara) {
       if (g.iade) return sonuc('yok', 'İade satırı');
       if (g.iptal) return sonuc('yok', 'Belge iptal');
       const r = blg.get(`${anahtar}-${g.belgeInd}-${g.depo}`);
-      if (!r) return sonuc('yok', "Programdaki Vega görüntüsünde yok (Vega'yı yenileyin; yenilendiyse bildirin)");
+      if (!r) {
+        const ham = bek0 && goruntu?.receipts.find((x) => x.id === `${anahtar}-${g.belgeInd}-${g.depo}`);
+        if (ham && bekleme.grupIci(ham, bek0)) return sonuc('bilgi', 'Bekleme deposundan geçiş: mal yer değiştirmedi, fatura belgesinden rafa kalkar');
+        return sonuc('yok', "Programdaki Vega görüntüsünde yok (Vega'yı yenileyin; yenilendiyse bildirin)");
+      }
       if (r.elleKapali) return sonuc('tamam', 'Belge yönetici programında elle kapatıldı');
       const l = r.lines.find((x) => x.productId === k.id);
       if (!l) return sonuc('yok', 'Belgede bu kalem yok');
       if (l.shelved >= l.accepted - EPS) return sonuc('tamam', `Rafa kaldırıldı (${yuvarla(l.shelved)}/${yuvarla(l.accepted)})`);
       return sonuc('terminalde', `Terminalde açık: ${r.docNo}, ${yuvarla(l.accepted - l.shelved)} rafa kaldırılacak`);
     });
-    const depoSet = new Set([...Object.keys(k.stok).map(Number), ...rafQ.keys()]);
+    const stokGrup = bekleme.birlestir(k.stok, bek0);
+    const depoSet = new Set([...Object.keys(stokGrup).map(Number), ...rafQ.keys()]);
     const depoOzet = [...depoSet].sort((a, b) => a - b).map((d) => {
-      const vs = Number(k.stok[String(d)] || 0);
+      const vs = Number(stokGrup[String(d)] || 0);
       const raf = Number(rafQ.get(d) || 0);
       const bek = kullanilan.has(d) ? bekleyenKabul(d).get(k.id) || 0 : 0;
       return { depo: d, depoAd: ad(d), kullaniliyor: kullanilan.has(d), vegaStock: yuvarla(vs), raf: yuvarla(raf), bekleyen: yuvarla(bek), belgesiz: yuvarla(vs - raf - bek) };
@@ -1521,7 +1551,8 @@ async function sayimOnayla(id, { vegaYaz = false, stoknolar = null, dahilSayilma
       .filter((u) => u.vegadaVar && /^\d+$/.test(u.productId) && (!secili || secili.has(u.productId)))
       .map((u) => ({ stokno: Number(u.productId), hedef: u.hedef }));
     if (kalemler.length) {
-      sonuc = await vega.sayimYaz(config.load(), kalemler, { aciklama: `Sayım ${s.no}`, depo: s.depo });
+      // Sanal bekleme deposu varsa hedef grup toplamıyla karşılaştırılır (raftaki mal 109'da da olabilir); fiş yine sayımın deposuna.
+      sonuc = await vega.sayimYaz(config.load(), kalemler, { aciklama: `Sayım ${s.no}`, depo: s.depo, stokDepolari: bekleme.grupDepolari(s.depo) });
       log.bilgi(`Sayım ${s.no} (${s.depoAd}) Vega'ya yazıldı: ${sonuc.docs.map((d) => d.belgeNo).join(', ') || 'fark yok'}`);
     }
   }
@@ -1551,6 +1582,7 @@ async function sayimGeriAl(id) {
 
 module.exports = {
   _goruntuKur: goruntuKur,
+  yenidenKur,
   degisti,
   dinle,
   surum: () => surum,

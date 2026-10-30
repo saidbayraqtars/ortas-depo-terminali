@@ -263,7 +263,7 @@ export default function Ayarlar() {
 
   useEffect(() => {
     // Yalnız ilk yüklemede: bir bölüm kaydedilince diğer bölümlerdeki kaydedilmemiş değişiklik silinmesin.
-    if (a) setTaslak((t) => t || { kabul: { ...a.kabul }, rafAdresi: { alan: '', depo: null, ...a.rafAdresi }, urun: { ...a.urun }, sayim: { ...a.sayim }, port: a.port, yenileme: a.yenileme });
+    if (a) setTaslak((t) => t || { kabul: { ...a.kabul }, rafAdresi: { alan: '', depo: null, ...a.rafAdresi }, urun: { ...a.urun }, sayim: { ...a.sayim }, yedek: { ...a.yedek }, port: a.port, yenileme: a.yenileme });
   }, [a]);
   useEffect(() => {
     api('/vega/fis-varsayilan').then(setFis).catch(() => {});
@@ -470,13 +470,18 @@ export default function Ayarlar() {
             </div>
           </Bolum>
 
-          <Bolum ikon="folder" baslik="Yedek ve dosyalar" aciklama="Program verisi (raflar, raf stoku, sayımlar, kullanıcılar) her gün kendiliğinden yedeklenir; son 30 yedek saklanır. Vega'nın yedeği ayrıca alınmalı.">
+          <Bolum ikon="folder" baslik="Yedek ve dosyalar" aciklama={`Program verisi (raflar, raf stoku, sayımlar, kullanıcılar) her gün kendiliğinden yedeklenir; son ${a.yedek?.adet || 5} yedek kalır, eskisi silinir. Vega yedeklenmez.`}
+            alt={<Btn kind="primary" onClick={async () => { if (await kaydet({ yedek: { klasor: t.yedek.klasor, adet: Number(t.yedek.adet) } })) yedekler.yukle(); }}>Kaydet</Btn>}>
+            <div className="stack" style={{ gap: 10 }}>
+              <Alan etiket="Yedek klasörü" ipucu="Yazılamazsa program kendi veri klasörüne yedekler"><input className="inp mono" value={t.yedek.klasor || ''} onChange={(e) => setT('yedek.klasor', e.target.value)} /></Alan>
+              <Alan etiket="En çok yedek" ipucu="Fazlası en eskiden silinir"><input className="inp mono" style={{ width: 100 }} value={t.yedek.adet ?? ''} onChange={(e) => setT('yedek.adet', e.target.value.replace(/\D/g, ''))} /></Alan>
+            </div>
             <div className="btns">
               <Btn icon="database" busy={mesgul === 'yedek'} onClick={yedekAl}>Şimdi yedekle</Btn>
               {durum?.masaustu && <Btn icon="folder" onClick={() => klasor('yedek')}>Yedek klasörü</Btn>}
               {durum?.masaustu && <Btn icon="history" onClick={() => klasor('gunluk')}>Günlük kayıtları</Btn>}
             </div>
-            <div className="small muted">Son yedek: {tarihSaat(durum?.sonYedek)} · Veri: <span className="mono">{a.dosyalar.veri}</span></div>
+            <div className="small muted">Son yedek: {tarihSaat(durum?.sonYedek)} · Yedekler: <span className="mono">{a.dosyalar.yedek}</span> · Veri: <span className="mono">{a.dosyalar.veri}</span></div>
             {yedekler.veri?.length > 0 && (
               <div className="tbl-scroll" style={{ maxHeight: 160, border: '1px solid var(--line-soft)', borderRadius: 8 }}>
                 <table className="tbl">

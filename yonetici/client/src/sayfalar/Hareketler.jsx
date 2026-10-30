@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { api, Btn, Durum, HAREKET, Icon, indir, miktar, Modal, Rozet, SayfaBaslik, tarihSaat, useApp, useDepo, useVeri } from '../lib.jsx';
 
 /** Terminalden yapılan rafa kaldırmayı geri alma onayı (POST /hareket/:id/geri-al). */
-function RafaGeriAl({ h, kapat, tamam }) {
+export function RafaGeriAl({ h, kapat, tamam }) {
   const { toast } = useApp();
   const [not, setNot] = useState('');
   const [mesgul, setMesgul] = useState(false);
@@ -78,6 +78,7 @@ export default function Hareketler() {
               <option value="TRANSFER_OUT_DEPO,TRANSFER_IN_DEPO">Depolar arası transfer</option>
               <option value="COUNT">Sayım</option>
               <option value="ADJUST">Düzeltme</option>
+              <option value="DEPO_BIRLESTIR">Bekleme deposu geçişi</option>
             </select>
             <select className="inp" style={{ width: 150 }} value={f.kullanici} onChange={d('kullanici')}>
               <option value="">Tüm kullanıcılar</option>
