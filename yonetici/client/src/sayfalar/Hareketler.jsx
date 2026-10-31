@@ -77,6 +77,7 @@ export default function Hareketler() {
               <option value="TRANSFER_IN,TRANSFER_OUT">Transfer (raftan rafa)</option>
               <option value="TRANSFER_OUT_DEPO,TRANSFER_IN_DEPO">Depolar arası transfer</option>
               <option value="COUNT">Sayım</option>
+              <option value="ARRANGE">Raf düzenleme</option>
               <option value="ADJUST">Düzeltme</option>
               <option value="DEPO_BIRLESTIR">Bekleme deposu geçişi</option>
             </select>

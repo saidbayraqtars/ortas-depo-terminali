@@ -101,6 +101,7 @@ düzeltilir. Önizlemede atlanacak satırlar nedeniyle listelenir. Boş şablon:
 | Rafa kaldırma | Rafa Kaldır → belge seç ya da okut → raf okut → ürünleri peş peşe okut → Rafa kaldır | Mal kabul: belge belge ilerleme; mal başka yere konduysa **Elle kapat** |
 | Raf transferi | Raf Transferi → kaynak raf → ürünleri peş peşe okut → hedef raf | Hareketler |
 | Ürün / raf sorgu | Ana menüde ne okutulursa açılır | Ürün ve stok, Raflar |
+| Rafta duran malı rafa tanımlama | Raf Düzenle → raf okut → ürünleri okut → Düzenlemeyi bitir → Kaydet | Hareketler (tür: Raf düzenleme); onay gerekmez |
 | Sayım | Sayım → sayım seç → raf okut → ürünleri okut → Sayımı bitir → Gönder | Sayımlar → aç, kapat, **onayla** |
 
 **Barkodu olmayan / okunmayan ürün:** her ürün okutma alanının altında **İsimle ara** var. Adın bir kısmı yazılır
@@ -110,8 +111,15 @@ yerine ad yazılırsa da aynı liste açılır. Ürün kodu da okutulabilir ya d
 **İnternet/Wi-Fi yoksa:** işlemler terminalde kuyruğa alınır, bağlantı gelince kendiliğinden gönderilir
 (Kuyruk ekranı). Giriş internetsiz de yapılır.
 
-## 6. Sayım ve Vega
+## 6. Raf Düzenle, Sayım ve Vega
 
+- **Raf Düzenle** (ana menü): firma sıfırdan başlamıyor, rafta duran mal var; raf stoku henüz yok. Depocu rafı okutur,
+  rafta duran ürünleri okutur (her okutma +1, miktar elle düzeltilir), sonraki rafa geçer, sonunda **Düzenlemeyi kaydet** der.
+  Raf stoku okutulan değere çekilir; sistemde o rafta görünüp okutulmayan ürün raftan çıkar (ekran bunu önceden listeler);
+  adresi olmayan ürünün adresi o raf olur. **Sayım oturumu açılmaz, yönetici onayı gerekmez, Vega'ya hiçbir şey yazılmaz**
+  (raf adresi KOD10'a yazılması açıksa yazılır). Yetki: Kullanıcılar › **Raf düzenle** izni (Depo görevlisi şablonunda var;
+  özel izin listesi verilmiş kullanıcılara yönetici programından ayrıca işaretlenir).
+  Yarım kalan düzenleme menüden tekrar girilince kaldığı yerden sürer.
 - Sayım bir depoda açılır; terminalde yalnız o depoyu seçen cihazlarda görünür.
 - **Raf sayımı:** yalnız raf miktarları düzelir; Vega değişmez. İlk yerleşim (kurulumdan sonra bütün rafların bir kez
   sayılması) ve bölüm sayımları için.

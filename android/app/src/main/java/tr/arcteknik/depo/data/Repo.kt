@@ -343,7 +343,23 @@ class Repo(val db: Db, val prefs: Prefs) {
         return db.countSession(id)!!
     }
 
-    /** Hiçbir şey sayılmadan bırakılan serbest sayım listede birikmesin. */
+    /**
+     * Raf Düzenle: rafta duran malı rafa tanımlamak için sayımla aynı yerel tablolar kullanılır ama oturum sayım değildir.
+     * Gönderilmemiş (yarım kalmış) düzenleme varsa kaldığı yerden devam eder, yoksa yenisi açılır.
+     */
+    fun startArrange(): CountSession {
+        db.openArrange()?.let { return it }
+        val id = ARRANGE_PREFIX + UUID.randomUUID().toString().take(8)
+        val no = "RD-T" + (System.currentTimeMillis() / 1000 % 100000)
+        db.writableDatabase.execSQL(
+            "INSERT INTO count_session(id, no, title, blind, status, depot) VALUES(?,?,?,?,?,?)",
+            arrayOf<Any>(id, no, "Raf düzenleme", 0, "OPEN", db.depot),
+        )
+        changed()
+        return db.countSession(id)!!
+    }
+
+    /** Hiçbir şey sayılmadan bırakılan serbest sayım (ya da hiçbir raf düzenlenmeden bırakılan Raf Düzenle oturumu) listede birikmesin. */
     fun discardEmptyLocal(sessionId: String) {
         if (!sessionId.startsWith("LOCAL-")) return
         val w = db.writableDatabase
@@ -398,10 +414,12 @@ class Repo(val db: Db, val prefs: Prefs) {
     }
 
     /**
-     * Sayımı sunucuya gönderilmek üzere kuyruğa koyar. Vega'ya işleme yönetici programında onayla olur;
-     * terminaldeki raf miktarları sayılan değere çekilir.
+     * Sayımı (ya da Raf Düzenle'yi) sunucuya gönderilmek üzere kuyruğa koyar; terminaldeki raf miktarları okutulan değere
+     * çekilir. Sayım COUNT_SUBMIT olarak gider, Vega'ya işleme yönetici programında onayla olur. Raf Düzenle SHELF_ARRANGE
+     * olarak gider: onay beklemez, Vega'ya hiçbir şey yazılmaz.
      */
     fun submitCount(session: CountSession, user: String) {
+        val arrange = session.arrange
         val diffs = countDiffs(session.id)
         val lines = JSONArray()
         diffs.forEach {
@@ -412,16 +430,17 @@ class Repo(val db: Db, val prefs: Prefs) {
         try {
             diffs.forEach { d ->
                 db.setQty(w, session.depot, d.product.id, d.shelf, d.counted)
-                if (d.diff != 0.0) db.addMovement(w, d.product.id, "Sayım farkı ${d.shelf} (${session.no})", d.diff)
+                if (d.diff != 0.0) db.addMovement(w, d.product.id, (if (arrange) "Raf düzenleme" else "Sayım farkı") + " ${d.shelf} (${session.no})", d.diff)
             }
             w.execSQL("UPDATE count_session SET status='SUBMITTED' WHERE id=?", arrayOf<Any>(session.id))
             val changedCount = diffs.count { it.diff != 0.0 }
-            db.insertOp(w, op(
-                OpType.COUNT_SUBMIT,
-                JSONObject().put("sessionId", session.id).put("no", session.no).put("title", session.title).put("depot", session.depot)
-                    .put("shelves", JSONArray(db.countedShelves(session.id))).put("lines", lines).put("user", user),
-                "Sayım · ${session.no}|${diffs.size} kalem, $changedCount farklı",
-            ))
+            val payload = JSONObject().put("sessionId", session.id).put("no", session.no).put("title", session.title).put("depot", session.depot)
+                .put("shelves", JSONArray(db.countedShelves(session.id))).put("lines", lines).put("user", user)
+            db.insertOp(w, if (arrange) {
+                op(OpType.SHELF_ARRANGE, payload, "Raf düzenle · ${session.no}|${diffs.size} kalem, $changedCount değişti")
+            } else {
+                op(OpType.COUNT_SUBMIT, payload, "Sayım · ${session.no}|${diffs.size} kalem, $changedCount farklı")
+            })
             w.setTransactionSuccessful()
         } finally {
             w.endTransaction()

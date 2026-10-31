@@ -53,7 +53,15 @@ data class CountSession(
     val depot: Int = 0,
     /** Raf önekleri (bkz. [Kapsam]); boşsa bütün raflar. */
     val scope: List<String> = emptyList(),
-)
+) {
+    /** Raf Düzenle oturumu: aynı yerel tablolar kullanılır ama sayım değildir (sayım listesinde görünmez, SHELF_ARRANGE olarak gider). */
+    val arrange: Boolean get() = isArrangeId(id)
+}
+
+/** Raf Düzenle oturumunun kimliği bu önekle başlar; `LOCAL-` öneki eşitlemede sunucuda yok diye silinmemesini sağlar (bkz. Db.applyHead). */
+const val ARRANGE_PREFIX = "LOCAL-RD-"
+
+fun isArrangeId(id: String) = id.startsWith(ARRANGE_PREFIX)
 
 data class CountLine(val shelf: String, val product: Product, val qty: Double)
 
@@ -118,6 +126,7 @@ object Perm {
     const val TRANSFER = "transfer"
     const val SHELF_ADD = "shelf_add"
     const val HOME_REMOVE = "home_remove"
+    const val SHELF_ARRANGE = "shelf_arrange"
     const val COUNT = "count"
     const val COUNT_FREE = "count_free"
     const val DEPOT_SEND = "depot_send"
@@ -140,6 +149,8 @@ object OpType {
     const val PICK = "PICK"
     /** Ürünün raf adresini (zimmet) siler; raf ve raftaki miktar değişmez (1.5.1+ sunucu). */
     const val HOME_REMOVE = "HOME_REMOVE"
+    /** Raf Düzenle: rafta duran malı rafa tanımlar; sayım oturumu açmaz, onay beklemez, Vega'ya yazılmaz. Eski yönetici programı bu türü bilmez ve reddeder; yönetici ve APK birlikte güncellenir. */
+    const val SHELF_ARRANGE = "SHELF_ARRANGE"
     /** Depolar arası gönderim: gönderen depoda raf düşer, sunucu Vega'ya depo gönderim fişi (128) yazar (1.6.0+ sunucu). */
     const val TRANSFER_SEND = "TRANSFER_SEND"
     /** Gönderim kabulü: alan depoda rafa girer, sunucu Vega'ya gönderim kabul fişi (129) yazar, eksik kayıtlı kalır. */

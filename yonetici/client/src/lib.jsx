@@ -97,6 +97,7 @@ export const HAREKET = {
   TRANSFER_IN_DEPO: ['Depodan kabul', 'b-ok'],
   DEPO_BIRLESTIR: ['Bekleme deposu geçişi', 'b-mute'],
   COUNT: ['Sayım', 'b-acc'],
+  ARRANGE: ['Raf düzenleme', 'b-acc'],
   IMPORT: ['Excel', 'b-mute'],
   ADJUST: ['Düzeltme', 'b-warn'],
 };

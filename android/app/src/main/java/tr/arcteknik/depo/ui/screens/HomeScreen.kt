@@ -105,6 +105,10 @@ fun HomeScreen(vm: AppVm, online: Boolean, version: Int) {
                 if (vm.can(Perm.PUTAWAY)) add { m -> Tile("Rafa Kaldır", "Kabul edilen mal", Ic.Inbox, openReceipts, m) { vm.go(Route.Receipts) } }
                 if (vm.can(Perm.PICK)) add { m -> Tile("Raftan Al", "Raftaki malı eksilt", Ic.Outbox, 0, m) { vm.go(Route.Pick) } }
                 if (vm.can(Perm.TRANSFER)) add { m -> Tile("Raf Transferi", "Raftan rafa taşı", Ic.Transfer, 0, m) { vm.go(Route.Transfer()) } }
+                // Rafta duran malı rafa tanımlar (sayımla aynı mantık, "sayım" adı geçmez; onay beklemez, Vega'ya yazılmaz).
+                if (vm.can(Perm.SHELF_ARRANGE)) add { m -> Tile("Raf Düzenle", "Rafa mal tanımla", Ic.Layers, 0, m) {
+                    if (vm.canDepot(db.depot)) vm.go(Route.Count(vm.repo.startArrange().id)) else vm.error("Bu depoda işlem yapma yetkiniz yok")
+                } }
                 if (vm.can(Perm.COUNT) || vm.can(Perm.COUNT_FREE)) add { m -> Tile("Sayım", "Raf ya da tam sayım", Ic.Clipboard, openCounts, m) { vm.go(Route.Counts) } }
                 add { m -> Tile("Ürün Sorgu", "Hangi rafta, kaç adet", Ic.Search, 0, m) { vm.go(Route.ProductQuery()) } }
                 add { m -> Tile("Raf Sorgu", "Rafta neler var", Ic.Pin, 0, m) { vm.go(Route.ShelfQuery()) } }

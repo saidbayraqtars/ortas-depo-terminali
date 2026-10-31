@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api, Btn, Durum, HAREKET, Icon, kilitDestegiYok, miktar, once, Rozet, SayfaBaslik, tarihSaat, useApp, useOnay, useVeri } from '../lib.jsx';
 
-const ISLEM_AD = { PUTAWAY: 'Rafa kaldırma', TRANSFER: 'Transfer', COUNT_SUBMIT: 'Sayım gönderimi' };
+const ISLEM_AD = { PUTAWAY: 'Rafa kaldırma', TRANSFER: 'Transfer', COUNT_SUBMIT: 'Sayım gönderimi', SHELF_ARRANGE: 'Raf düzenleme' };
 
 function Kurulum({ d }) {
   const adim = [
@@ -153,9 +153,9 @@ export default function Ozet() {
         </a>
         <a className="card stat" href="#/hareketler">
           <span className="k"><Icon name="history" size={16} /> Bugün</span>
-          <span className="v">{(bugun.PUTAWAY?.n || 0) + (bugun.TRANSFER?.n || 0) + (bugun.COUNT_SUBMIT?.n || 0)}</span>
+          <span className="v">{(bugun.PUTAWAY?.n || 0) + (bugun.TRANSFER?.n || 0) + (bugun.COUNT_SUBMIT?.n || 0) + (bugun.SHELF_ARRANGE?.n || 0)}</span>
           <span className="s">
-            {bugun.PUTAWAY?.n || 0} rafa kaldırma · {bugun.TRANSFER?.n || 0} transfer · {bugun.COUNT_SUBMIT?.n || 0} sayım
+            {bugun.PUTAWAY?.n || 0} rafa kaldırma · {bugun.TRANSFER?.n || 0} transfer · {bugun.COUNT_SUBMIT?.n || 0} sayım{bugun.SHELF_ARRANGE?.n ? ` · ${bugun.SHELF_ARRANGE.n} raf düzenleme` : ''}
             {s.hataliIslem ? ` · ${s.hataliIslem} reddedildi` : ''}
           </span>
         </a>

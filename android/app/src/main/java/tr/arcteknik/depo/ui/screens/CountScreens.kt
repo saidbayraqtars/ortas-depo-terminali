@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import tr.arcteknik.depo.data.Kapsam
 import tr.arcteknik.depo.data.Repo.Companion.fmt
 import tr.arcteknik.depo.data.Perm
+import tr.arcteknik.depo.data.isArrangeId
 import tr.arcteknik.depo.ui.AppVm
 import tr.arcteknik.depo.ui.C
 import tr.arcteknik.depo.ui.Caption
@@ -86,10 +87,14 @@ fun CountListScreen(vm: AppVm, online: Boolean, version: Int) {
     }
 }
 
-/** Raf okut → ürünleri okut (her okutma +1) → sonraki raf. */
+/**
+ * Raf okut → ürünleri okut (her okutma +1) → sonraki raf. Raf Düzenle (rafta duran malı rafa tanımlama) aynı ekranı
+ * kullanır, yalnız metinler farklıdır: "sayım" sözcüğü orada geçmez.
+ */
 @Composable
 fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
     val db = vm.repo.db
+    val arrange = isArrangeId(sessionId)
     val session = remember(version) { db.countSession(sessionId) }
     var shelf by remember { mutableStateOf<String?>(null) }
     val lines = remember(version, shelf) { shelf?.let { db.countLines(sessionId, it) }.orEmpty() }
@@ -108,24 +113,24 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
     DisposableEffect(sessionId) { onDispose { vm.repo.discardEmptyLocal(sessionId) } }
 
     if (session == null) {
-        Screen("Sayım", online = online, onBack = { vm.back() }) { Hint("Sayım bulunamadı.") }
+        Screen(if (arrange) "Raf Düzenle" else "Sayım", online = online, onBack = { vm.back() }) { Hint(if (arrange) "Düzenleme bulunamadı." else "Sayım bulunamadı.") }
         return
     }
 
-    Screen(session.no, sub = "${session.title} · " + if (session.blind) "kör sayım" else "açık sayım", online = online, onBack = { vm.back() }, monoTitle = true, scrollKey = shelf, footer = {
+    Screen(session.no, sub = if (arrange) "Raf düzenleme" else "${session.title} · " + if (session.blind) "kör sayım" else "açık sayım", online = online, onBack = { vm.back() }, monoTitle = true, scrollKey = shelf, footer = {
         MessageBar(vm.message?.first, vm.message?.second == true)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             SecondaryButton("Sonraki raf", { shelf = null }, Modifier.weight(1f), enabled = shelf != null)
-            PrimaryButton("Sayımı bitir", { vm.go(Route.CountDiff(sessionId)) }, Modifier.weight(1f), enabled = shelves.isNotEmpty())
+            PrimaryButton(if (arrange) "Bitir" else "Sayımı bitir", { vm.go(Route.CountDiff(sessionId)) }, Modifier.weight(1f), enabled = shelves.isNotEmpty())
         }
     }) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(if (session.scope.isEmpty()) "Sayılan raf ${shelves.size}" else "${session.scope.joinToString(", ")} · ${scopeShelves.size - left.size} / ${scopeShelves.size} raf", fontSize = 13.sp, color = C.Text2)
+            Text(if (session.scope.isEmpty()) (if (arrange) "Düzenlenen raf ${shelves.size}" else "Sayılan raf ${shelves.size}") else "${session.scope.joinToString(", ")} · ${scopeShelves.size - left.size} / ${scopeShelves.size} raf", fontSize = 13.sp, color = C.Text2)
             Text("${fmt(scans)} okutma", fontSize = 13.sp, color = C.Text2)
         }
 
         if (shelf == null) {
-            ScanField("Raf okutun", "Sayacağınız rafın etiketi", true, vm.repo.prefs.cameraButton, { code ->
+            ScanField("Raf okutun", if (arrange) "Düzenleyeceğiniz rafın etiketi" else "Sayacağınız rafın etiketi", true, vm.repo.prefs.cameraButton, { code ->
                 val s = code.uppercase()
                 when {
                     !inScope(s) -> scopeError(s)
@@ -133,7 +138,7 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
                     else -> { shelf = s; vm.feedback.ok() }
                 }
             })
-            if (shelves.isNotEmpty()) Hint("Sayılan raflar: " + shelves.joinToString(", "))
+            if (shelves.isNotEmpty()) Hint((if (arrange) "Düzenlenen raflar: " else "Sayılan raflar: ") + shelves.joinToString(", "))
             if (left.isNotEmpty()) Hint("Bu cihazda sayılmayan: " + left.take(40).joinToString(", ") + if (left.size > 40) " … (+${left.size - 40})" else "")
         } else {
             Row(
@@ -141,7 +146,7 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("Şu an sayılan raf", color = C.BarSub, fontSize = 12.sp)
+                    Text(if (arrange) "Şu an düzenlenen raf" else "Şu an sayılan raf", color = C.BarSub, fontSize = 12.sp)
                     MonoText(shelf!!, size = 24, color = C.Accent)
                 }
                 Text("Raf değiştir", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.focusProperties { canFocus = false }.clickable { shelf = null }.padding(8.dp))
@@ -158,10 +163,10 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
             )
             if (lines.isEmpty() && shelf !in shelves) {
                 // Boş raf da sayılır: rafta sistemde görünen ürün varsa gönderilince 0'a çekilir.
-                SecondaryButton("Raf boş, sonraki raf", { vm.repo.markShelfEmpty(sessionId, shelf!!); vm.ok("$shelf boş sayıldı"); shelf = null })
+                SecondaryButton("Raf boş, sonraki raf", { vm.repo.markShelfEmpty(sessionId, shelf!!); vm.ok(if (arrange) "$shelf boş olarak işaretlendi" else "$shelf boş sayıldı"); shelf = null })
             }
             Card(padding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp)) {
-                Caption("Bu rafta sayılan")
+                Caption(if (arrange) "Bu rafta" else "Bu rafta sayılan")
                 if (lines.isEmpty()) Hint("Henüz ürün okutulmadı.", Modifier.padding(bottom = 10.dp))
                 // Okutulan satırların hepsi görünür: ada göre sıralı, yeni okutulan sınırın dışında kalmasın.
                 LimitedList(lines, { it.product.id }, limit = Int.MAX_VALUE) { l ->
@@ -176,7 +181,7 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
                 }
                 if (waiting.isNotEmpty()) {
                     Divider()
-                    Caption("Bu rafta beklenen, okutulmadı (${waiting.size})", Modifier.padding(top = 10.dp))
+                    Caption(if (arrange) "Sistemde bu rafta görünüyor, okutulmadı (${waiting.size}) · gönderince raftan çıkar" else "Bu rafta beklenen, okutulmadı (${waiting.size})", Modifier.padding(top = 10.dp))
                     LimitedList(waiting, { "w" + it.product.id }) { w ->
                         Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Column(Modifier.weight(1f)) {
@@ -196,29 +201,34 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
 @Composable
 fun CountDiffScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
     val db = vm.repo.db
+    // Raf Düzenle aynı sonuç ekranını kullanır; metinler "sayım" demeden "düzenleme" der.
+    val arrange = isArrangeId(sessionId)
     val session = remember(version) { db.countSession(sessionId) }
     val diffs = remember(version) { vm.repo.countDiffs(sessionId) }
     val changed = diffs.filter { it.diff != 0.0 }
     // Boş sayılan raflar: farkı yoksa listede görünmez ama gönderilir (yöneticide sayıldı olarak işaretlenir).
     val shelves = remember(version) { db.countedShelves(sessionId) }
     val emptyShelves = shelves.filter { s -> diffs.none { it.shelf == s } }
+    // Raf Düzenle onayı: rafa yazılacak (yeni ya da değişen miktar) ve raftan çıkacak (rafta görünüp okutulmayan) ürün sayısı.
+    val written = diffs.count { it.counted > 0 && it.diff != 0.0 }
+    val removed = diffs.count { it.counted <= 0 && it.system > 0 }
     var confirm by remember { mutableStateOf(false) }
 
-    Screen("Sayım sonucu", sub = session?.let { "${it.no} · ${it.title}" }, online = online, onBack = { vm.back() }, footer = {
+    Screen(if (arrange) "Düzenleme özeti" else "Sayım sonucu", sub = session?.let { "${it.no}" + if (arrange) "" else " · ${it.title}" }, online = online, onBack = { vm.back() }, footer = {
         MessageBar(vm.message?.first, vm.message?.second == true)
-        if (changed.isNotEmpty()) SecondaryButton("Sayıma dön, farklı kalemleri tekrar say", { vm.back() })
-        PrimaryButton("Sayımı gönder", { confirm = true }, enabled = session != null && shelves.isNotEmpty())
+        if (changed.isNotEmpty()) SecondaryButton(if (arrange) "Düzenlemeye dön" else "Sayıma dön, farklı kalemleri tekrar say", { vm.back() })
+        PrimaryButton(if (arrange) "Düzenlemeyi kaydet" else "Sayımı gönder", { confirm = true }, enabled = session != null && shelves.isNotEmpty())
     }) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Stat("Kalem", diffs.size, Modifier.weight(1f))
-            Stat("Eşleşen", diffs.size - changed.size, Modifier.weight(1f))
-            Stat("Farklı", changed.size, Modifier.weight(1f), warn = changed.isNotEmpty())
+            Stat(if (arrange) "Aynı" else "Eşleşen", diffs.size - changed.size, Modifier.weight(1f))
+            Stat(if (arrange) "Değişen" else "Farklı", changed.size, Modifier.weight(1f), warn = changed.isNotEmpty())
         }
         Card(padding = PaddingValues(start = 12.dp, end = 12.dp, top = 10.dp)) {
             Row(Modifier.fillMaxWidth()) {
                 Caption("Ürün · raf", Modifier.weight(1f))
-                Caption("Sistem", Modifier.width(52.dp))
-                Caption("Sayılan", Modifier.width(60.dp))
+                Caption(if (arrange) "Önce" else "Sistem", Modifier.width(52.dp))
+                Caption(if (arrange) "Sonra" else "Sayılan", Modifier.width(60.dp))
                 Caption("Fark", Modifier.width(44.dp))
             }
             // Farklı kalemler başta sıralıdır; çok uzun sayımda kalanı "Daha fazla göster" ile açılır.
@@ -243,22 +253,28 @@ fun CountDiffScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String)
                 }
             }
         }
-        if (emptyShelves.isNotEmpty()) Hint("Boş sayılan raf (${emptyShelves.size}): " + emptyShelves.take(30).joinToString(", ") + if (emptyShelves.size > 30) " …" else "")
-        Notice("Gönderilen sayım yönetici programında onaylanınca farklar Vega'ya sayım fişi olarak işlenir.", Tone.Info)
+        if (emptyShelves.isNotEmpty()) Hint((if (arrange) "Boş bırakılan raf (" else "Boş sayılan raf (") + "${emptyShelves.size}): " + emptyShelves.take(30).joinToString(", ") + if (emptyShelves.size > 30) " …" else "")
+        if (arrange) Notice("Okutulmayan ürünler raftan çıkar. Yalnız raf bilgisi güncellenir; Vega stoku değişmez, onay beklenmez.", Tone.Info)
+        else Notice("Gönderilen sayım yönetici programında onaylanınca farklar Vega'ya sayım fişi olarak işlenir.", Tone.Info)
     }
 
     if (confirm && session != null) {
         AlertDialog(
             onDismissRequest = { confirm = false },
-            title = { Text("Sayım gönderilsin mi?") },
-            text = { Text("${shelves.size} raf, ${diffs.size} kalem, ${changed.size} farklı. Gönderdikten sonra bu sayımda değişiklik yapılamaz.") },
+            title = { Text(if (arrange) "${shelves.size} raf düzenlensin mi?" else "Sayım gönderilsin mi?") },
+            text = {
+                Text(
+                    if (arrange) "$written ürün rafa yazılacak, $removed ürün raftan çıkacak. Kaydettikten sonra bu düzenlemede değişiklik yapılamaz."
+                    else "${shelves.size} raf, ${diffs.size} kalem, ${changed.size} farklı. Gönderdikten sonra bu sayımda değişiklik yapılamaz.",
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     confirm = false
                     vm.repo.submitCount(session, vm.userName)
-                    vm.saved("Sayım gönderilmek üzere kuyruğa alındı")
+                    vm.saved(if (arrange) "Raf düzenleme kuyruğa alındı" else "Sayım gönderilmek üzere kuyruğa alındı")
                     vm.stack.removeAll { it is Route.Count || it is Route.CountDiff }
-                }) { Text("Gönder") }
+                }) { Text(if (arrange) "Kaydet" else "Gönder") }
             },
             dismissButton = { TextButton(onClick = { confirm = false }) { Text("Vazgeç") } },
         )

@@ -35,6 +35,7 @@ import tr.arcteknik.depo.data.Perm
 import tr.arcteknik.depo.data.Repo
 import tr.arcteknik.depo.data.TransferLine
 import tr.arcteknik.depo.data.User
+import tr.arcteknik.depo.data.isArrangeId
 import tr.arcteknik.depo.diag.Diag
 import tr.arcteknik.depo.sync.LockInfo
 import tr.arcteknik.depo.sync.UserActivity
@@ -201,7 +202,10 @@ class AppVm(app: Application) : AndroidViewModel(app) {
         Route.Receipts, is Route.PutAway, is Route.PutAwayProduct -> listOf(Perm.PUTAWAY)
         Route.Pick -> listOf(Perm.PICK)
         is Route.Transfer -> listOf(Perm.TRANSFER)
-        Route.Counts, is Route.Count, is Route.CountDiff -> listOf(Perm.COUNT, Perm.COUNT_FREE)
+        Route.Counts -> listOf(Perm.COUNT, Perm.COUNT_FREE)
+        // Raf Düzenle sayım ekranlarını kullanır ama kendi iznine bağlıdır (Perm.SHELF_ARRANGE).
+        is Route.Count -> if (isArrangeId(r.sessionId)) listOf(Perm.SHELF_ARRANGE) else listOf(Perm.COUNT, Perm.COUNT_FREE)
+        is Route.CountDiff -> if (isArrangeId(r.sessionId)) listOf(Perm.SHELF_ARRANGE) else listOf(Perm.COUNT, Perm.COUNT_FREE)
         Route.SendDepot -> listOf(Perm.DEPOT_SEND)
         Route.ReceiveList, is Route.ReceiveDoc -> listOf(Perm.DEPOT_RECEIVE)
         else -> null

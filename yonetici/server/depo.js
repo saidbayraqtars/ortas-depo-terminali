@@ -806,6 +806,9 @@ function islemUygula(op, cihaz, kullanici) {
       if (String(p.sessionId || '').startsWith('LOCAL-')) yetkiDenetle('count_free');
       sayimKaydet(op, p, { ...h, ts: now() }, ts, yetkiDenetle);
       return;
+    case 'SHELF_ARRANGE':
+      rafDuzenle(p, { ...h, ts: now() }, ts, yetkiDenetle);
+      return;
     case 'SHELF_ADD': {
       // Terminalde okutulan tanımsız raf etiketi orada raf olarak eklenir.
       const kod = rafKodu(p.code);
@@ -856,13 +859,7 @@ function sayimKaydet(op, p, h, olusturma, yetkiDenetle = () => {}) {
   const depo = s.depo;
   yetkiDenetle(null, depo);
   const ref = s.no;
-  const raflar = [...new Set((p.shelves || []).map(rafKodu).filter(Boolean))];
-  // Vega'da olmayan ürün satırı (demo verisi) yok sayılır; sayımın geri kalanı geçerli.
-  const satirlar = (Array.isArray(p.lines) ? p.lines : []).filter((l) => !goruntu || urun(String(l.productId)));
-  for (const l of satirlar) {
-    const raf = rafKodu(l.shelf);
-    if (raf && !raflar.includes(raf)) raflar.push(raf);
-  }
+  const { raflar, satirlar } = rafGonderimi(p);
   for (const raf of raflar) {
     if (!rafVarMi(depo, raf)) rafEkle(depo, raf, { source: 'TERMINAL', note: 'Sayımdan geldi' });
     db.run(
@@ -874,23 +871,7 @@ function sayimKaydet(op, p, h, olusturma, yetkiDenetle = () => {}) {
       h.device,
       now(),
     );
-    const sayilan = new Map();
-    for (const l of satirlar.filter((x) => rafKodu(x.shelf) === raf)) {
-      const pid = String(l.productId);
-      sayilan.set(pid, { counted: Math.max(0, sayi(l.counted, 'Sayılan')), system: Number(l.system) || 0 });
-    }
-    // Rafta sunucuya göre olup terminalin bilmediği ürün: sayımdan önce yerleştiyse sayılmadı = 0 demektir;
-    // sayımdan sonra yerleştiyse (başka terminal) dokunulmaz.
-    for (const loc of db.all('SELECT product_id, qty, updated_at FROM location WHERE depo=? AND shelf=?', depo, raf)) {
-      if (!sayilan.has(loc.product_id) && loc.updated_at <= olusturma) sayilan.set(loc.product_id, { counted: 0, system: 0 });
-    }
-    for (const [pid, x] of sayilan) {
-      const once = miktar(depo, pid, raf);
-      miktarAyarla(depo, pid, raf, x.counted, { ...h, kind: 'COUNT', ref });
-      // Rafta bulunan ve hiçbir adresi olmayan ürünün adresi o raf olur; rafta olmadığı sayılan ürünün terminal adresi kalkar.
-      if (x.counted > EPS) {
-        if (!zimmetler(depo, pid).length) terminalZimmet(depo, pid, raf);
-      } else terminalZimmetBosalt(depo, pid, raf);
+    rafiOkutulanaCek(depo, raf, satirlar, olusturma, { ...h, kind: 'COUNT', ref }, (pid, x, once) => {
       db.run(
         `INSERT INTO count_line(session_id, shelf, product_id, terminal_system, server_before, counted, user, device, submitted_at)
          VALUES(?,?,?,?,?,?,?,?,?)
@@ -907,7 +888,66 @@ function sayimKaydet(op, p, h, olusturma, yetkiDenetle = () => {}) {
         h.device,
         now(),
       );
-    }
+    });
+  }
+}
+
+/**
+ * Terminalin sayım / raf düzenleme gönderimindeki raflar ve satırlar. Vega'da olmayan ürün satırı (demo verisi) yok
+ * sayılır; gönderimin geri kalanı geçerli. Satırı olup `shelves`'te yazmayan raf da gönderilmiş sayılır.
+ */
+function rafGonderimi(p) {
+  const raflar = [...new Set((p.shelves || []).map(rafKodu).filter(Boolean))];
+  const satirlar = (Array.isArray(p.lines) ? p.lines : []).filter((l) => !goruntu || urun(String(l.productId)));
+  for (const l of satirlar) {
+    const raf = rafKodu(l.shelf);
+    if (raf && !raflar.includes(raf)) raflar.push(raf);
+  }
+  return { raflar, satirlar };
+}
+
+/**
+ * Rafın içeriğini terminalde okutulan değere çeker (sayım ve raf düzenleme ortak). `kaydet(pid, {counted, system}, once)`
+ * her ürün için çağrılır (sayım satır kaydını burada tutar).
+ */
+function rafiOkutulanaCek(depo, raf, satirlar, olusturma, hareket, kaydet = null) {
+  const sayilan = new Map();
+  for (const l of satirlar.filter((x) => rafKodu(x.shelf) === raf)) {
+    const pid = String(l.productId);
+    sayilan.set(pid, { counted: Math.max(0, sayi(l.counted, 'Sayılan')), system: Number(l.system) || 0 });
+  }
+  // Rafta sunucuya göre olup terminalin bilmediği ürün: gönderimden önce yerleştiyse okutulmadı = 0 demektir;
+  // sonra yerleştiyse (başka terminal) dokunulmaz.
+  for (const loc of db.all('SELECT product_id, qty, updated_at FROM location WHERE depo=? AND shelf=?', depo, raf)) {
+    if (!sayilan.has(loc.product_id) && loc.updated_at <= olusturma) sayilan.set(loc.product_id, { counted: 0, system: 0 });
+  }
+  for (const [pid, x] of sayilan) {
+    const once = miktar(depo, pid, raf);
+    miktarAyarla(depo, pid, raf, x.counted, hareket);
+    // Rafta bulunan ve hiçbir adresi olmayan ürünün adresi o raf olur; rafta olmadığı bildirilen ürünün terminal adresi kalkar.
+    if (x.counted > EPS) {
+      if (!zimmetler(depo, pid).length) terminalZimmet(depo, pid, raf);
+    } else terminalZimmetBosalt(depo, pid, raf);
+    if (kaydet) kaydet(pid, x, once);
+  }
+}
+
+/**
+ * Raf düzenleme (terminalde "Raf Düzenle"): firma sıfırdan başlamıyor, rafta duran mal rafa tanımlanır. Raf stoku okutulan
+ * değere çekilir (rafta olup okutulmayan ürün raftan çıkar), adresi olmayan ürünün adresi o raf olur. Sayımdan farkı: sayım
+ * oturumu açılmaz, yönetici onayı beklenmez, Vega'ya hiçbir şey yazılmaz (yalnız raf stoku ve KOD10 raf adresi).
+ */
+function rafDuzenle(p, h, olusturma, yetkiDenetle) {
+  const depo = depoCoz(p.depot);
+  yetkiDenetle(null, depo);
+  const { raflar, satirlar } = rafGonderimi(p);
+  if (!raflar.length) throw new Ret('Düzenlenecek raf yok');
+  const gecersiz = raflar.find((r) => !rafKoduGecerli(r));
+  if (gecersiz) throw new Ret(`Geçersiz raf kodu: ${gecersiz}`);
+  const ref = String(p.no || 'Raf düzenleme').slice(0, 60);
+  for (const raf of raflar) {
+    if (!rafVarMi(depo, raf)) rafEkle(depo, raf, { source: 'TERMINAL', note: 'Raf düzenlemeden geldi' });
+    rafiOkutulanaCek(depo, raf, satirlar, olusturma, { ...h, kind: 'ARRANGE', ref });
   }
 }
 

@@ -228,7 +228,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 8) {
             val lines = p.optJSONArray("lines")
             for (i in 0 until (lines?.length() ?: 0)) lines!!.getJSONObject(i).optString("productId").takeIf { it.isNotBlank() }?.let { ids += it }
         }
-        if (op.type == OpType.COUNT_SUBMIT || (ids.isEmpty() && op.type != OpType.SHELF_ADD)) return clearMasterParts()
+        if (op.type == OpType.COUNT_SUBMIT || op.type == OpType.SHELF_ARRANGE || (ids.isEmpty() && op.type != OpType.SHELF_ADD)) return clearMasterParts()
         val w = writableDatabase
         w.delete("master_part", "key IN ('head', 'shelves')", null)
         for (b in ids.map { Buckets.of(it) }.toSet()) w.delete("master_part", "key=? OR key=?", arrayOf("b$b", "q$b"))
@@ -688,9 +688,13 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 8) {
         }
     }
 
-    /** Çalışılan depodaki açık sayımlar. */
+    /** Çalışılan depodaki açık sayımlar (Raf Düzenle oturumları sayım değildir, listede görünmez). */
     fun countSessions(): List<CountSession> =
-        query("SELECT id, no, title, blind, status, depot, scope FROM count_session WHERE status='OPEN' AND depot=? ORDER BY no DESC", depot.toString()) { it.countSession() }
+        query("SELECT id, no, title, blind, status, depot, scope FROM count_session WHERE status='OPEN' AND depot=? AND id NOT LIKE '$ARRANGE_PREFIX%' ORDER BY no DESC", depot.toString()) { it.countSession() }
+
+    /** Çalışılan depoda yarım kalmış (henüz gönderilmemiş) Raf Düzenle oturumu; yoksa null. */
+    fun openArrange(): CountSession? =
+        query("SELECT id, no, title, blind, status, depot, scope FROM count_session WHERE status='OPEN' AND depot=? AND id LIKE '$ARRANGE_PREFIX%' ORDER BY rowid DESC LIMIT 1", depot.toString()) { it.countSession() }.firstOrNull()
 
     fun countSession(id: String): CountSession? =
         query("SELECT id, no, title, blind, status, depot, scope FROM count_session WHERE id=?", id) { it.countSession() }.firstOrNull()

@@ -15,6 +15,7 @@ const IZINLER = [
   { id: 'transfer', grup: 'Raf işlemleri', ad: 'Raf transferi', not: 'Raftan rafa taşıma' },
   { id: 'shelf_add', grup: 'Raf işlemleri', ad: 'Terminalden raf ekle' },
   { id: 'home_remove', grup: 'Raf işlemleri', ad: 'Ürünün raf adresini sil' },
+  { id: 'shelf_arrange', grup: 'Raf işlemleri', ad: 'Raf düzenle', not: 'Rafta duran malı rafa tanımlar; Vega\'ya yazılmaz, onay beklemez' },
   { id: 'count', grup: 'Sayım', ad: 'Sayım gönder', not: 'Yönetici programında açılan sayıma raf sayımı gönderir' },
   { id: 'count_free', grup: 'Sayım', ad: 'Serbest sayım başlat', not: 'Terminalde kendiliğinden sayım açar' },
   { id: 'depot_send', grup: 'Depolar arası', ad: 'Depoya gönder', not: 'Vega\'ya depo gönderim fişi (128) yazılır' },
@@ -28,7 +29,7 @@ const IZIN_AD = new Map(IZINLER.map((i) => [i.id, i.ad]));
 /** Hazır izin kümeleri; yalnız formu doldurur, kayda `role` olarak yazılır ama geçerli olan kullanıcıdaki izin listesidir. */
 const SABLONLAR = [
   { id: 'tam', ad: 'Tam yetkili', izinler: '*' },
-  { id: 'depocu', ad: 'Depo görevlisi', izinler: ['putaway', 'pick', 'transfer', 'shelf_add', 'home_remove', 'count', 'label', 'queue_manage'] },
+  { id: 'depocu', ad: 'Depo görevlisi', izinler: ['putaway', 'pick', 'transfer', 'shelf_add', 'home_remove', 'shelf_arrange', 'count', 'label', 'queue_manage'] },
   { id: 'sube', ad: 'Şube deposu (kendi deposu)', izinler: ['putaway', 'pick', 'transfer', 'count', 'depot_send', 'depot_receive', 'label'] },
   { id: 'sevkiyat', ad: 'Sevkiyat', izinler: ['pick', 'transfer', 'depot_send', 'depot_receive', 'label'] },
   { id: 'sayim', ad: 'Sayım', izinler: ['count', 'count_free'] },
@@ -44,6 +45,7 @@ const ISLEM_IZNI = {
   TRANSFER: 'transfer',
   SHELF_ADD: 'shelf_add',
   HOME_REMOVE: 'home_remove',
+  SHELF_ARRANGE: 'shelf_arrange',
   COUNT_SUBMIT: 'count',
   TRANSFER_SEND: 'depot_send',
   TRANSFER_RECEIVE: 'depot_receive',
