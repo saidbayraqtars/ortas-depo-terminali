@@ -377,21 +377,37 @@ class Repo(val db: Db, val prefs: Prefs) {
         changed()
     }
 
+    /**
+     * Okutma: satırın miktarını `delta` kadar artırır. Raf Düzenle'de ("okutulmayan ürünler yerinde kalsın" açıkken) ürünün satırı
+     * ilk okutmada rafta olan adetten başlar, yani okutulan adet rafta olana eklenir; sonradan miktar elle düzeltilebilir.
+     * Sayımda ve anahtar kapalıyken satır 0'dan başlar (raf okutulana eşitlenir).
+     */
     fun addCount(sessionId: String, shelf: String, product: Product, delta: Double) {
         val s = shelf.uppercase()
-        val cur = db.scalar("SELECT qty FROM count_line WHERE session_id=? AND shelf=? AND product_id=?", sessionId, s, product.id)?.toDoubleOrNull()
-        val next = ((cur ?: 0.0) + delta).coerceAtLeast(0.0)
-        val w = db.writableDatabase
-        if (cur == null) {
-            w.execSQL("INSERT INTO count_line(session_id, shelf, product_id, qty) VALUES(?,?,?,?)", arrayOf<Any>(sessionId, s, product.id, next))
-        } else {
-            w.execSQL("UPDATE count_line SET qty=? WHERE session_id=? AND shelf=? AND product_id=?", arrayOf<Any>(next, sessionId, s, product.id))
-        }
-        changed()
+        val cur = countQty(sessionId, s, product.id)
+        val start = cur ?: if (isArrangeId(sessionId) && prefs.arrangeKeepOthers) {
+            db.qtyAt(product.id, s, db.countSession(sessionId)?.depot ?: db.depot)
+        } else 0.0
+        putCount(sessionId, s, product, (start + delta).coerceAtLeast(0.0), cur != null)
     }
 
+    /** Satırın miktarını doğrudan yazar (miktar kutusundan); rafta olan adet eklenmez. */
     fun setCount(sessionId: String, shelf: String, product: Product, qty: Double) {
-        addCount(sessionId, shelf, product, qty - (db.scalar("SELECT qty FROM count_line WHERE session_id=? AND shelf=? AND product_id=?", sessionId, shelf.uppercase(), product.id)?.toDoubleOrNull() ?: 0.0))
+        val s = shelf.uppercase()
+        putCount(sessionId, s, product, qty.coerceAtLeast(0.0), countQty(sessionId, s, product.id) != null)
+    }
+
+    private fun countQty(sessionId: String, shelf: String, productId: String): Double? =
+        db.scalar("SELECT qty FROM count_line WHERE session_id=? AND shelf=? AND product_id=?", sessionId, shelf, productId)?.toDoubleOrNull()
+
+    private fun putCount(sessionId: String, shelf: String, product: Product, qty: Double, exists: Boolean) {
+        val w = db.writableDatabase
+        if (exists) {
+            w.execSQL("UPDATE count_line SET qty=? WHERE session_id=? AND shelf=? AND product_id=?", arrayOf<Any>(qty, sessionId, shelf, product.id))
+        } else {
+            w.execSQL("INSERT INTO count_line(session_id, shelf, product_id, qty) VALUES(?,?,?,?)", arrayOf<Any>(sessionId, shelf, product.id, qty))
+        }
+        changed()
     }
 
     /**

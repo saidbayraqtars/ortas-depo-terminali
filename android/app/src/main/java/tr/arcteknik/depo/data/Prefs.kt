@@ -69,8 +69,9 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putString("updatePath", v).apply()
 
     /**
-     * Raf Düzenle: okutulmayan ürüne dokunulmaz (varsayılan). Kapalıyken raf okutulana eşitlenir, rafta olup okutulmayan ürün çıkar.
-     * Cihaz tercihidir; her düzenleme gönderilirken `keepOthers` olarak sunucuya gider.
+     * Raf Düzenle: okutulan adet rafta olanın üstüne eklenir, okutulmayan ürüne dokunulmaz (varsayılan). Kapalıyken satır 0'dan
+     * başlar, raf okutulana eşitlenir ve rafta olup okutulmayan ürün çıkar. Cihaz tercihidir; her düzenleme gönderilirken
+     * `keepOthers` olarak sunucuya gider (sunucu her durumda satırdaki toplamı yazar; eklemeyi terminal hesaplar).
      */
     var arrangeKeepOthers: Boolean
         get() = sp.getBoolean("arrangeKeepOthers", true)

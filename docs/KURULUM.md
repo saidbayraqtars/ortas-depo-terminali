@@ -117,8 +117,8 @@ yerine ad yazılırsa da aynı liste açılır. Ürün kodu da okutulabilir ya d
 
 - **Raf Düzenle** (ana menü): firma sıfırdan başlamıyor, rafta duran mal var; raf stoku henüz yok. Depocu rafı okutur,
   rafta duran ürünleri okutur (her okutma +1, miktar elle düzeltilir), sonraki rafa geçer, sonunda **Düzenlemeyi kaydet** der.
-  Okutulan ürünün raf stoku okutulan değere çekilir (toplanmaz, eşitlenir). **Okutulmayan ürünler yerinde kalsın** anahtarı açıkken
-  (1.12.0+, varsayılan) rafta duran diğer ürünlere dokunulmaz; kapalıyken raf okutulana eşitlenir ve okutulmayan ürün raftan
+  **Okutulmayan ürünler yerinde kalsın** anahtarı açıkken okutulan adet rafta olanın üstüne eklenir (rafta 12 varken 2 okutulursa 14 olur; satırın altında "Rafta vardı 12" yazar, toplam miktar elle düzeltilebilir)
+  ve rafta duran diğer ürünlere dokunulmaz (1.12.0+, varsayılan); kapalıyken satır 0'dan başlar, raf okutulana eşitlenir ve okutulmayan ürün raftan
   çıkar (ekran bunu önceden listeler). Ürünü rafta silmek için miktarını 0 yapın ya da hiç ürün okutmadan **Raf boş** deyin;
   adresi olmayan ürünün adresi o raf olur. **Sayım oturumu açılmaz, yönetici onayı gerekmez, Vega'ya hiçbir şey yazılmaz**
   (raf adresi KOD10'a yazılması açıksa yazılır). Yetki: Kullanıcılar › **Raf düzenle** izni (Depo görevlisi şablonunda var;

@@ -102,11 +102,13 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
     var shelf by remember { mutableStateOf<String?>(null) }
     val lines = remember(version, shelf) { shelf?.let { db.countLines(sessionId, it) }.orEmpty() }
     // Rafta olması gereken (raf stoku ya da zimmet) ama bu sayımda henüz okutulmayan ürünler.
-    val waiting = remember(version, shelf, session?.depot) {
-        val s = shelf ?: return@remember emptyList()
+    val contents = remember(version, shelf, session?.depot) { shelf?.let { db.shelfContents(it, session?.depot ?: db.depot) }.orEmpty() }
+    val waiting = remember(contents, lines) {
         val counted = lines.map { it.product.id }.toSet()
-        db.shelfContents(s, session?.depot ?: db.depot).filter { it.product.id !in counted }
+        contents.filter { it.product.id !in counted }
     }
+    // Raf Düzenle: satırın altında rafta daha önce kaç adet olduğu yazar (okutulan, üstüne eklenir).
+    val onShelf = remember(contents) { contents.filter { it.qty > 0 }.associate { it.product.id to it.qty } }
     val shelves = remember(version) { db.countedShelves(sessionId) }
     val scopeShelves = remember(version, session?.scope) { session?.let { db.scopeShelves(it) }.orEmpty() }
     val left = remember(scopeShelves, shelves) { scopeShelves.filter { it !in shelves.toSet() } }
@@ -134,7 +136,7 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
         if (arrange) {
             Toggle(
                 "Okutulmayan ürünler yerinde kalsın",
-                if (keep) "Yalnız okutulan ürünler rafa yazılır" else "Raf okutulana eşitlenir; okutulmayan ürün raftan çıkar",
+                if (keep) "Okutulan adet rafta olana eklenir; okutulmayan ürün yerinde kalır" else "Raf okutulana eşitlenir; okutulmayan ürün raftan çıkar",
                 keep,
             ) { keep = it; vm.repo.prefs.arrangeKeepOthers = it }
         }
@@ -162,7 +164,7 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
                 Text("Raf değiştir", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.focusProperties { canFocus = false }.clickable { shelf = null }.padding(8.dp))
             }
             ProductScanField(
-                vm, "Ürün okutun", "Her okutma 1 adet ekler; miktar aşağıdan da yazılır",
+                vm, "Ürün okutun", if (arrange && keep) "Her okutma rafta olana 1 adet ekler; toplam aşağıdan da düzeltilir" else "Her okutma 1 adet ekler; miktar aşağıdan da yazılır",
                 onProduct = { p -> vm.repo.addCount(sessionId, shelf!!, p, 1.0); vm.feedback.ok() },
                 onOther = { code ->
                     val s = code.uppercase()
@@ -185,6 +187,7 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
                         Column(Modifier.weight(1f)) {
                             Text(l.product.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
                             MonoText(l.product.code, size = 12, weight = FontWeight.Medium, color = C.Muted)
+                            if (arrange) onShelf[l.product.id]?.let { Text("Rafta vardı ${fmt(it)}", fontSize = 12.sp, color = C.Muted) }
                         }
                         QtyStepper(l.qty, { vm.repo.setCount(sessionId, shelf!!, l.product, it) }, small = true)
                     }
@@ -272,11 +275,11 @@ fun CountDiffScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String)
         if (arrange) {
             Toggle(
                 "Okutulmayan ürünler yerinde kalsın",
-                if (keep) "Yalnız okutulan ürünler rafa yazılır" else "Raf okutulana eşitlenir; okutulmayan ürün raftan çıkar",
+                if (keep) "Okutulan adet rafta olana eklenir; okutulmayan ürün yerinde kalır" else "Raf okutulana eşitlenir; okutulmayan ürün raftan çıkar",
                 keep,
             ) { keep = it; vm.repo.prefs.arrangeKeepOthers = it }
             Notice(
-                (if (keep) "Okutulmayan ürünler raftan çıkmaz." else "Okutulmayan ürünler raftan çıkar.") + " Yalnız raf bilgisi güncellenir; Vega stoku değişmez, onay beklenmez.",
+                (if (keep) "Okutulan adetler rafta olanın üstüne eklendi; okutulmayan ürünler raftan çıkmaz." else "Okutulmayan ürünler raftan çıkar.") + " Yalnız raf bilgisi güncellenir; Vega stoku değişmez, onay beklenmez.",
                 Tone.Info,
             )
         }

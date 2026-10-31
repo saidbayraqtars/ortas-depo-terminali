@@ -52,7 +52,7 @@ Terminal önce çevrimdışı düşünülmüştür: ürün ve raf listesi cihazd
 
 - **Rafa kaldırma:** belgeyi seç, rafı okut, ürünleri peş peşe okut (her okutma 1 adet, adet girilmez). Belgesi olmayan stok da ürün okutarak kaldırılır. Ürün başka rafta duruyorsa titreşim ve ses ile uyarır.
 - **Raftan al, raf transferi, ürün ve raf sorgu:** ürünün hangi rafta kaç adet durduğu, Vega stokuyla farkı, son hareketleri.
-- **Raf Düzenle:** firma sıfırdan başlamıyorsa rafta duran mal, rafı ve ürünleri okutarak rafa tanımlanır. Onay beklemez, Vega'ya yazılmaz (yalnız raf stoku ve ürünün raf adresi). Okutulmayan ürünler varsayılan olarak rafta kalır.
+- **Raf Düzenle:** firma sıfırdan başlamıyorsa rafta duran mal, rafı ve ürünleri okutarak rafa tanımlanır. Onay beklemez, Vega'ya yazılmaz (yalnız raf stoku ve ürünün raf adresi). Varsayılan olarak okutulan adet rafta olana eklenir ve okutulmayan ürünler rafta kalır.
 - **Sayım:** raf, kat ya da bölge kapsamlı veya tam sayım; kör sayım seçeneği.
 - **Depolar arası transfer:** Vega depo gönderim ve gönderim kabul fişleri terminalden yazılır; kısmi kabul, eksik kaydı.
 - **İsimle arama:** barkodu okunmayan ürün, yazım hatası olsa da bulunur.
