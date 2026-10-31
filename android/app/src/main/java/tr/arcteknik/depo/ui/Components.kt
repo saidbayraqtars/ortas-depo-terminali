@@ -329,7 +329,7 @@ fun ScanField(
     val scope = rememberCoroutineScope()
 
     fun submit(v: String, rescued: Boolean = false) {
-        val c = v.trim()
+        val c = ScanBus.clean(v)
         text = ""
         ScanKeys.clearShadow()
         if (c.isEmpty()) return

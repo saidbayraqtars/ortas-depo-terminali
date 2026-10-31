@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -27,11 +28,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -53,38 +56,72 @@ import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.withContext
 import tr.arcteknik.depo.data.Product
 import tr.arcteknik.depo.data.Repo.Companion.fmt
+import tr.arcteknik.depo.diag.Diag
+import tr.arcteknik.depo.scan.ScanBus
 
 /**
  * Barkodu okunmayan ya da etiketi olmayan ürün için: adın bir kısmını yazınca benzer adlar listelenir
  * (yazım hatası, Türkçe harf farkı tolere edilir).
  */
 @Composable
-fun ProductSearchDialog(vm: AppVm, initial: String, note: String?, onPick: (Product) -> Unit, onDismiss: () -> Unit) {
+fun ProductSearchDialog(
+    vm: AppVm,
+    initial: String,
+    note: String?,
+    onPick: (Product) -> Unit,
+    onDismiss: () -> Unit,
+    /**
+     * Pencere açıkken gelen okutma (yayın modundaki okuyucu). Altındaki okutma alanı pasif olduğundan okutmayı bu pencere alır:
+     * true dönerse okutma işlendi (pencere kapanır), false dönerse okunan metin arama kutusuna yazılır.
+     */
+    onScan: ((String) -> Boolean)? = null,
+) {
     var q by remember { mutableStateOf(TextFieldValue(initial, TextRange(initial.length))) }
     var results by remember { mutableStateOf<List<Product>?>(null) }
+    var searching by remember { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
+    val scanHandler by rememberUpdatedState(onScan)
 
     LaunchedEffect(Unit) {
+        Diag.crumb("isimle ara açıldı" + if (initial.isNotEmpty()) ": $initial" else "")
         runCatching { focus.requestFocus() }
         delay(150)
         keyboard?.show()
     }
+    // Okutma alanı pencere açıkken pasif: yayın modundaki okuyucunun okuması burada karşılanmazsa sessizce kaybolur ve ekran "takılı" kalır.
+    LaunchedEffect(Unit) {
+        ScanBus.scans.collect { code ->
+            if (scanHandler?.invoke(code) != true) {
+                vm.feedback.error()
+                q = TextFieldValue(code, TextRange(code.length))
+            }
+        }
+    }
     LaunchedEffect(q.text) {
-        if (q.text.isNotBlank()) delay(250)
-        results = if (q.text.isBlank()) null else withContext(Dispatchers.Default) { val ctx = coroutineContext; vm.repo.db.searchProducts(q.text, cancelled = { !ctx.isActive }) }
+        if (q.text.isBlank()) {
+            results = null
+            searching = false
+            return@LaunchedEffect
+        }
+        delay(250)
+        // Yavaş terminalde (Sunmi L2K, 130 bin ürün) arama 3 sn sürüyor; sonuç gelene kadar bir şey olmadığı sanılmasın.
+        searching = true
+        results = withContext(Dispatchers.Default) { val ctx = coroutineContext; vm.repo.db.searchProducts(q.text, cancelled = { !ctx.isActive }) }
+        searching = false
     }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(Modifier.fillMaxSize().background(C.Ground).imePadding()) {
             Row(
-                Modifier.fillMaxWidth().height(56.dp).background(C.Bar).padding(start = 16.dp, end = 4.dp),
+                Modifier.fillMaxWidth().height(56.dp).background(C.Bar).padding(start = 4.dp, end = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("İsimle ara", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, modifier = Modifier.weight(1f))
-                IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) {
-                    Icon(Ic.Back, contentDescription = "Kapat", tint = Color.White, modifier = Modifier.size(22.dp))
+                // Geri oku öbür ekranlardaki gibi solda; odak almaz (okuyucunun Enter'ı ona basmasın, bkz. TopBar).
+                IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp).focusProperties { canFocus = false }) {
+                    Icon(Ic.Back, contentDescription = "Geri", tint = Color.White, modifier = Modifier.size(22.dp))
                 }
+                Text("İsimle ara", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, modifier = Modifier.weight(1f))
             }
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (note != null) Notice(note, Tone.Warn)
@@ -104,12 +141,17 @@ fun ProductSearchDialog(vm: AppVm, initial: String, note: String?, onPick: (Prod
                             textStyle = TextStyle(fontFamily = Sans, fontSize = 17.sp, color = C.Ink),
                             cursorBrush = SolidColor(C.Ink),
                             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, imeAction = ImeAction.Search),
+                            // Klavye modundaki okuyucu kodu yazıp Enter basar: tam barkod/kod eşleşirse ürün seçilir.
+                            keyboardActions = KeyboardActions(onSearch = {
+                                vm.repo.db.findProduct(ScanBus.clean(q.text))?.let { keyboard?.hide(); onPick(it) }
+                            }),
                             modifier = Modifier.fillMaxWidth().focusRequester(focus),
                         )
                     }
                 }
                 val r = results
                 when {
+                    searching -> Hint("Aranıyor…")
                     r == null -> Hint("Adın bir kısmını yazın. Birkaç kelime yazılabilir; harf hatası olsa da yakın adlar çıkar.")
                     r.isEmpty() -> Hint("Benzer ad bulunamadı. Daha kısa ya da farklı bir kelime deneyin.")
                     else -> Hint("${r.size} sonuç" + if (r.size >= 40) " (ilk 40)" else "")
@@ -154,11 +196,17 @@ fun ProductScanField(
     showSearchLink: Boolean = true,
 ) {
     var search by remember { mutableStateOf<Pair<String, String?>?>(null) }
-    ScanField(title, hint, search == null, vm.repo.prefs.cameraButton, onTextChange = onTextChange, onScan = { code ->
+    // Okunan kod ürünse [onProduct], "diğer" (raf, belge) ise [onOther] işler; ikisi de değilse false.
+    fun route(code: String): Boolean {
         val p = vm.repo.db.findProduct(code)
+        return when {
+            p != null -> { onProduct(p); true }
+            else -> onOther?.invoke(code) == true
+        }
+    }
+    ScanField(title, hint, search == null, vm.repo.prefs.cameraButton, onTextChange = onTextChange, onScan = { code ->
         when {
-            p != null -> onProduct(p)
-            onOther?.invoke(code) == true -> Unit
+            route(code) -> Unit
             // Sırf rakamsa okutulan barkoddur; isimde aramanın anlamı yok.
             code.all { it.isDigit() } -> vm.error("\"$code\" barkodu tanımlı değil. İsimle arayabilirsiniz.")
             else -> { vm.feedback.error(); search = code to "\"$code\" kod ya da barkod olarak bulunamadı. Benzer adlar:" }
@@ -173,7 +221,13 @@ fun ProductScanField(
         )
     }
     search?.let { (initial, note) ->
-        ProductSearchDialog(vm, initial, note, onPick = { search = null; onProduct(it) }, onDismiss = { search = null })
+        ProductSearchDialog(
+            vm, initial, note,
+            onPick = { search = null; onProduct(it) },
+            onDismiss = { search = null },
+            // Pencere açıkken okutulan ürün/raf/belge yine işlenir; tanınmayan kod arama kutusuna yazılır.
+            onScan = { code -> route(code).also { if (it) search = null } },
+        )
     }
 }
 

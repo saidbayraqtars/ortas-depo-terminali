@@ -35,9 +35,21 @@ object ScanBus {
         emitRaw(c)
     }
 
-    /** İzi çağıran yazmış olur ([emit], [ScanKeys]). */
+    /** İzi çağıran yazmış olur ([emit], [ScanKeys]). Başındaki sembol kimliği ([clean]) burada atılır. */
     fun emitRaw(code: String) {
-        if (!_scans.tryEmit(code)) Diag.crumb("okutma kuyruğu dolu, atlandı")
+        val c = clean(code)
+        if (c.isEmpty()) return
+        if (!_scans.tryEmit(c)) Diag.crumb("okutma kuyruğu dolu, atlandı")
+    }
+
+    /**
+     * Bazı okuyucular (Sunmi L2K) koda AIM sembol kimliği ekler: "]ZA7687468768784" gerçekte "7687468768784".
+     * Kimlik `]` + harf + harf/rakamdır; ürün ve raf kodu `]` ile başlamaz. Atılmazsa kod hiçbir şeye eşleşmez
+     * ve "İsimle ara" penceresi açılır (FURKAN, 2026-10-30: aynı barkod 6 kez okutuldu).
+     */
+    fun clean(code: String): String {
+        val c = code.trim()
+        return if (c.length > 3 && c[0] == ']' && c[1].isLetter() && c[2].isLetterOrDigit()) c.substring(3) else c
     }
 
     /** Bilinen terminal markalarının yayın eylemleri. */
