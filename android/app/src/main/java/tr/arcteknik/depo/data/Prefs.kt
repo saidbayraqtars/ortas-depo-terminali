@@ -68,6 +68,14 @@ class Prefs(context: Context) {
         get() = sp.getString("updatePath", "/apk") ?: "/apk"
         set(v) = sp.edit().putString("updatePath", v).apply()
 
+    /**
+     * Raf Düzenle: okutulmayan ürüne dokunulmaz (varsayılan). Kapalıyken raf okutulana eşitlenir, rafta olup okutulmayan ürün çıkar.
+     * Cihaz tercihidir; her düzenleme gönderilirken `keepOthers` olarak sunucuya gider.
+     */
+    var arrangeKeepOthers: Boolean
+        get() = sp.getBoolean("arrangeKeepOthers", true)
+        set(v) = sp.edit().putBoolean("arrangeKeepOthers", v).apply()
+
     /** Ana veriyle gelen depolar arası transfer bölümü (JSON); sunucu eskiyse ya da özellik kapalıysa boş. */
     var transferJson: String
         get() = sp.getString("transferJson", "") ?: ""

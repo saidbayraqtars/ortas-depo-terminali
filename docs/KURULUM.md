@@ -20,7 +20,9 @@ Sistem iki parçadır:
    (ör. A-C bölge, 1-10 koridor, 1-4 kat) → **Etiket yazdır** (PDF ya da etiket yazıcısı).
    Yazdırırken ölçek **%100 / gerçek boyut**.
 5. **Kullanıcılar › Yeni kullanıcı**: depo personeli, 4-8 haneli şifre, **yetkiler** ve **çalışabileceği depolar**. Şube personeline (Toybelen) yalnız kendi deposunu
-   verin: başka depodan mal çıkaramaz, başka depoya gelen gönderimi kabul edemez. Hazır şablonlar (Depo görevlisi, Şube deposu, Sevkiyat, Sayım, Yalnız sorgu) kutuları doldurur.
+   verin: başka depodan mal çıkaramaz, başka depoya gelen gönderimi kabul edemez. **Çalışabileceği raflar** (1.12.0+) alanına raf önekleri yazılırsa
+   kullanıcı yalnız o rafları görür ve yalnız onlarda işlem yapar: Toybelen için `TK*` (TK-1-2, TK2-HY, TKB-3 gibi TK ile başlayan her raf; yıldızsız `TK`
+   harfle süren TKB-3'ü kapsamaz). Boş bırakılırsa ("Tüm raflar") sınır yoktur. Hazır şablonlar (Depo görevlisi, Şube deposu, Sevkiyat, Sayım, Yalnız sorgu) kutuları doldurur.
    Terminal yetkiye göre menüyü daraltır; yetkisiz işlem sunucuda da reddedilir. Yanlış yazılan depo fişini **Vega'ya yazılanlar** sayfasından, yanlış rafa kaldırılan malı **Hareketler** sayfasında satırdaki **Geri al** ile geri alabilirsiniz.
 6. **Cihazlar › Yeni cihaz** (TRM-01…): açılan pencerede iki QR var (aşağıda).
 7. İstenirse **Ayarlar › Vega'daki raf adresi**: stok kartı alanı (Ortaş: KOD10), raflar hangi depoda, **Program bu alana yazsın**.
@@ -115,7 +117,9 @@ yerine ad yazılırsa da aynı liste açılır. Ürün kodu da okutulabilir ya d
 
 - **Raf Düzenle** (ana menü): firma sıfırdan başlamıyor, rafta duran mal var; raf stoku henüz yok. Depocu rafı okutur,
   rafta duran ürünleri okutur (her okutma +1, miktar elle düzeltilir), sonraki rafa geçer, sonunda **Düzenlemeyi kaydet** der.
-  Raf stoku okutulan değere çekilir; sistemde o rafta görünüp okutulmayan ürün raftan çıkar (ekran bunu önceden listeler);
+  Okutulan ürünün raf stoku okutulan değere çekilir (toplanmaz, eşitlenir). **Okutulmayan ürünler yerinde kalsın** anahtarı açıkken
+  (1.12.0+, varsayılan) rafta duran diğer ürünlere dokunulmaz; kapalıyken raf okutulana eşitlenir ve okutulmayan ürün raftan
+  çıkar (ekran bunu önceden listeler). Ürünü rafta silmek için miktarını 0 yapın ya da hiç ürün okutmadan **Raf boş** deyin;
   adresi olmayan ürünün adresi o raf olur. **Sayım oturumu açılmaz, yönetici onayı gerekmez, Vega'ya hiçbir şey yazılmaz**
   (raf adresi KOD10'a yazılması açıksa yazılır). Yetki: Kullanıcılar › **Raf düzenle** izni (Depo görevlisi şablonunda var;
   özel izin listesi verilmiş kullanıcılara yönetici programından ayrıca işaretlenir).

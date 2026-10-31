@@ -347,6 +347,24 @@ function migrate() {
     `);
     set('surum', '10');
   }
+  if (Number(get("SELECT value FROM meta WHERE key='surum'")?.value) < 11) {
+    // 11: kullanıcının raf sınırı (bkz. yetki.js): '*' = tüm raflar, yoksa kapsam.js önekleri ("TK*"). Göçte herkesin bütün rafları açık kalır.
+    db.exec(`ALTER TABLE app_user ADD COLUMN shelves TEXT NOT NULL DEFAULT '*';`);
+    set('surum', '11');
+  }
+  if (Number(get("SELECT value FROM meta WHERE key='surum'")?.value) < 12) {
+    // 12: kabulü bitirilen gönderimin kapanıştaki satır miktarları. Vega'da belgeye sonradan eklenen satır ya da artan miktar
+    // (kapanıştan fazlası) terminallerde yeniden açık görünür; yoksa kapatılan belgenin sonradan eklenen malı kaybolurdu.
+    db.exec(`
+      CREATE TABLE transfer_kapali_satir(
+        sevk_ind INTEGER NOT NULL,
+        product_id TEXT NOT NULL,
+        sent REAL NOT NULL,
+        PRIMARY KEY(sevk_ind, product_id)
+      );
+    `);
+    set('surum', '12');
+  }
 }
 
 function get(sql, ...args) {

@@ -88,7 +88,7 @@ fun ProductQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String
             return@Screen
         }
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            ProductCard(product, locs.sumOf { it.qty }, remember(version, productId) { db.pendingPutAway(product.id) })
+            ProductCard(product, locs.sumOf { it.qty }, remember(version, productId) { db.pendingPutAway(product.id) }, limited = db.shelfScope.isNotEmpty())
             if (homes.isNotEmpty()) {
                 // Ürünün raf adresleri (zimmet): yanlış adres buradan hemen silinir; rafın kendisi ve raftaki miktar değişmez.
                 Card(padding = CardPad) {
@@ -161,11 +161,18 @@ fun ProductQueryScreen(vm: AppVm, online: Boolean, version: Int, initial: String
 }
 
 @Composable
-fun ProductCard(p: Product, onShelves: Double, pending: Double) {
+fun ProductCard(p: Product, onShelves: Double, pending: Double, limited: Boolean = false) {
     Card {
         Column {
             Text(p.name, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
             MonoText(listOfNotNull(p.code, p.unit).joinToString(" · "), size = 13, weight = FontWeight.Medium, color = C.Muted)
+        }
+        // Raf sınırı olan kullanıcı raflardaki toplamın yalnız bir kısmını görür; Vega ile karşılaştırma yanıltır, gösterilmez.
+        if (limited) {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(C.LineSoft).padding(horizontal = 10.dp, vertical = 8.dp)) {
+                Text("Vega stoku ${fmt(p.vegaStock)} · yetkili raflarınızda ${fmt(onShelves)}", fontSize = 13.sp, color = C.Text2)
+            }
+            return@Card
         }
         // Vega stoku kabul edilip henüz rafa kaldırılmamış malı da içerir; o kısım fark sayılmaz.
         val diff = onShelves + pending - p.vegaStock

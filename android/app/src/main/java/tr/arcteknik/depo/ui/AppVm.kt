@@ -191,8 +191,9 @@ class AppVm(app: Application) : AndroidViewModel(app) {
     fun refreshUser() {
         val u = user ?: return
         val n = repo.db.user(u.username) ?: return
-        if (n.perms != u.perms || n.depots != u.depots) {
-            user = u.copy(perms = n.perms, depots = n.depots)
+        if (n.perms != u.perms || n.depots != u.depots || n.shelves != u.shelves) {
+            user = u.copy(perms = n.perms, depots = n.depots, shelves = n.shelves)
+            repo.db.shelfScope = n.shelves.orEmpty()
             ensureWorkingDepot()
         }
     }
@@ -243,6 +244,8 @@ class AppVm(app: Application) : AndroidViewModel(app) {
 
     fun login(u: User) {
         user = u
+        // Raf sınırı: terminal yalnız bu rafları gösterir (Db.shelfScope), sunucu başkasına işlem yaptırmaz.
+        repo.db.shelfScope = u.shelves.orEmpty()
         ensureWorkingDepot()
         stack.clear()
         stack += Route.Home
@@ -316,6 +319,7 @@ class AppVm(app: Application) : AndroidViewModel(app) {
     fun logout() {
         leaveDoc()
         user = null
+        repo.db.shelfScope = emptyList()
         stack.clear()
         stack += Route.Login
         routed()
@@ -341,6 +345,8 @@ class AppVm(app: Application) : AndroidViewModel(app) {
     /** Tanımsız raf okutuldu: kod raf olabilecekse eklemeyi sor, değilse hata ver. */
     fun unknownShelf(code: String, depot: Int = repo.db.depot, onAdded: (String) -> Unit) {
         val s = code.trim().uppercase()
+        // Raf sınırı dışındaki raf "tanımsız" gibi davranır ama eklenmesi önerilmez: neden açıkça söylenir.
+        if (!repo.db.shelfAllowed(s)) return error("$s rafı yetkinizin dışında (yetkili raflar: ${repo.db.shelfScope.joinToString(", ")})")
         val where = repo.db.depotName(depot).takeIf { it.isNotBlank() && repo.db.depots().size > 1 }?.let { "$it deposunda " } ?: ""
         error("\"$s\" ${where}tanımlı bir raf değil")
         if (Repo.validShelfCode(s) && can(Perm.SHELF_ADD)) shelfAsk = ShelfAsk(s, depot, onAdded)

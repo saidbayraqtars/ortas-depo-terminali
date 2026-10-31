@@ -19,7 +19,7 @@ import java.io.Reader
  * Çok depo: raf, raf stoku, Vega stoku ve asıl raf depoya bağlıdır. [depot] terminalin çalıştığı depodur
  * (transfer, sayım, sorgu); mal kabul belgesi kendi deposunu taşır ve rafa kaldırma orada olur.
  */
-class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 8) {
+class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 9) {
 
     init {
         // Eşitleme ana veriyi yazarken ekranlar (ana iş parçacığı) beklemeden son kaydedilmiş hali okusun.
@@ -38,8 +38,8 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 8) {
         db.execSQL("CREATE TABLE op(id TEXT PRIMARY KEY, type TEXT NOT NULL, payload TEXT NOT NULL, summary TEXT NOT NULL, created_at INTEGER NOT NULL, status TEXT NOT NULL, error TEXT)")
         db.execSQL("CREATE TABLE movement(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, product_id TEXT NOT NULL, text TEXT NOT NULL, qty REAL NOT NULL)")
         db.execSQL("CREATE INDEX ix_movement_product ON movement(product_id, ts)")
-        // perms / depots: virgülle ayrılmış liste; NULL = sınırsız (bkz. [User]).
-        db.execSQL("CREATE TABLE app_user(username TEXT PRIMARY KEY, name TEXT NOT NULL, pin_hash TEXT NOT NULL, salt TEXT NOT NULL, perms TEXT, depots TEXT)")
+        // perms / depots / shelves: virgülle ayrılmış liste; NULL = sınırsız (bkz. [User]).
+        db.execSQL("CREATE TABLE app_user(username TEXT PRIMARY KEY, name TEXT NOT NULL, pin_hash TEXT NOT NULL, salt TEXT NOT NULL, perms TEXT, depots TEXT, shelves TEXT)")
         createParts(db)
     }
 
@@ -127,6 +127,11 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 8) {
         if (oldVersion < 8) {
             addColumn(db, "app_user", "perms", "TEXT")
             addColumn(db, "app_user", "depots", "TEXT")
+            db.execSQL("DELETE FROM master_part WHERE key='head'")
+        }
+        // 9: kullanıcının raf sınırı (raf önekleri). Baş parça yeniden istensin: sınır gelsin.
+        if (oldVersion < 9) {
+            addColumn(db, "app_user", "shelves", "TEXT")
             db.execSQL("DELETE FROM master_part WHERE key='head'")
         }
     }
@@ -443,6 +448,8 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 8) {
                 if (perms != null) put("perms", (0 until perms.length()).joinToString(",") { perms.getString(it) }) else putNull("perms")
                 val depots = u.optJSONArray("depots")
                 if (depots != null) put("depots", (0 until depots.length()).joinToString(",") { depots.getInt(it).toString() }) else putNull("depots")
+                val shelves = u.optJSONArray("shelves")
+                if (shelves != null && shelves.length() > 0) put("shelves", (0 until shelves.length()).joinToString(",") { shelves.getString(it) }) else putNull("shelves")
             })
         }
     }
@@ -565,19 +572,27 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 8) {
         return sonuc
     }
 
+    /**
+     * Oturumdaki kullanıcının raf sınırı (raf önekleri); boşsa tüm raflar. Giriş ve yetki yenilemesinde AppVm ayarlar.
+     * Sınır dışı raf bu sınıfın raf sorgularında görünmez: terminal onu hiç bilmiyormuş gibi davranır (sunucu da işlemi reddeder).
+     */
+    @Volatile var shelfScope: List<String> = emptyList()
+
+    fun shelfAllowed(code: String): Boolean = shelfScope.isEmpty() || Kapsam.icinde(code.trim().uppercase(), shelfScope)
+
     fun shelfExists(code: String, d: Int = depot): Boolean =
-        scalar("SELECT 1 FROM shelf WHERE depot=? AND code=?", d.toString(), code.trim().uppercase()) != null
+        shelfAllowed(code) && scalar("SELECT 1 FROM shelf WHERE depot=? AND code=?", d.toString(), code.trim().uppercase()) != null
 
     fun locationsOf(productId: String, d: Int = depot): List<Location> {
         val p = productById(productId, d) ?: return emptyList()
         return query("SELECT shelf, qty FROM location WHERE depot=? AND product_id=? AND qty>0 ORDER BY qty DESC", d.toString(), productId) {
             Location(p, it.getString(0), it.getDouble(1))
-        }
+        }.filter { shelfAllowed(it.shelf) }
     }
 
     /** Ürünün zimmetli rafları (Excel, Vega kartı, yönetici); rafta hiç yokken rafa kaldırmada ilki önerilir. */
     fun homeShelves(productId: String, d: Int = depot): List<String> =
-        query("SELECT shelf FROM home WHERE depot=? AND product_id=? ORDER BY shelf", d.toString(), productId) { it.getString(0) }
+        query("SELECT shelf FROM home WHERE depot=? AND product_id=? ORDER BY shelf", d.toString(), productId) { it.getString(0) }.filter { shelfAllowed(it) }
 
     fun homeShelf(productId: String, d: Int = depot): String? = homeShelves(productId, d).firstOrNull()
 
@@ -598,7 +613,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 8) {
                 "JOIN shelf sh ON sh.depot=? AND sh.code=s.shelf LEFT JOIN depot dp ON dp.id=s.depot ORDER BY s.qty DESC, s.shelf",
             productId, d.toString(), productId, d.toString(), d.toString(),
         ) { ShelfOption(it.getString(0), 2, it.getDouble(2), it.getString(1)) }.forEach { out.putIfAbsent(it.shelf, it) }
-        return out.values.toList()
+        return out.values.filter { shelfAllowed(it.shelf) }
     }
 
     /** Yazılan metne uyan, bu depoda tanımlı raflar; önce önek, sonra içinde geçenler. */
@@ -607,13 +622,14 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 8) {
         if (q.isEmpty()) return emptyList()
         return query(
             "SELECT code FROM shelf WHERE depot=? AND code LIKE ? ORDER BY (code LIKE ?) DESC, code LIMIT ?",
-            d.toString(), "%$q%", "$q%", limit.toString(),
-        ) { it.getString(0) }
+            d.toString(), "%$q%", "$q%", (if (shelfScope.isEmpty()) limit else 500).toString(),
+        ) { it.getString(0) }.filter { shelfAllowed(it) }.take(limit)
     }
 
     /** Raftakiler + rafa zimmetli olup rafta olmayanlar (qty 0, sayılmayı bekliyor). */
     fun shelfContents(shelf: String, d: Int = depot): List<Location> {
         val s = shelf.uppercase()
+        if (!shelfAllowed(s)) return emptyList()
         val homed = query("SELECT product_id FROM home WHERE depot=? AND shelf=?", d.toString(), s) { it.getString(0) }.toSet()
         val here = query("SELECT ${productCols(d)}, l.shelf, l.qty FROM location l JOIN product p ON p.id=l.product_id WHERE l.depot=? AND l.shelf=? AND l.qty>0 ORDER BY p.name", d.toString(), s) {
             val p = it.product()
@@ -707,7 +723,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 8) {
     /** Depoda sayımın kapsamına uyan tanımlı raflar. */
     fun scopeShelves(session: CountSession): List<String> =
         if (session.scope.isEmpty()) emptyList()
-        else query("SELECT code FROM shelf WHERE depot=? ORDER BY code", session.depot.toString()) { it.getString(0) }.filter { Kapsam.icinde(it, session.scope) }.sortedWith(Kapsam.order)
+        else query("SELECT code FROM shelf WHERE depot=? ORDER BY code", session.depot.toString()) { it.getString(0) }.filter { Kapsam.icinde(it, session.scope) && shelfAllowed(it) }.sortedWith(Kapsam.order)
 
     fun countLines(sessionId: String, shelf: String? = null): List<CountLine> {
         val where = if (shelf == null) "c.session_id=?" else "c.session_id=? AND c.shelf=?"
@@ -736,11 +752,12 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 8) {
         }
 
     fun user(username: String): User? =
-        query("SELECT username, name, pin_hash, salt, perms, depots FROM app_user WHERE username=?", username.trim().lowercase()) {
+        query("SELECT username, name, pin_hash, salt, perms, depots, shelves FROM app_user WHERE username=?", username.trim().lowercase()) {
             User(
                 it.getString(0), it.getString(1), it.getString(2), it.getString(3),
                 perms = if (it.isNull(4)) null else it.getString(4).split(',').filter { s -> s.isNotBlank() }.toSet(),
                 depots = if (it.isNull(5)) null else it.getString(5).split(',').mapNotNull { s -> s.trim().toIntOrNull() }.toSet(),
+                shelves = if (it.isNull(6)) null else it.getString(6).split(',').map { s -> s.trim() }.filter { s -> s.isNotBlank() }.takeIf { l -> l.isNotEmpty() },
             )
         }.firstOrNull()
 

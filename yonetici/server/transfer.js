@@ -71,6 +71,14 @@ function baslangic(cfg) {
 /** Vega'dan okunan gönderim/kabul toplamlarından terminallerde açık görünecek gönderimleri çıkarır. */
 function acikHesapla(oku, bas) {
   const kapali = new Set(db.all('SELECT sevk_ind FROM transfer_kapali').map((r) => r.sevk_ind));
+  // Kabulü bitirilen gönderimin kapanıştaki satır miktarları. Kapanan belge tümden gizlenmez: Vega'da belgeye sonradan eklenen
+  // satır ya da artan miktar (kapanıştan fazlası) yeniden açık görünür, "bulundu" işaretlenen eksik de. Kapanış kaydı olmayan
+  // eski kapanışta fazla = bütün satır; havuzda mal kalmadıysa (kabul edilmiş ya da eksik kayıtlı) zaten açık miktar çıkmaz.
+  const kapanis = new Map();
+  for (const r of db.all('SELECT sevk_ind, product_id, sent FROM transfer_kapali_satir')) {
+    if (!kapanis.has(r.sevk_ind)) kapanis.set(r.sevk_ind, new Map());
+    kapanis.get(r.sevk_ind).set(r.product_id, r.sent);
+  }
   // Programda kayıtlı eksik (açık ya da kayıp diye çözülmüş) havuzdan düşer; "bulundu" Vega'da kabul edilir, düşmez.
   const fark = new Map();
   for (const f of db.all("SELECT from_depo, to_depo, product_id, eksik FROM transfer_fark WHERE durum<>'BULUNDU' AND created_at >= ?", bas.getTime())) {
@@ -96,7 +104,16 @@ function acikHesapla(oku, bas) {
     bakiye.set(k, Math.max(0, yuvarla(h.gonderilen - h.alinan - (fark.get(k) || 0) - (bekleyen.get(k) || 0))));
   }
   const sevkler = [...oku.sevkler]
-    .filter((s) => !kapali.has(s.ind) && ciftte(s))
+    .filter(ciftte)
+    .map((s) => {
+      // `tam`: belgenin Vega'daki bütün satırları (kapatırken kaydedilir); `kalemler`: açık görünecek aday satırlar.
+      const tam = s.kalemler;
+      if (!kapali.has(s.ind)) return { ...s, tam };
+      const eski = kapanis.get(s.ind) || new Map();
+      const kalemler = tam.map((k) => ({ stokno: k.stokno, miktar: yuvarla(k.miktar - (eski.get(String(k.stokno)) || 0)) })).filter((k) => k.miktar > EPS);
+      return kalemler.length ? { ...s, kalemler, tam } : null;
+    })
+    .filter(Boolean)
     .sort((a, b) => (b.tarih?.getTime?.() || 0) - (a.tarih?.getTime?.() || 0) || b.ind - a.ind);
   const out = [];
   for (const s of sevkler) {
@@ -217,7 +234,7 @@ const ciftAdi = (c) => `${depo().depoAdi(c[0])} ↔ ${depo().depoAdi(c[1])}`;
  * not düşülür (mal fiziken gitmiştir). Rafta stoğu olmayan ürünün rafsız miktarı olduğu gibi geçer.
  * Dönen: transfer_line'a yazılacak satırlar.
  */
-function gonderRafla(from, to, pid, raflar, rafsiz, h) {
+function gonderRafla(from, to, pid, raflar, rafsiz, h, izinli = () => true) {
   const d = depo();
   const out = [];
   const hedef = d.depoAdi(to);
@@ -231,7 +248,8 @@ function gonderRafla(from, to, pid, raflar, rafsiz, h) {
   let kalan = rafsiz;
   if (kalan > EPS) {
     const asil = d.zimmetler(from, pid).map((z) => z.shelf);
-    const stoklu = db.all('SELECT shelf, qty FROM location WHERE depo=? AND product_id=? AND qty>0', from, pid);
+    // Raf sınırı olan kullanıcının görmediği rafa dokunulmaz (kalan rafsız geçer, mal fiziken gitmiştir).
+    const stoklu = db.all('SELECT shelf, qty FROM location WHERE depo=? AND product_id=? AND qty>0', from, pid).filter((r) => izinli(r.shelf));
     stoklu.sort((a, b) => (asil.includes(b.shelf) - asil.includes(a.shelf)) || b.qty - a.qty || (a.shelf < b.shelf ? -1 : 1));
     for (const r of stoklu) {
       if (kalan <= EPS) break;
@@ -247,7 +265,7 @@ function gonderRafla(from, to, pid, raflar, rafsiz, h) {
   return out;
 }
 
-function gonderUygula(op, p, h, { Ret, bilinen, yetkiDenetle = () => {} }) {
+function gonderUygula(op, p, h, { Ret, bilinen, yetkiDenetle = () => {}, rafIzinli = () => true }) {
   const cfg = config.load();
   const c = ac(cfg, Ret);
   const from = kur(p, 'from');
@@ -260,6 +278,8 @@ function gonderUygula(op, p, h, { Ret, bilinen, yetkiDenetle = () => {} }) {
   if (from === gorunum.yolda || to === gorunum.yolda) throw new Ret('Yoldaki depo gönderen ya da alan olamaz');
   if (!gorunum.depolar.some((d) => Number(d.ind) === to) || !gorunum.depolar.some((d) => Number(d.ind) === from)) throw new Ret('Depo Vega\'da bulunamadı');
   const satirlar = satirlariOku(p, Ret, bilinen);
+  // Raf sınırı: terminalin seçtiği raflar kullanıcının sınırı içinde olmalı.
+  for (const l of satirlar) if (l.shelf) yetkiDenetle(null, from, l.shelf);
   // Ürün başına: terminalin seçtiği raflar ve rafsız miktar.
   const urunler = new Map();
   for (const l of satirlar) {
@@ -270,7 +290,7 @@ function gonderUygula(op, p, h, { Ret, bilinen, yetkiDenetle = () => {} }) {
   }
   const yazilacak = [];
   for (const [pid, u] of urunler) {
-    for (const s of gonderRafla(from, to, pid, u.raflar, u.rafsiz, h)) yazilacak.push({ pid, ...s });
+    for (const s of gonderRafla(from, to, pid, u.raflar, u.rafsiz, h, rafIzinli)) yazilacak.push({ pid, ...s });
   }
   db.run('INSERT INTO transfer(id, kind, from_depo, to_depo, user, device, created_at) VALUES(?,?,?,?,?,?,?)', op.id, 'SEND', from, to, h.user, h.device, now());
   for (const l of yazilacak) {
@@ -297,6 +317,7 @@ function kabulUygula(op, p, h, { Ret, bilinen, yetkiDenetle = () => {} }) {
   const kismi = p.partial === true || p.partial === 1 || p.partial === 'true';
   const oncekiKismi = Boolean(db.get("SELECT 1 FROM transfer WHERE kind='RECEIVE' AND sevk_ind=? AND kismi=1", sevk.ind));
   const satirlar = satirlariOku(p, Ret, bilinen, { bosOlur: !kismi && oncekiKismi });
+  for (const l of satirlar) if (l.shelf) yetkiDenetle(null, sevk.hedef, l.shelf);
   const acik = new Map(sevk.satirlar.map((l) => [l.productId, l.open]));
   const gelen = new Map();
   for (const l of satirlar) {
@@ -360,8 +381,23 @@ function kabulUygula(op, p, h, { Ret, bilinen, yetkiDenetle = () => {} }) {
       );
     }
   }
-  db.run('INSERT INTO transfer_kapali(sevk_ind, transfer_id, at) VALUES(?,?,?)', sevk.ind, op.id, now());
+  kapat(sevk, op.id);
   gorunum.sevkler = gorunum.sevkler.filter((s) => s.ind !== sevk.ind);
+}
+
+/**
+ * Gönderimi kapalı işaretler ve belgenin o andaki satır miktarlarını saklar. Vega'da belgeye sonradan eklenen satır
+ * kapanıştan fazla olarak yeniden açık görünür (acikHesapla). Yeniden açılıp tekrar kapatılan belge de güncellenir.
+ */
+function kapat(sevk, transferId) {
+  db.run('INSERT OR REPLACE INTO transfer_kapali(sevk_ind, transfer_id, at) VALUES(?,?,?)', sevk.ind, transferId, now());
+  db.run('DELETE FROM transfer_kapali_satir WHERE sevk_ind=?', sevk.ind);
+  for (const k of sevk.tam || sevk.kalemler || []) {
+    db.run(
+      'INSERT INTO transfer_kapali_satir(sevk_ind, product_id, sent) VALUES(?,?,?) ON CONFLICT(sevk_ind, product_id) DO UPDATE SET sent = sent + excluded.sent',
+      sevk.ind, String(k.stokno), yuvarla(k.miktar),
+    );
+  }
 }
 
 /** islemUygula'dan çağrılır. İşlem türü transfer değilse false. */
@@ -532,9 +568,13 @@ function yenidenDene(id) {
 /** Farkı çözülmüş işaretler. cozum: KAYIP (mal bulunamadı, kayıp kabul edildi) ya da BULUNDU (bulundu, Vega'da kabul edilecek). */
 function farkCoz(id, cozum, not, kim) {
   if (!['KAYIP', 'BULUNDU'].includes(cozum)) throw new Error('Çözüm türü geçersiz');
-  const f = db.get('SELECT id FROM transfer_fark WHERE id=?', Number(id));
+  const f = db.get('SELECT id, sevk_ind, product_id FROM transfer_fark WHERE id=?', Number(id));
   if (!f) return false;
-  db.run('UPDATE transfer_fark SET durum=?, cozum=?, cozum_at=?, cozum_user=? WHERE id=?', cozum, String(not || '').slice(0, 300), now(), String(kim || ''), f.id);
+  db.tx(() => {
+    db.run('UPDATE transfer_fark SET durum=?, cozum=?, cozum_at=?, cozum_user=? WHERE id=?', cozum, String(not || '').slice(0, 300), now(), String(kim || ''), f.id);
+    // Bulundu: eksik artık havuzdan düşmez; kapalı gönderimin o ürünü yeniden açık görünsün (kapanış kaydı o ürün için kalkar).
+    if (cozum === 'BULUNDU' && f.sevk_ind != null) db.run('DELETE FROM transfer_kapali_satir WHERE sevk_ind=? AND product_id=?', f.sevk_ind, String(f.product_id));
+  });
   yenile().catch(() => {});
   return true;
 }
@@ -562,7 +602,7 @@ function acikKapat(ind, kim) {
         id, s.ind, s.no, s.kaynak, s.hedef, l.productId, l.open, 0, l.open, String(kim || 'yönetici'), 'PC', now(), now(), String(kim || 'yönetici'),
       );
     }
-    db.run('INSERT OR IGNORE INTO transfer_kapali(sevk_ind, transfer_id, at) VALUES(?,?,?)', s.ind, id, now());
+    kapat(s, id);
   });
   gorunum.sevkler = gorunum.sevkler.filter((x) => x.ind !== s.ind);
   depo().degisti();
@@ -641,6 +681,8 @@ async function geriAl(id, kim = 'yönetici', not = '') {
         db.run('DELETE FROM receipt_shelved WHERE receipt_id=?', `TRF-${t.id}`);
         // Kabulde açılan eksik kayıtları ve "kabulü bitti" işareti de kalkar: gönderim yeniden açık görünür.
         db.run('DELETE FROM transfer_fark WHERE transfer_id=?', t.id);
+        const kapanan = db.get('SELECT sevk_ind FROM transfer_kapali WHERE transfer_id=?', t.id);
+        if (kapanan) db.run('DELETE FROM transfer_kapali_satir WHERE sevk_ind=?', kapanan.sevk_ind);
         db.run('DELETE FROM transfer_kapali WHERE transfer_id=?', t.id);
       }
       db.run("UPDATE transfer SET durum='GERI', geri_at=?, geri_user=?, geri_not=?, hata=NULL WHERE id=?", now(), String(kim || ''), String(not || '').slice(0, 300) || null, t.id);

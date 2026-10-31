@@ -396,16 +396,19 @@ class Repo(val db: Db, val prefs: Prefs) {
 
     /**
      * Sayılan raflarda sistemdeki ve sayılan miktarı karşılaştırır. Rafta sistemde olup hiç
-     * okutulmayan ürün de 0 sayılmış kabul edilir.
+     * okutulmayan ürün de 0 sayılmış kabul edilir. Raf Düzenle'nin "okutulmayana dokunma" modunda (varsayılan) ürün okutulan
+     * rafta okutulmayan ürün değişmez, listeye girmez; hiç ürün okutulmadan "boş" bildirilen raf yine bütünüyle boşalır.
      */
     fun countDiffs(sessionId: String): List<CountDiff> {
-        val dep = db.countSession(sessionId)?.depot ?: db.depot
+        val session = db.countSession(sessionId)
+        val dep = session?.depot ?: db.depot
+        val keepOthers = session?.arrange == true && prefs.arrangeKeepOthers
         val out = mutableListOf<CountDiff>()
         for (shelf in db.countedShelves(sessionId)) {
             val counted = db.countLines(sessionId, shelf).associateBy { it.product.id }
             // Zimmetli ama rafta hiç olmayan (0) ve okutulmayan ürün fark değildir; listeye girmez.
             val system = db.shelfContents(shelf, dep).filter { it.qty > 0 }.associateBy { it.product.id }
-            for (pid in counted.keys + system.keys) {
+            for (pid in if (keepOthers && counted.isNotEmpty()) counted.keys else counted.keys + system.keys) {
                 val product = counted[pid]?.product ?: system[pid]!!.product
                 out += CountDiff(shelf, product, system[pid]?.qty ?: 0.0, counted[pid]?.qty ?: 0.0)
             }
@@ -436,6 +439,8 @@ class Repo(val db: Db, val prefs: Prefs) {
             val changedCount = diffs.count { it.diff != 0.0 }
             val payload = JSONObject().put("sessionId", session.id).put("no", session.no).put("title", session.title).put("depot", session.depot)
                 .put("shelves", JSONArray(db.countedShelves(session.id))).put("lines", lines).put("user", user)
+            // 1.12.0+ yönetici: okutulmayan ürüne dokunulmaz. Eski yönetici alanı yok sayar ve rafı okutulana eşitler.
+            if (arrange && prefs.arrangeKeepOthers) payload.put("keepOthers", true)
             db.insertOp(w, if (arrange) {
                 op(OpType.SHELF_ARRANGE, payload, "Raf düzenle · ${session.no}|${diffs.size} kalem, $changedCount değişti")
             } else {

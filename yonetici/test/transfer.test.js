@@ -351,3 +351,65 @@ test('kısmi kabul: okutulan alınır, gönderim açık kalır, fazlası reddedi
   assert.strictEqual(yazilanlar.at(-1).tip, 129);
   assert.deepStrictEqual(yazilanlar.at(-1).kalemler, [{ stokno: 101, miktar: 3 }, { stokno: 102, miktar: 1 }]);
 });
+
+test('kabulü bitirilen gönderime Vega\'da sonradan eklenen satır yeniden açık görünür; "bulundu" eksiği de yeniden açar; yeniden kapatılabilir', () => {
+  const bas = new Date('2026-10-01T00:00:00');
+  // Önceki testlerin eksik, kapanış ve bekleyen kabul kayıtları havuz hesabını etkilemesin.
+  for (const t of ['transfer_fark', 'transfer_kapali', 'transfer_kapali_satir']) db.run(`DELETE FROM ${t}`);
+  db.run("UPDATE transfer SET yazildi_at=0, durum=CASE WHEN durum='GERI' THEN 'GERI' ELSE 'YAZILDI' END");
+  const belge = (kalemler) => ({ ind: 830, no: 'A0000830', tarih: new Date('2026-10-30T00:00:00'), kaynak: 1, hedef: 108, kalemler });
+  const havuz = (g) => g.map(([s, gon, al]) => ({ kaynak: 1, hedef: 108, stokno: s, gonderilen: gon, alinan: al }));
+  const acik = (oku) => transfer._acikHesapla(oku, bas).map((s) => [s.ind, s.satirlar.map((l) => [l.productId, l.sent, l.open])]);
+  const bitir = (o) => db.run("UPDATE transfer SET durum='YAZILDI', yazildi_at=0 WHERE id=?", o.id); // 129 Vega'ya yazıldı, havuz güncel
+
+  // Merkez 128 yazar: 101 x4, 102 x2. Toybelen yalnız 101'i okutup "Kabulü bitir" der (102 okutulmadı).
+  let oku = { sevkler: [belge([{ stokno: '101', miktar: 4 }, { stokno: '102', miktar: 2 }])], havuz: havuz([['101', 4, 0], ['102', 2, 0]]) };
+  transfer._gorunum({ at: Date.now(), yolda: 3, depolar: DEPOLAR, sevkler: transfer._acikHesapla(oku, bas), ozet: 'x' });
+  const o1 = op('TRANSFER_RECEIVE', { sevkId: '830', lines: [{ productId: '101', qty: 4 }] });
+  assert.ok(depo.islemler('TRM-02', 'veli', [o1])[0].ok);
+  bitir(o1);
+  oku = { sevkler: [belge([{ stokno: '101', miktar: 4 }, { stokno: '102', miktar: 2 }])], havuz: havuz([['101', 4, 4], ['102', 2, 0]]) };
+  assert.deepStrictEqual(acik(oku), [], 'kapanan belge kalkar; okutulmayan 102 eksik olarak kayıtlı');
+  const eksik = db.get("SELECT id, durum FROM transfer_fark WHERE sevk_ind=830 AND product_id='102'");
+  assert.strictEqual(eksik.durum, 'ACIK');
+
+  // Aşağıda Vega'da aynı belgeye sonradan 103 x3 eklenir: kapanıştan fazlası yeniden açık görünür (kaybolmaz).
+  oku = { sevkler: [belge([{ stokno: '101', miktar: 4 }, { stokno: '102', miktar: 2 }, { stokno: '103', miktar: 3 }])], havuz: havuz([['101', 4, 4], ['102', 2, 0], ['103', 3, 0]]) };
+  assert.deepStrictEqual(acik(oku), [[830, [['103', 3, 3]]]], 'yalnız eklenen satır; gönderilen = eklenen miktar');
+
+  // Yönetici 102'yi "bulundu" işaretler: o da yeniden açık görünür (eskiden kapalı belge hiç dönmüyordu).
+  assert.ok(transfer.farkCoz(eksik.id, 'BULUNDU', 'sayımda çıktı', 'yönetici'));
+  assert.deepStrictEqual(acik(oku), [[830, [['102', 2, 2], ['103', 3, 3]]]]);
+
+  // Toybelen yeniden açılan belgeyi alır ve bitirir (kapalı kaydı güncellenir, çakışma olmaz); belge yine kapanır.
+  transfer._gorunum({ sevkler: transfer._acikHesapla(oku, bas) });
+  const o2 = op('TRANSFER_RECEIVE', { sevkId: '830', lines: [{ productId: '102', qty: 2 }, { productId: '103', qty: 3 }] });
+  const r = depo.islemler('TRM-02', 'veli', [o2]);
+  assert.ok(r[0].ok, JSON.stringify(r));
+  bitir(o2);
+  oku.havuz = havuz([['101', 4, 4], ['102', 2, 2], ['103', 3, 3]]);
+  assert.deepStrictEqual(acik(oku), []);
+  assert.deepStrictEqual(db.all('SELECT product_id, sent FROM transfer_kapali_satir WHERE sevk_ind=830 ORDER BY product_id').map((x) => [x.product_id, x.sent]), [['101', 4], ['102', 2], ['103', 3]], 'kapanış kaydı belgenin güncel hali');
+  // Bir kez daha eklenirse yine yakalanır.
+  oku.sevkler = [belge([{ stokno: '101', miktar: 6 }, { stokno: '102', miktar: 2 }, { stokno: '103', miktar: 3 }])];
+  oku.havuz = havuz([['101', 6, 4], ['102', 2, 2], ['103', 3, 3]]);
+  assert.deepStrictEqual(acik(oku), [[830, [['101', 2, 2]]]], 'var olan satırın artan miktarı da');
+  db.run('DELETE FROM transfer_kapali WHERE sevk_ind=830');
+  db.run('DELETE FROM transfer_kapali_satir WHERE sevk_ind=830');
+  db.run('DELETE FROM transfer_fark WHERE sevk_ind=830');
+});
+
+test('eski kapanış (kapanış kaydı yok): havuzda mal kalan satır yeniden açık görünür, kalmayanlar görünmez', () => {
+  const bas = new Date('2026-10-01T00:00:00');
+  // Önceki testlerin eksik, kapanış ve bekleyen kabul kayıtları havuz hesabını etkilemesin.
+  for (const t of ['transfer_fark', 'transfer_kapali', 'transfer_kapali_satir']) db.run(`DELETE FROM ${t}`);
+  db.run("UPDATE transfer SET yazildi_at=0, durum=CASE WHEN durum='GERI' THEN 'GERI' ELSE 'YAZILDI' END");
+  db.run("INSERT INTO transfer_kapali(sevk_ind, transfer_id, at) VALUES(831, 'eski-kapanis', ?)", Date.now());
+  const oku = {
+    sevkler: [{ ind: 831, no: 'A0000831', tarih: new Date('2026-10-29T00:00:00'), kaynak: 1, hedef: 108, kalemler: [{ stokno: '101', miktar: 4 }, { stokno: '102', miktar: 2 }] }],
+    havuz: [{ kaynak: 1, hedef: 108, stokno: '101', gonderilen: 4, alinan: 4 }, { kaynak: 1, hedef: 108, stokno: '102', gonderilen: 2, alinan: 0 }],
+  };
+  const acik = transfer._acikHesapla(oku, bas);
+  assert.deepStrictEqual(acik.map((s) => [s.ind, s.satirlar.map((l) => [l.productId, l.open])]), [[831, [['102', 2]]]], 'tamamen alınan 101 görünmez, alınmamış 102 kaybolmaz');
+  db.run('DELETE FROM transfer_kapali WHERE sevk_ind=831');
+});

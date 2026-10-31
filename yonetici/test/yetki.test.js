@@ -177,5 +177,5 @@ test('yetki modülü: kayıt metni normalleşir, izin ve depo denetimi mesaj ver
   assert.match(b.denetle('putaway'), /yetkisi yok/);
   assert.match(b.denetle('pick', 1), /D1 deposunda işlem yapamaz \(yetkili depo: D108\)/);
   assert.strictEqual(yetki.baglam(null), null);
-  assert.deepStrictEqual(yetki.terminalGorunumu({ role: 'tam', perms: '*', depots: '*' }), { role: 'tam', perms: null, depots: null });
+  assert.deepStrictEqual(yetki.terminalGorunumu({ role: 'tam', perms: '*', depots: '*' }), { role: 'tam', perms: null, depots: null, shelves: null });
 });

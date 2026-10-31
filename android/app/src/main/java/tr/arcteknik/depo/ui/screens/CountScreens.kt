@@ -53,6 +53,7 @@ import tr.arcteknik.depo.ui.ProductScanField
 import tr.arcteknik.depo.ui.ScanField
 import tr.arcteknik.depo.ui.Screen
 import tr.arcteknik.depo.ui.SecondaryButton
+import tr.arcteknik.depo.ui.Toggle
 import tr.arcteknik.depo.ui.Tone
 
 @Composable
@@ -95,6 +96,8 @@ fun CountListScreen(vm: AppVm, online: Boolean, version: Int) {
 fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
     val db = vm.repo.db
     val arrange = isArrangeId(sessionId)
+    // Raf Düzenle: okutulmayan ürün rafta kalsın mı (cihaz tercihi, varsayılan evet).
+    var keep by remember { mutableStateOf(vm.repo.prefs.arrangeKeepOthers) }
     val session = remember(version) { db.countSession(sessionId) }
     var shelf by remember { mutableStateOf<String?>(null) }
     val lines = remember(version, shelf) { shelf?.let { db.countLines(sessionId, it) }.orEmpty() }
@@ -127,6 +130,13 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(if (session.scope.isEmpty()) (if (arrange) "Düzenlenen raf ${shelves.size}" else "Sayılan raf ${shelves.size}") else "${session.scope.joinToString(", ")} · ${scopeShelves.size - left.size} / ${scopeShelves.size} raf", fontSize = 13.sp, color = C.Text2)
             Text("${fmt(scans)} okutma", fontSize = 13.sp, color = C.Text2)
+        }
+        if (arrange) {
+            Toggle(
+                "Okutulmayan ürünler yerinde kalsın",
+                if (keep) "Yalnız okutulan ürünler rafa yazılır" else "Raf okutulana eşitlenir; okutulmayan ürün raftan çıkar",
+                keep,
+            ) { keep = it; vm.repo.prefs.arrangeKeepOthers = it }
         }
 
         if (shelf == null) {
@@ -181,7 +191,11 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
                 }
                 if (waiting.isNotEmpty()) {
                     Divider()
-                    Caption(if (arrange) "Sistemde bu rafta görünüyor, okutulmadı (${waiting.size}) · gönderince raftan çıkar" else "Bu rafta beklenen, okutulmadı (${waiting.size})", Modifier.padding(top = 10.dp))
+                    Caption(
+                        if (arrange) "Sistemde bu rafta görünüyor, okutulmadı (${waiting.size}) · " + if (keep) "yerinde kalır" else "gönderince raftan çıkar"
+                        else "Bu rafta beklenen, okutulmadı (${waiting.size})",
+                        Modifier.padding(top = 10.dp),
+                    )
                     LimitedList(waiting, { "w" + it.product.id }) { w ->
                         Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Column(Modifier.weight(1f)) {
@@ -204,7 +218,8 @@ fun CountDiffScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String)
     // Raf Düzenle aynı sonuç ekranını kullanır; metinler "sayım" demeden "düzenleme" der.
     val arrange = isArrangeId(sessionId)
     val session = remember(version) { db.countSession(sessionId) }
-    val diffs = remember(version) { vm.repo.countDiffs(sessionId) }
+    var keep by remember { mutableStateOf(vm.repo.prefs.arrangeKeepOthers) }
+    val diffs = remember(version, keep) { vm.repo.countDiffs(sessionId) }
     val changed = diffs.filter { it.diff != 0.0 }
     // Boş sayılan raflar: farkı yoksa listede görünmez ama gönderilir (yöneticide sayıldı olarak işaretlenir).
     val shelves = remember(version) { db.countedShelves(sessionId) }
@@ -254,7 +269,17 @@ fun CountDiffScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String)
             }
         }
         if (emptyShelves.isNotEmpty()) Hint((if (arrange) "Boş bırakılan raf (" else "Boş sayılan raf (") + "${emptyShelves.size}): " + emptyShelves.take(30).joinToString(", ") + if (emptyShelves.size > 30) " …" else "")
-        if (arrange) Notice("Okutulmayan ürünler raftan çıkar. Yalnız raf bilgisi güncellenir; Vega stoku değişmez, onay beklenmez.", Tone.Info)
+        if (arrange) {
+            Toggle(
+                "Okutulmayan ürünler yerinde kalsın",
+                if (keep) "Yalnız okutulan ürünler rafa yazılır" else "Raf okutulana eşitlenir; okutulmayan ürün raftan çıkar",
+                keep,
+            ) { keep = it; vm.repo.prefs.arrangeKeepOthers = it }
+            Notice(
+                (if (keep) "Okutulmayan ürünler raftan çıkmaz." else "Okutulmayan ürünler raftan çıkar.") + " Yalnız raf bilgisi güncellenir; Vega stoku değişmez, onay beklenmez.",
+                Tone.Info,
+            )
+        }
         else Notice("Gönderilen sayım yönetici programında onaylanınca farklar Vega'ya sayım fişi olarak işlenir.", Tone.Info)
     }
 
@@ -264,7 +289,8 @@ fun CountDiffScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String)
             title = { Text(if (arrange) "${shelves.size} raf düzenlensin mi?" else "Sayım gönderilsin mi?") },
             text = {
                 Text(
-                    if (arrange) "$written ürün rafa yazılacak, $removed ürün raftan çıkacak. Kaydettikten sonra bu düzenlemede değişiklik yapılamaz."
+                    if (arrange && keep) "$written ürün rafa yazılacak" + (if (removed > 0) ", $removed ürün raftan çıkacak (0 yazılan ya da boş bildirilen raf)" else "") + ". Okutulmayan ürünler raftan çıkmaz. Kaydettikten sonra bu düzenlemede değişiklik yapılamaz."
+                    else if (arrange) "$written ürün rafa yazılacak, $removed ürün raftan çıkacak. Kaydettikten sonra bu düzenlemede değişiklik yapılamaz."
                     else "${shelves.size} raf, ${diffs.size} kalem, ${changed.size} farklı. Gönderdikten sonra bu sayımda değişiklik yapılamaz.",
                 )
             },

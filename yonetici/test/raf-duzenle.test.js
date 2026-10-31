@@ -176,3 +176,34 @@ test('düzenleme ana veriye yansır: terminal bir sonraki eşitlemede yeni raf s
   assert.ok(yer, 'B-01-01 konumu ana veride');
   assert.strictEqual(yer.qty, 3);
 });
+
+test('"okutulmayana dokunma" modu: okutulan ürün rafa yazılır, rafta duran diğer ürünler yerinde kalır; satırsız (boş) raf yine boşalır', () => {
+  depo.rafEkle(1, 'K-KEEP');
+  const kur = () => {
+    depo.miktarAyarla(1, '101', 'K-KEEP', 5, { ts: 1, kind: 'PUTAWAY' });
+    depo.miktarAyarla(1, '102', 'K-KEEP', 3, { ts: 1, kind: 'PUTAWAY' });
+  };
+  kur();
+  // İade gelen tek ürün (103) dolu rafa tanımlanır: diğerleri silinmez.
+  let r = depo.islemler('TRM-01', 'ali', [duzenle('ali', { keepOthers: true, shelves: ['K-KEEP'], lines: [satir('K-KEEP', '103', 1)] }, Date.now() + 10000)]);
+  assert.ok(r[0].ok, JSON.stringify(r));
+  assert.deepStrictEqual(['101', '102', '103'].map((p) => depo.miktar(1, p, 'K-KEEP')), [5, 3, 1]);
+  // Okutulan ürünün miktarı yine okutulana eşitlenir (iki ürün okutuldu, üçüncüye dokunulmadı).
+  r = depo.islemler('TRM-01', 'ali', [duzenle('ali', { keepOthers: true, shelves: ['K-KEEP'], lines: [satir('K-KEEP', '101', 8, 5), satir('K-KEEP', '103', 0, 1)] }, Date.now() + 11000)]);
+  assert.ok(r[0].ok);
+  assert.deepStrictEqual(['101', '102', '103'].map((p) => depo.miktar(1, p, 'K-KEEP')), [8, 3, 0], 'açıkça 0 yazılan çıkar, okutulmayan 102 kalır');
+  // Eski terminal / mod kapalı: alan yok, raf okutulana eşitlenir (102 çıkar).
+  r = depo.islemler('TRM-01', 'ali', [duzenle('ali', { shelves: ['K-KEEP'], lines: [satir('K-KEEP', '101', 8, 8)] }, Date.now() + 12000)]);
+  assert.ok(r[0].ok);
+  assert.deepStrictEqual(['101', '102'].map((p) => depo.miktar(1, p, 'K-KEEP')), [8, 0]);
+  // "Raf boş" bildirimi (satır yok) mod açıkken de rafı boşaltır: açık bir boşaltma isteğidir.
+  kur();
+  r = depo.islemler('TRM-01', 'ali', [duzenle('ali', { keepOthers: true, shelves: ['K-KEEP'], lines: [] }, Date.now() + 13000)]);
+  assert.ok(r[0].ok);
+  assert.deepStrictEqual(['101', '102'].map((p) => depo.miktar(1, p, 'K-KEEP')), [0, 0]);
+  // Okutmadan sonra başka terminalin koyduğu mal her iki modda da silinmez (mevcut kural).
+  kur();
+  r = depo.islemler('TRM-01', 'ali', [duzenle('ali', { keepOthers: true, shelves: ['K-KEEP'], lines: [satir('K-KEEP', '103', 2)] }, Date.now() + 14000)]);
+  assert.ok(r[0].ok);
+  assert.strictEqual(depo.miktar(1, '101', 'K-KEEP'), 5);
+});

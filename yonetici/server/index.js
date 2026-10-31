@@ -337,8 +337,9 @@ function terminalApi() {
       const b = req.body || {};
       // Etiket de kullanıcı yetkisine tabidir (kayıtlı olmayan kullanıcı sınırsız, bkz. yetki.js).
       const ad = String(b.user || '').trim().toLowerCase();
-      const yk = ad ? yetki.baglam(db.get('SELECT username, perms, depots FROM app_user WHERE username=?', ad), depo.depoAdi) : null;
-      const red = yk && yk.denetle('label', b.depot === undefined || b.depot === null || b.depot === '' ? null : depo.depoCoz(b.depot));
+      const yk = ad ? yetki.baglam(db.get('SELECT username, perms, depots, shelves FROM app_user WHERE username=?', ad), depo.depoAdi) : null;
+      // Raf etiketi raf sınırı olan kullanıcının görmediği raf için basılamaz.
+      const red = yk && yk.denetle('label', b.depot === undefined || b.depot === null || b.depot === '' ? null : depo.depoCoz(b.depot), b.type === 'SHELF' ? depo.rafKodu(b.shelf) : null);
       if (red) throw Object.assign(new Error(red), { status: 403, kod: 'YETKI' });
       const adet = Math.max(1, Math.min(100, Number(b.copies) || 1));
       const govde = b.type === 'SHELF' ? { tur: 'raf', kodlar: [b.shelf], depo: b.depot, adet } : { tur: 'urun', urunler: [b.productId], depo: b.depot, adet };
@@ -928,10 +929,11 @@ function yoneticiApi() {
   // Yetki kataloğu (yetki.js): izinler, hazır şablonlar ve seçilebilir depolar. Kullanıcılar sayfasındaki form bunu kullanır.
   r.get('/izinler', sar(() => ({ izinler: yetki.IZINLER, sablonlar: yetki.SABLONLAR, depolar: depo.depolar().map((d) => ({ ind: d.ind, ad: d.ad })) })));
   const kullaniciListesi = () =>
-    db.all('SELECT username, name, active, created_at, role, perms, depots FROM app_user ORDER BY username').map((u) => ({
+    db.all('SELECT username, name, active, created_at, role, perms, depots, shelves FROM app_user ORDER BY username').map((u) => ({
       ...u,
       perms: u.perms === '*' ? null : u.perms.split(',').filter(Boolean),
       depots: u.depots === '*' ? null : u.depots.split(',').filter(Boolean).map(Number),
+      shelves: u.shelves === '*' ? null : u.shelves.split(',').filter(Boolean),
     }));
   r.get('/kullanicilar', sar(() => kullaniciListesi()));
   r.post('/kullanicilar', sar((req) => {
@@ -944,10 +946,11 @@ function yoneticiApi() {
     // Yetki verilmezse tam yetkili açılır (eski davranış); yönetici formda daraltır.
     const perms = b.perms === undefined ? '*' : yetki.izinlerDogrula(b.perms);
     const depots = b.depots === undefined ? '*' : yetki.depolariDogrula(b.depots);
+    const shelves = b.shelves === undefined ? '*' : yetki.raflariDogrula(b.shelves);
     const salt = crypto.randomBytes(12).toString('hex');
     db.run(
-      'INSERT INTO app_user(username, name, salt, pin_hash, active, created_at, role, perms, depots) VALUES(?,?,?,?,1,?,?,?,?)',
-      u, String(b.name || u).trim().slice(0, 40), salt, pinOzeti(salt, pin), Date.now(), perms === '*' ? 'tam' : yetki.rolDogrula(b.role), perms, depots,
+      'INSERT INTO app_user(username, name, salt, pin_hash, active, created_at, role, perms, depots, shelves) VALUES(?,?,?,?,1,?,?,?,?,?)',
+      u, String(b.name || u).trim().slice(0, 40), salt, pinOzeti(salt, pin), Date.now(), perms === '*' ? 'tam' : yetki.rolDogrula(b.role), perms, depots, shelves,
     );
     depo.degisti();
     return { ok: true };
@@ -968,6 +971,7 @@ function yoneticiApi() {
       db.run('UPDATE app_user SET perms=?, role=? WHERE username=?', perms, perms === '*' ? 'tam' : yetki.rolDogrula(b.role), u);
     }
     if (b.depots !== undefined) db.run('UPDATE app_user SET depots=? WHERE username=?', yetki.depolariDogrula(b.depots), u);
+    if (b.shelves !== undefined) db.run('UPDATE app_user SET shelves=? WHERE username=?', yetki.raflariDogrula(b.shelves), u);
     depo.degisti();
     return { ok: true };
   }));

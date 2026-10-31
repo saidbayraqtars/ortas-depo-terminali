@@ -117,6 +117,8 @@ data class User(
     val salt: String,
     val perms: Set<String>? = null,
     val depots: Set<Int>? = null,
+    /** Raf önekleri ([Kapsam] kuralı, "TK*"); null = tüm raflar. Terminal yalnız bu rafları gösterir, sunucu başkasına işlem yaptırmaz. */
+    val shelves: List<String>? = null,
 )
 
 /** Kullanıcı izinleri; kimlikler sunucudaki `yetki.js` kataloğuyla aynıdır. */

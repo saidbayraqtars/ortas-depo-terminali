@@ -1,9 +1,10 @@
-// Terminal kullanıcılarının yetkisi (1.9.0). İki ayrı sınır vardır:
+// Terminal kullanıcılarının yetkisi (1.9.0). Üç ayrı sınır vardır:
 //   izin  : kullanıcı hangi işlemleri yapabilir (rafa kaldır, raftan al, depoya gönder...)
 //   depo  : kullanıcı hangi depolarda işlem yapabilir (Toybelen'deki kullanıcı Merkez'den mal çıkaramaz)
-// Her ikisi `app_user` satırında tutulur: perms ve depots sütunları, '*' = hepsi, yoksa virgülle ayrılmış liste.
-// Denetim sunucuda `depo.islemUygula` içinde yapılır; terminal aynı bilgiyi ana veriyle alıp menüyü ve seçimleri
-// daraltır (arayüz kolaylığı), asıl sınır sunucudadır. Yönetici programı yetkiye tabi değildir.
+//   raf   : kullanıcı hangi raflarda işlem yapar ve görür (Toybelen'de yalnız TK ile başlayan raflar, "TK*"); kapsam.js önekleri
+// Üçü de `app_user` satırında tutulur: perms, depots ve shelves sütunları, '*' = hepsi, yoksa virgülle ayrılmış liste.
+// Denetim sunucuda `depo.islemUygula` içinde yapılır; terminal aynı bilgiyi ana veriyle alıp menüyü, depo seçimini ve raf
+// görünümünü daraltır (arayüz kolaylığı), asıl sınır sunucudadır. Yönetici programı yetkiye tabi değildir.
 //
 // Sunucu işlemi yapan kullanıcıyı terminalin bildirdiği `payload.user`'dan alır; cihaz anahtarı doğrulanmış cihaza güvenilir,
 // kullanıcının PIN'i işlem başına sınanmaz (kapsam: yanlışlıkla yapılan işlemler, kötü niyet değil).
@@ -51,6 +52,8 @@ const ISLEM_IZNI = {
   TRANSFER_RECEIVE: 'depot_receive',
 };
 
+const kapsam = require('./kapsam');
+
 function hata(mesaj) {
   return Object.assign(new Error(mesaj), { status: 400 });
 }
@@ -80,6 +83,16 @@ function depolariDogrula(x) {
   return [...new Set(parcalar.map(Number))].sort((a, b) => a - b).join(',');
 }
 
+/**
+ * Raf sınırını doğrular: '*' (tüm raflar; boş liste de) ya da kapsam.js önekleri. Önek bir sayı ya da harf dizisini bölmez:
+ * "TK" → TK-1-2 ama TK2-HY değil; "TK*" düz önektir, TK ile başlayan her rafı kapsar. Kayıt metnini döner.
+ */
+function raflariDogrula(x) {
+  if (x === '*' || x === null || x === undefined) return '*';
+  const liste = kapsam.coz(x);
+  return liste.length ? liste.join(',') : '*';
+}
+
 function rolDogrula(x) {
   const r = String(x || '').trim();
   return SABLON_ID.has(r) ? r : 'ozel';
@@ -101,20 +114,27 @@ function baglam(satir, depoAdi = (d) => String(d)) {
   if (!satir) return null;
   const izinler = kume(satir.perms);
   const depolar = kume(satir.depots, true);
+  // Raf önekleri (kapsam.js); null = tüm raflar. Sütun hiç yoksa (eski kayıt) sınırsız.
+  const raflar = kume(satir.shelves);
+  const onekler = raflar ? [...raflar] : null;
   const kim = satir.username;
   return {
     kullanici: kim,
     izinler,
     depolar,
+    raflar: onekler,
     izinVar: (id) => !izinler || izinler.has(id),
     depoVar: (d) => !depolar || depolar.has(Number(d)),
+    /** Raf kullanıcının sınırı içinde mi. Raf kodu büyük harfli olmalı (depo.rafKodu). */
+    rafVar: (kod) => !onekler || kapsam.kapsamda(String(kod), onekler),
     /** Reddedilecekse kullanıcıya gösterilecek metin, yoksa null. */
-    denetle(izin, depo = null) {
+    denetle(izin, depo = null, raf = null) {
       if (izin && izinler && !izinler.has(izin)) return `${kim} bu işlemi yapamaz: "${IZIN_AD.get(izin) || izin}" yetkisi yok`;
       if (depo !== null && depo !== undefined && depolar && !depolar.has(Number(depo))) {
         const izinli = [...depolar].map((d) => depoAdi(d)).join(', ') || 'hiçbir depo';
         return `${kim} ${depoAdi(depo)} deposunda işlem yapamaz (yetkili depo: ${izinli})`;
       }
+      if (raf && onekler && !kapsam.kapsamda(String(raf), onekler)) return `${kim} ${raf} rafında işlem yapamaz (yetkili raflar: ${onekler.join(', ')})`;
       return null;
     },
   };
@@ -124,11 +144,14 @@ function baglam(satir, depoAdi = (d) => String(d)) {
 function terminalGorunumu(satir) {
   const izinler = kume(satir.perms);
   const depolar = kume(satir.depots, true);
+  const raflar = kume(satir.shelves);
   return {
     role: satir.role || 'tam',
     perms: izinler ? [...izinler].sort() : null,
     depots: depolar ? [...depolar].sort((a, b) => a - b) : null,
+    // Sıra kullanıcının yazdığı gibi kalır (kayıt metni zaten sıralı değil); terminal yalnız eşleştirir.
+    shelves: raflar ? [...raflar] : null,
   };
 }
 
-module.exports = { IZINLER, SABLONLAR, ISLEM_IZNI, metinListe, izinlerDogrula, depolariDogrula, rolDogrula, baglam, terminalGorunumu };
+module.exports = { IZINLER, SABLONLAR, ISLEM_IZNI, metinListe, izinlerDogrula, depolariDogrula, raflariDogrula, rolDogrula, baglam, terminalGorunumu };
