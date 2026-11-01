@@ -56,6 +56,7 @@ Terminal önce çevrimdışı düşünülmüştür: ürün ve raf listesi cihazd
 - **Sayım:** raf, kat ya da bölge kapsamlı veya tam sayım; kör sayım seçeneği.
 - **Depolar arası transfer:** Vega depo gönderim ve gönderim kabul fişleri terminalden yazılır; kısmi kabul, eksik kaydı.
 - **İsimle arama:** barkodu okunmayan ürün, yazım hatası olsa da bulunur.
+- **Belgeyi yarım bırakma:** Rafa Kaldır, Gönderim Kabul ve Depoya Gönder'de okutulanlar terminalde saklanır; çıkılsa, uygulama kapansa ya da terminal yeniden başlasa da belgeye dönünce kaldığı yerden devam edilir. Belge listesinde ve ana menüde "yarım" görünür; Vega'ya bir şey yazılmaz.
 - **Etiket basma** (ürün ve raf), **belge kilidi** (aynı belgeyi iki kişi açmasın), **çevrimdışı kuyruk**.
 
 **Yönetici programı (Windows)**

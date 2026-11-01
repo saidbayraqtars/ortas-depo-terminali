@@ -106,6 +106,35 @@ data class TransferLine(val productId: String, val qty: Double, val shelf: Strin
 
 data class Movement(val ts: Long, val text: String, val qty: Double)
 
+/** Yarım bırakılan belge türleri ([Db.saveDraft]). */
+object DraftKind {
+    /** Gönderim Kabul: okutulan ürünler (belge = gönderim kimliği). */
+    const val RECEIVE = "RECEIVE"
+    /** Rafa Kaldır belge içi: sepet ve seçili raf (belge = mal kabul belgesi kimliği). */
+    const val PUTAWAY = "PUTAWAY"
+    /** Depoya Gönder: hazırlanan gönderim (tek taslak, [SEND_DRAFT_ID]). */
+    const val SEND = "SEND"
+    const val SEND_DRAFT_ID = "SEND"
+}
+
+/**
+ * Yarım bırakılan belgenin taslağı: okutulanlar cihazda saklanır, belgeye dönülünce kaldığı yerden devam edilir.
+ * [lines] okutulan ürünler (Rafa Kaldır'da [TransferLine.shelf] sepetteki raf); [shelf] Rafa Kaldır'da seçili raf;
+ * [from] ve [confirmed] Depoya Gönder'de çıkış deposu ve onaylandı mı.
+ */
+data class DraftData(
+    val lines: List<TransferLine>,
+    val shelf: String = "",
+    val from: Int = 0,
+    val confirmed: Boolean = false,
+)
+
+/** Listede "yarım" etiketi için taslak özeti: [items] ürün sayısı, [qty] toplam adet, [user] son çalışan, [at] son değişiklik. */
+data class DraftInfo(val items: Int, val qty: Double, val user: String, val at: Long)
+
+/** Saklanan taslak satırı. */
+class DraftRow(val kind: String, val docId: String, val payload: String, val user: String, val at: Long)
+
 /**
  * Terminal kullanıcısı. [perms] ve [depots] yönetici programında verilen yetkidir (docs/API.md "Kullanıcı yetkisi");
  * null = sınırsız (eski sunucu yetki göndermez, yönetici tam yetki verdiyse de null gelir).

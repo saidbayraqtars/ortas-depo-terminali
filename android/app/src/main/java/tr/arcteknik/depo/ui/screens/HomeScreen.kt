@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
 import tr.arcteknik.depo.BuildConfig
+import tr.arcteknik.depo.data.DraftKind
 import tr.arcteknik.depo.data.Perm
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,6 +59,11 @@ fun HomeScreen(vm: AppVm, online: Boolean, version: Int) {
     val pending = remember(version) { db.pendingOpCount() }
     val transfer = remember(version) { vm.repo.transferInfo() }
     val lastSync = vm.repo.prefs.lastSync
+    // Yarım bırakılan belgeler (okutulanlar cihazda saklı): kartın altında "yarım" olarak görünür.
+    val halfReceipts = remember(version) { vm.repo.draftInfos(DraftKind.PUTAWAY).keys.count { db.receipt(it) != null } }
+    val halfIncoming = remember(version) { vm.repo.draftInfos(DraftKind.RECEIVE).keys.count { id -> transfer.incoming.any { it.id == id } } }
+    val halfSend = remember(version) { vm.repo.draftInfo(DraftKind.SEND, DraftKind.SEND_DRAFT_ID)?.items ?: 0 }
+    val halfArrange = remember(version) { db.openArrange() != null }
 
     Column(Modifier.fillMaxSize().background(C.Ground)) {
         Row(
@@ -102,11 +108,11 @@ fun HomeScreen(vm: AppVm, online: Boolean, version: Int) {
             }
             // Kullanıcının yetkisi olmayan işlemlerin kartı görünmez; boşalan yer yanındaki kartla dolar. Sorgu ve kuyruk herkese açık.
             val tiles = buildList<@Composable (Modifier) -> Unit> {
-                if (vm.can(Perm.PUTAWAY)) add { m -> Tile("Rafa Kaldır", "Kabul edilen mal", Ic.Inbox, openReceipts, m) { vm.go(Route.Receipts) } }
+                if (vm.can(Perm.PUTAWAY)) add { m -> Tile("Rafa Kaldır", if (halfReceipts > 0) "$halfReceipts belge yarım" else "Kabul edilen mal", Ic.Inbox, openReceipts, m, warn = halfReceipts > 0) { vm.go(Route.Receipts) } }
                 if (vm.can(Perm.PICK)) add { m -> Tile("Raftan Al", "Raftaki malı eksilt", Ic.Outbox, 0, m) { vm.go(Route.Pick) } }
                 if (vm.can(Perm.TRANSFER)) add { m -> Tile("Raf Transferi", "Raftan rafa taşı", Ic.Transfer, 0, m) { vm.go(Route.Transfer()) } }
                 // Rafta duran malı rafa tanımlar (sayımla aynı mantık, "sayım" adı geçmez; onay beklemez, Vega'ya yazılmaz).
-                if (vm.can(Perm.SHELF_ARRANGE)) add { m -> Tile("Raf Düzenle", "Rafa mal tanımla", Ic.Layers, 0, m) {
+                if (vm.can(Perm.SHELF_ARRANGE)) add { m -> Tile("Raf Düzenle", if (halfArrange) "Yarım kalan var" else "Rafa mal tanımla", Ic.Layers, 0, m, warn = halfArrange) {
                     if (vm.canDepot(db.depot)) vm.go(Route.Count(vm.repo.startArrange().id)) else vm.error("Bu depoda işlem yapma yetkiniz yok")
                 } }
                 if (vm.can(Perm.COUNT) || vm.can(Perm.COUNT_FREE)) add { m -> Tile("Sayım", "Raf ya da tam sayım", Ic.Clipboard, openCounts, m) { vm.go(Route.Counts) } }
@@ -114,8 +120,8 @@ fun HomeScreen(vm: AppVm, online: Boolean, version: Int) {
                 add { m -> Tile("Raf Sorgu", "Rafta neler var", Ic.Pin, 0, m) { vm.go(Route.ShelfQuery()) } }
                 if (transfer.on) {
                     val waiting = transfer.incoming.count { it.to == db.depot && vm.canDepot(it.to) }
-                    if (vm.can(Perm.DEPOT_SEND)) add { m -> Tile("Depoya Gönder", "Başka depoya mal", Ic.Truck, 0, m) { vm.go(Route.SendDepot) } }
-                    if (vm.can(Perm.DEPOT_RECEIVE)) add { m -> Tile("Gönderim Kabul", "Gelen mal", Ic.Inbox, waiting, m) { vm.go(Route.ReceiveList) } }
+                    if (vm.can(Perm.DEPOT_SEND)) add { m -> Tile("Depoya Gönder", if (halfSend > 0) "Yarım gönderim" else "Başka depoya mal", Ic.Truck, halfSend, m, warn = halfSend > 0) { vm.go(Route.SendDepot) } }
+                    if (vm.can(Perm.DEPOT_RECEIVE)) add { m -> Tile("Gönderim Kabul", if (halfIncoming > 0) "$halfIncoming yarım belge" else "Gelen mal", Ic.Inbox, waiting, m, warn = halfIncoming > 0) { vm.go(Route.ReceiveList) } }
                 }
                 add { m -> Tile("Kuyruk", "Bekleyen işlemler", Ic.CloudUp, pending, m) { vm.go(Route.Queue) } }
             }
@@ -139,7 +145,7 @@ fun HomeScreen(vm: AppVm, online: Boolean, version: Int) {
 }
 
 @Composable
-private fun Tile(title: String, sub: String, icon: ImageVector, badge: Int, modifier: Modifier, onClick: () -> Unit) {
+private fun Tile(title: String, sub: String, icon: ImageVector, badge: Int, modifier: Modifier, warn: Boolean = false, onClick: () -> Unit) {
     val shape = RoundedCornerShape(12.dp)
     Box(modifier.heightIn(min = 104.dp).clip(shape).background(C.Surface).border(1.dp, C.Line, shape).clickable(onClick = onClick).padding(14.dp)) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -148,7 +154,8 @@ private fun Tile(title: String, sub: String, icon: ImageVector, badge: Int, modi
             }
             Column {
                 Text(title, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, maxLines = 1)
-                Text(sub, color = C.Muted, fontSize = 12.sp, maxLines = 1)
+                // Yarım bırakılan iş varsa alt yazı uyarı renginde: unutulmasın.
+                Text(sub, color = if (warn) C.Warn else C.Muted, fontSize = 12.sp, fontWeight = if (warn) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
             }
         }
         if (badge > 0) Badge(badge, Modifier.align(Alignment.TopEnd))

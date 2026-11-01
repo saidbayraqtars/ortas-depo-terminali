@@ -41,6 +41,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import tr.arcteknik.depo.data.Db
+import tr.arcteknik.depo.data.DraftKind
 import tr.arcteknik.depo.data.Incoming
 import tr.arcteknik.depo.data.Location
 import tr.arcteknik.depo.data.Product
@@ -56,8 +57,10 @@ import tr.arcteknik.depo.ui.Divider
 import tr.arcteknik.depo.ui.DocLockEffect
 import tr.arcteknik.depo.ui.DocTakenScreen
 import tr.arcteknik.depo.ui.DocUnlockedNotice
+import tr.arcteknik.depo.ui.DraftSaver
 import tr.arcteknik.depo.ui.Hint
 import tr.arcteknik.depo.ui.Ic
+import tr.arcteknik.depo.ui.LeaveDocDialog
 import tr.arcteknik.depo.ui.LockState
 import tr.arcteknik.depo.ui.LockTag
 import tr.arcteknik.depo.ui.LocksPoller
@@ -73,6 +76,8 @@ import tr.arcteknik.depo.ui.Screen
 import tr.arcteknik.depo.ui.SecondaryButton
 import tr.arcteknik.depo.ui.Tone
 import tr.arcteknik.depo.ui.UndoButton
+import tr.arcteknik.depo.ui.draftLine
+import tr.arcteknik.depo.ui.draftRestored
 
 /*
  * Depolar arası transfer. Yalnız ayarlardaki iki depo (örneğin Merkez ↔ Toybelen) arasında yapılır.
@@ -87,6 +92,9 @@ import tr.arcteknik.depo.ui.UndoButton
  *    fişe yalnız gönderilen kadar yazılır (sunucu fazlasını reddeder). Okutulanlar "kaydet" ile kısmi kabul olarak gider,
  *    gönderim açık kalır; "Kabulü bitir" kalan miktarı eksik olarak kaydeder ve gönderimi kapatır. Alınan mal Rafa Kaldır'da
  *    belge olarak bekler. Belgeye girerken kilit alınır (başka terminal kullanıyorsa belge açılmaz).
+ *  - Yarım bırakma (1.13.0): iki ekranda da okutulanlar her değişiklikte cihazdaki `doc_draft` tablosuna yazılır (DraftUi.kt);
+ *    belgeden çıkınca, uygulama kapanınca ya da terminal yeniden başlayınca kaybolmaz, belgeye dönülünce kaldığı yerden devam edilir.
+ *    Taslak Vega'ya bir şey yazmaz; liste kartında ve ana menüde "yarım" olarak görünür.
  */
 
 @Composable
@@ -151,6 +159,11 @@ fun SendDepotScreen(vm: AppVm, online: Boolean, version: Int) {
     val db = vm.repo.db
     val info = remember(version) { vm.repo.transferInfo() }
     val draft = vm.sendDraft
+    // Hazırlanan gönderim her değişiklikte cihaza yazılır: yarım bırakılsa, uygulama kapansa ya da terminal yeniden başlasa da kaybolmaz.
+    DraftSaver({ Triple(draft.from, draft.fromConfirmed, draft.lines.toList()) }) { vm.saveSendDraft() }
+    // Yarım bırakılmış gönderimle girildiyse "geri yüklendi" satırı gösterilir (ilk okutmada ya da sıfırlayınca kalkar).
+    val restored = remember { if (draft.lines.isNotEmpty()) vm.repo.draftInfo(DraftKind.SEND, DraftKind.SEND_DRAFT_ID) else null }
+    var showRestored by remember { mutableStateOf(restored != null) }
     // Çıkış deposu her gönderimde sorulur; ilk açılışta çalışılan depo öneri olarak işaretli gelir. Kullanıcı yalnız kendi
     // depolarından çıkış yapabilir (yetki); tek deposu varsa sorulmaz.
     val fromChoices = remember(info, vm.user) { info.depots.filter { vm.canDepot(it.id) } }
@@ -198,6 +211,7 @@ fun SendDepotScreen(vm: AppVm, online: Boolean, version: Int) {
     /** Okutulan ürün adet sorulmadan sepete girer, aynı ürün tekrar okutulunca 1 artar; ürün sepetin başına çıkar. */
     fun quickAdd(p: Product) {
         scanTick++
+        showRestored = false
         val stocks = sendStocks(db, p.id, from)
         val next = addToSend(lines.filter { it.productId == p.id }, stocks, p.id, 1.0)
         draft.replace(p.id, emptyList())
@@ -225,7 +239,13 @@ fun SendDepotScreen(vm: AppVm, online: Boolean, version: Int) {
             Column(Modifier.weight(1f).fillMaxWidth().clip(shape).background(C.Surface).border(1.dp, C.Line, shape)) {
                 Row(Modifier.padding(start = 14.dp, end = 4.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Caption(if (groups.isEmpty()) "Gönderilecekler" else "${groups.size} kalem · ${fmt(lines.sumOf { it.qty })} adet", Modifier.weight(1f))
-                    if (lines.isEmpty()) { if (fromChoices.size > 1) LinkText("Çıkışı değiştir") { pickFrom = true } } else LinkText("Sıfırla", C.Err) { lines.clear() }
+                    if (lines.isEmpty()) { if (fromChoices.size > 1) LinkText("Çıkışı değiştir") { pickFrom = true } } else LinkText("Sıfırla", C.Err) { lines.clear(); showRestored = false }
+                }
+                if (showRestored && restored != null && lines.isNotEmpty()) {
+                    Text(
+                        draftRestored(restored), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = C.InfoText, maxLines = 1,
+                        overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 4.dp),
+                    )
                 }
                 if (groups.isEmpty()) Hint("Okutulan her ürün burada listelenir; raf kendiliğinden seçilir.", Modifier.padding(start = 14.dp, end = 14.dp, bottom = 10.dp))
                 // Anahtarlı liste başa eklenen satırda eski konumunu korur; her okutmada başa dönülür ki son okutulan görünsün.
@@ -256,7 +276,7 @@ fun SendDepotScreen(vm: AppVm, online: Boolean, version: Int) {
                             LinkText("Sil", C.Err) { draft.replace(pid, emptyList()) }
                         }
                     }
-                    if (groups.isNotEmpty()) item { Hint("Adet ya da raf değiştirmek için satıra dokunun.", Modifier.padding(vertical = 8.dp)) }
+                    if (groups.isNotEmpty()) item { Hint("Adet ya da raf değiştirmek için satıra dokunun. Yarım bırakmak için geri dönün: hazırlanan gönderim saklanır, Gönder'e basana kadar Vega'ya yazılmaz.", Modifier.padding(vertical = 8.dp)) }
                 }
             }
         }
@@ -443,13 +463,14 @@ fun ReceiveListScreen(vm: AppVm, online: Boolean, version: Int) {
     val mine = info.incoming.filter { it.to == d && vm.canDepot(it.to) }
     val others = info.incoming.filter { it.to != d && vm.canDepot(it.to) }
     LocksPoller(vm)
+    // Yarım bırakılan okutmalar (cihazda saklı): kartta "Yarım · 12 adet okutuldu" olarak görünür.
+    val half = remember { vm.repo.draftInfos(DraftKind.RECEIVE) }
     Screen("Gönderim Kabul", sub = db.depotName(d).ifBlank { null }, online = online, onBack = { vm.back() }, scroll = false) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (mine.isEmpty()) {
                 Notice("Bu depoya kabul bekleyen gönderim yok. Gönderen taraf fişi kestikten sonra liste birkaç saniye içinde yenilenir.", Tone.Info, icon = Ic.Inbox)
             }
             mine.forEach { s ->
-                val started = vm.receiveDraft(s.id).isNotEmpty()
                 Card(onClick = { vm.go(Route.ReceiveDoc(s.id)) }) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         MonoText(s.no, size = 17, modifier = Modifier.weight(1f))
@@ -457,7 +478,8 @@ fun ReceiveListScreen(vm: AppVm, online: Boolean, version: Int) {
                     }
                     Text("${s.fromName} deposundan", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                     LockTag(vm, "SEVK-${s.id}")
-                    Hint("${s.lines.size} kalem · toplam ${fmt(s.lines.sumOf { it.open })}" + if (started) " · okutma sürüyor" else "")
+                    Hint("${s.lines.size} kalem · toplam ${fmt(s.lines.sumOf { it.open })}")
+                    half[s.id]?.let { Text(draftLine(it), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = C.Warn) }
                 }
             }
             if (others.isNotEmpty()) {
@@ -475,6 +497,11 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
     val info = remember(version) { vm.repo.transferInfo() }
     val sevk: Incoming? = info.incoming.firstOrNull { it.id == sevkId }
     val draft = vm.receiveDraft(sevkId)
+    // Okutulanlar her değişiklikte cihaza yazılır: belge yarım bırakılsa, uygulama kapansa ya da terminal yeniden başlasa da kaybolmaz.
+    DraftSaver({ draft.toList() }) { vm.saveReceiveDraft(sevkId) }
+    // Yarım bırakılmış okutmayla girildiyse "geri yüklendi" satırı gösterilir (ilk okutmada ya da sıfırlayınca kalkar).
+    val restored = remember(sevkId) { vm.repo.draftInfo(DraftKind.RECEIVE, sevkId) }
+    var showRestored by remember { mutableStateOf(restored != null) }
     var confirm by remember { mutableStateOf(false) }
     var leaveAsk by remember { mutableStateOf(false) }
     // Sepet gibi okutma: 0 okutulanlar (en son okutulan üstte), 1 kalanlar, 2 gönderimin tamamı.
@@ -504,6 +531,11 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
         Diag.crumb("kabul: gönderim listede yok ($sevkId, ${info.incoming.size} gönderim)")
         Screen("Gönderim Kabul", online = online, onBack = { vm.back() }) {
             Notice("Bu gönderim artık açık görünmüyor (kabul edilmiş ya da iptal edilmiş olabilir).", Tone.Warn, icon = Ic.Warning)
+            // Yarım bırakılmış okutma varsa bu ekrandan silinebilir (gönderim çoktan bitmişse taslağın işi kalmaz).
+            if (draft.isNotEmpty()) {
+                Hint("Bu gönderim için yarım bırakılmış ${fmt(draft.sumOf { it.qty })} adet okutma saklı.")
+                SecondaryButton("Yarım okutmayı sil", { vm.dropReceiveDraft(sevkId) })
+            }
             SecondaryButton("Geri", { vm.back() })
         }
         return
@@ -516,6 +548,7 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
         val l = sevk.lines.firstOrNull { it.productId == p.id } ?: return vm.error("${p.name} bu gönderimde yok")
         lastPid = p.id
         scanTick++
+        showRestored = false
         val n = have(p.id) + 1
         // Okutulan ürün sepetin başına çıkar: liste okutma sırasını gösterir.
         draft.removeAll { it.productId == p.id }
@@ -572,6 +605,12 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
             val shape = RoundedCornerShape(12.dp)
             Column(Modifier.weight(1f).fillMaxWidth().clip(shape).background(C.Surface).border(1.dp, C.Line, shape)) {
                 Column(Modifier.padding(start = 14.dp, end = 8.dp, top = 8.dp)) {
+                    if (showRestored && restored != null && draft.isNotEmpty()) {
+                        Text(
+                            draftRestored(restored), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = C.InfoText, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(end = 6.dp, bottom = 6.dp),
+                        )
+                    }
                     Row(Modifier.padding(end = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Segment("Okunan ${scanned.size}", tab == 0, Modifier.weight(1f)) { tab = 0 }
                         Segment("Kalan ${missing.size}", tab == 1, Modifier.weight(1f)) { tab = 1 }
@@ -616,9 +655,11 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
                             // Seyrek işlemler listenin sonunda: ekranı sabit başlıkla doldurmasınlar.
                             if (draft.isNotEmpty()) {
                                 Row {
-                                    LinkText("Okutulanları kısmi kaydet · ${fmt(writable(sevk, draft.toList()).sumOf { it.qty })}") { savePartial(false) }
-                                    LinkText("Sıfırla", C.Err) { draft.clear(); lastPid = null }
+                                    LinkText("Kısmi kaydet · ${fmt(writable(sevk, draft.toList()).sumOf { it.qty })}") { savePartial(false) }
+                                    LinkText("Sıfırla", C.Err) { draft.clear(); lastPid = null; showRestored = false }
                                 }
+                                // Yarım bırakmak için kaydetmek gerekmez: okutulanlar cihazda saklanır, belgeye dönünce kaldığı yerden devam edilir.
+                                LinkText("Yarım bırak · okutulanlar saklanır") { vm.back() }
                             }
                             if (hadPartial) Hint("Bu gönderimden bir kısmı daha önce alındı; yukarıdakiler kalan miktardır.")
                             Hint("Alınan mal Rafa Kaldır'da belge olarak bekler; oradan rafa yerleştirilir.")
@@ -630,19 +671,16 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
     }
 
     if (leaveAsk) {
-        AlertDialog(
-            onDismissRequest = { leaveAsk = false },
-            title = { Text("Okutulanlar kaydedilsin mi?") },
-            text = { Text("${fmt(draft.sumOf { it.qty })} adet okutuldu, henüz kaydedilmedi. Kısmi kabul olarak kaydedilirse gönderim açık kalır; kalanı sonra alınır ya da \"Kabulü bitir\" ile eksik yazılır.") },
-            confirmButton = {
-                TextButton({ leaveAsk = false; savePartial(true) }, Modifier.focusProperties { canFocus = false }) { Text("Kısmi kaydet", fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = {
-                Row {
-                    TextButton({ leaveAsk = false }, Modifier.focusProperties { canFocus = false }) { Text("Vazgeç") }
-                    TextButton({ leaveAsk = false; vm.back() }, Modifier.focusProperties { canFocus = false }) { Text("Taslak kalsın") }
-                }
-            },
+        LeaveDocDialog(
+            title = "Belgeyi yarım mı bırakıyorsunuz?",
+            text = "${fmt(draft.sumOf { it.qty })} adet okutuldu, henüz kabul edilmedi.",
+            // Okutulanlar zaten cihazda saklı (DraftSaver); çıkmak yeter.
+            onHalf = { leaveAsk = false; vm.back() },
+            commitLabel = "Kısmi kaydet (Vega'ya yaz)",
+            onCommit = { leaveAsk = false; savePartial(true) },
+            discardLabel = "Atıp çık",
+            onDiscard = { leaveAsk = false; vm.dropReceiveDraft(sevk.id); vm.back() },
+            onStay = { leaveAsk = false },
         )
     }
     if (confirm) {

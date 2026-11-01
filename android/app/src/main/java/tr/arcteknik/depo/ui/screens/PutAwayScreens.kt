@@ -39,12 +39,15 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import tr.arcteknik.depo.data.DraftData
+import tr.arcteknik.depo.data.DraftKind
 import tr.arcteknik.depo.data.Fuzzy
 import tr.arcteknik.depo.data.Perm
 import tr.arcteknik.depo.data.Product
 import tr.arcteknik.depo.data.Repo
 import tr.arcteknik.depo.data.ReceiptLine
 import tr.arcteknik.depo.data.Repo.Companion.fmt
+import tr.arcteknik.depo.data.TransferLine
 import tr.arcteknik.depo.ui.AppVm
 import tr.arcteknik.depo.ui.BasketBox
 import tr.arcteknik.depo.ui.BasketLink
@@ -60,8 +63,10 @@ import tr.arcteknik.depo.ui.DocLockEffect
 import tr.arcteknik.depo.ui.DocTakenScreen
 import tr.arcteknik.depo.ui.DocUnlockedNotice
 import tr.arcteknik.depo.ui.Divider
+import tr.arcteknik.depo.ui.DraftSaver
 import tr.arcteknik.depo.ui.Hint
 import tr.arcteknik.depo.ui.Ic
+import tr.arcteknik.depo.ui.LeaveDocDialog
 import tr.arcteknik.depo.ui.LimitedList
 import tr.arcteknik.depo.ui.LockState
 import tr.arcteknik.depo.ui.LockTag
@@ -78,6 +83,8 @@ import tr.arcteknik.depo.ui.ScanField
 import tr.arcteknik.depo.ui.Screen
 import tr.arcteknik.depo.ui.SecondaryButton
 import tr.arcteknik.depo.ui.Tone
+import tr.arcteknik.depo.ui.draftLine
+import tr.arcteknik.depo.ui.draftRestored
 
 @Composable
 fun ReceiptListScreen(vm: AppVm, online: Boolean, version: Int) {
@@ -99,6 +106,8 @@ fun ReceiptListScreen(vm: AppVm, online: Boolean, version: Int) {
 
     // Başka terminallerin açtığı belgeler kilit simgesiyle görünür (belge kilidi).
     LocksPoller(vm)
+    // Yarım bırakılan belgeler (okutulanlar cihazda saklı): kartta "Yarım · 12 adet okutuldu" olarak görünür.
+    val half = remember { vm.repo.draftInfos(DraftKind.PUTAWAY) }
     // Belge listesi uzun olabilir: kendi LazyColumn'u kayar, üstteki okutma alanı sabit kalır (kaydırılınca bileşimden düşmez).
     Screen("Rafa Kaldır", online = online, onBack = { vm.back() }, scroll = false) {
         // Ürün okutulursa belge seçmeden rafa kaldırılır (miktar açık belgelerden, artanı belgesiz); belge numarası
@@ -160,6 +169,7 @@ fun ReceiptListScreen(vm: AppVm, online: Boolean, version: Int) {
                     if (multiDepot) Text(r.depotName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (r.depot == vm.repo.db.depot) C.Muted else C.Info)
                     Text(r.supplier, fontWeight = FontWeight.SemiBold)
                     LockTag(vm, r.id)
+                    half[r.id]?.let { Text(draftLine(it), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = C.Warn) }
                     val ratio = if (r.lineCount == 0) 0f else r.doneLines.toFloat() / r.lineCount
                     Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(C.LineSoft)) {
                         Box(Modifier.fillMaxWidth(ratio).height(8.dp).background(C.Ok))
@@ -228,8 +238,16 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
     val db = vm.repo.db
     val receipt = remember(version) { db.receipt(receiptId) }
     val lines = remember(version) { db.receiptLines(receiptId) }
-    var shelf by remember { mutableStateOf<String?>(null) }
-    val cart = remember { mutableStateListOf<CartLine>() }
+    // Yarım bırakılmış okutma (cihazda saklı) varsa sepet ve seçili raf onunla başlar.
+    val saved = remember(receiptId) { vm.repo.loadDraft(DraftKind.PUTAWAY, receiptId) }
+    val restored = remember(receiptId) { if (saved != null) vm.repo.draftInfo(DraftKind.PUTAWAY, receiptId) else null }
+    var showRestored by remember { mutableStateOf(restored != null) }
+    var shelf by remember { mutableStateOf<String?>(saved?.shelf?.takeIf { it.isNotBlank() }) }
+    val cart = remember { mutableStateListOf<CartLine>().apply { saved?.lines?.forEach { add(CartLine(it.productId, it.shelf, it.qty)) } } }
+    // Sepet her değişiklikte cihaza yazılır: belge yarım bırakılsa, uygulama kapansa ya da terminal yeniden başlasa da kaybolmaz.
+    DraftSaver({ cart.toList() to shelf }) {
+        vm.repo.saveDraft(DraftKind.PUTAWAY, receiptId, DraftData(cart.map { TransferLine(it.productId, it.qty, it.shelf) }, shelf = shelf.orEmpty()), vm.userName)
+    }
     var tick by remember { mutableStateOf(0) }
     // 0 okunanlar (en son okutulan üstte), 1 belgede kalanlar.
     var tab by remember { mutableStateOf(0) }
@@ -282,6 +300,7 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
         val firstOnShelf = cart.cartQty(p.id, target) <= 1e-9
         val n = cart.bump(p.id, target)
         tick++
+        showRestored = false
         val total = cart.cartQty(p.id)
         when {
             // Belgede kalandan fazlası da okutulur (mal fiziken rafa konur); uyarı verilir.
@@ -354,11 +373,20 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
                 rows, scrollKey = tick * 4 + tab,
                 emptyHint = if (tab == 0) "Raf okutun, sonra ürünleri peş peşe okutun; okutulanlar burada listelenir." else "Belgede rafa kaldırılacak kalem kalmadı.",
                 modifier = Modifier.weight(1f),
+                tail = if (cart.isNotEmpty()) ({
+                    Hint("Yarım bırakmak için geri dönün: okutulanlar saklanır, belgeye dönünce kaldığınız yerden devam edersiniz.", Modifier.padding(vertical = 8.dp))
+                }) else null,
             ) {
+                if (showRestored && restored != null && cart.isNotEmpty()) {
+                    Text(
+                        draftRestored(restored), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = C.InfoText, maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.padding(end = 6.dp, bottom = 6.dp),
+                    )
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Caption(shelf ?: "Raf yok", Modifier.weight(1f))
                     if (shelf != null) BasketLink("Raf ✕") { shelf = null }
-                    if (cart.isNotEmpty()) BasketLink("Sıfırla", C.Err) { cart.clear() }
+                    if (cart.isNotEmpty()) BasketLink("Sıfırla", C.Err) { cart.clear(); showRestored = false }
                 }
                 Row(Modifier.padding(end = 6.dp, bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Segment("Okunan ${cart.map { it.productId }.distinct().size}", tab == 0, Modifier.weight(1f)) { tab = 0 }
@@ -369,24 +397,21 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
     }
 
     if (leaveAsk) {
-        AlertDialog(
-            onDismissRequest = { leaveAsk = false },
-            title = { Text("Okutulanlar rafa kaldırılsın mı?") },
-            text = { Text("${cart.size} kalem okutuldu, henüz rafa kaldırılmadı.") },
-            confirmButton = {
-                TextButton({
-                    leaveAsk = false
-                    val left = commit()
-                    vm.saved(if (left == 0) "Belge tamamlandı" else "Rafa kaldırıldı · $left kalem kaldı")
-                    vm.back()
-                }, Modifier.focusProperties { canFocus = false }) { Text("Rafa kaldır", fontWeight = FontWeight.Bold) }
+        LeaveDocDialog(
+            title = "Belgeyi yarım mı bırakıyorsunuz?",
+            text = "${cart.size} kalem okutuldu, henüz rafa kaldırılmadı.",
+            // Sepet zaten cihazda saklı (DraftSaver); çıkmak yeter.
+            onHalf = { leaveAsk = false; vm.back() },
+            commitLabel = "Rafa kaldır (${cart.size} kalem)",
+            onCommit = {
+                leaveAsk = false
+                val left = commit()
+                vm.saved(if (left == 0) "Belge tamamlandı" else "Rafa kaldırıldı · $left kalem kaldı")
+                vm.back()
             },
-            dismissButton = {
-                Row {
-                    TextButton({ leaveAsk = false }, Modifier.focusProperties { canFocus = false }) { Text("Vazgeç") }
-                    TextButton({ leaveAsk = false; cart.clear(); vm.back() }, Modifier.focusProperties { canFocus = false }) { Text("Atıp çık", color = C.Err) }
-                }
-            },
+            discardLabel = "Atıp çık",
+            onDiscard = { leaveAsk = false; cart.clear(); vm.back() },
+            onStay = { leaveAsk = false },
         )
     }
     if (confirm) {

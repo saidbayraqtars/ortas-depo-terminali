@@ -31,6 +31,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import tr.arcteknik.depo.App
 import tr.arcteknik.depo.data.Depot
+import tr.arcteknik.depo.data.DraftData
+import tr.arcteknik.depo.data.DraftKind
 import tr.arcteknik.depo.data.Perm
 import tr.arcteknik.depo.data.Repo
 import tr.arcteknik.depo.data.TransferLine
@@ -105,6 +107,9 @@ class SendDraft {
     fun qtyOf(productId: String): Double = lines.filter { it.productId == productId }.sumOf { it.qty }
 }
 
+/** Yarım bırakılan belgenin taslağı bu süre dokunulmazsa silinir. */
+private const val DRAFT_KEEP_MS = 30L * 24 * 60 * 60 * 1000
+
 /** Belge kilidinin terminaldeki durumu (docs/API.md "Belge kilidi"). */
 enum class LockState {
     /** Kilit yok: belge bir kilit gerektirmeyen ekranda. */
@@ -142,7 +147,20 @@ class AppVm(app: Application) : AndroidViewModel(app) {
     var user by mutableStateOf<User?>(null)
         private set
 
-    val sendDraft = SendDraft()
+    /** Hazırlanan gönderim: yarım bırakılınca cihazda saklanır, uygulama yeniden açılınca geri yüklenir. */
+    val sendDraft = SendDraft().also { d ->
+        repo.loadDraft(DraftKind.SEND, DraftKind.SEND_DRAFT_ID)?.let { s ->
+            d.from = s.from
+            d.fromConfirmed = s.confirmed
+            d.lines.addAll(s.lines)
+        }
+    }
+
+    /** [sendDraft]'ı cihaza yazar (satır kalmadıysa taslağı siler). Ekran değişiklikleri izleyip çağırır ([DraftSaver]). */
+    fun saveSendDraft() {
+        repo.saveDraft(DraftKind.SEND, DraftKind.SEND_DRAFT_ID, DraftData(sendDraft.lines.toList(), from = sendDraft.from, confirmed = sendDraft.fromConfirmed), userName)
+    }
+
     val docLock = DocLock()
     private var lockJob: Job? = null
 
@@ -151,11 +169,25 @@ class AppVm(app: Application) : AndroidViewModel(app) {
         private set
     private val receiveDrafts = HashMap<String, androidx.compose.runtime.snapshots.SnapshotStateList<TransferLine>>()
 
-    /** Gönderim kabulünde okutulanlar; kabul bitene ya da vazgeçilene kadar saklanır. */
-    fun receiveDraft(sevkId: String) = receiveDrafts.getOrPut(sevkId) { mutableStateListOf() }
+    /**
+     * Gönderim kabulünde okutulanlar; kabul bitene ya da vazgeçilene kadar saklanır. Belge yarım bırakılsa, uygulama kapansa
+     * ya da terminal yeniden başlasa da cihazdaki taslaktan geri gelir ([saveReceiveDraft]).
+     */
+    fun receiveDraft(sevkId: String) = receiveDrafts.getOrPut(sevkId) {
+        mutableStateListOf<TransferLine>().apply { repo.loadDraft(DraftKind.RECEIVE, sevkId)?.let { addAll(it.lines) } }
+    }
 
+    /** Okutulanları cihaza yazar (satır kalmadıysa taslağı siler). Ekran değişiklikleri izleyip çağırır ([DraftSaver]). */
+    fun saveReceiveDraft(sevkId: String) {
+        val l = receiveDrafts[sevkId] ?: return
+        repo.saveDraft(DraftKind.RECEIVE, sevkId, DraftData(l.toList()), userName)
+    }
+
+    /** Okutulanlar kaydedildi ya da atıldı: liste boşalır, cihazdaki taslak silinir. */
     fun dropReceiveDraft(sevkId: String) {
-        receiveDrafts.remove(sevkId)
+        // Liste boşaltılır: ekranın elindeki başvuru eski satırlarla taslağı yeniden yazmasın.
+        receiveDrafts.remove(sevkId)?.clear()
+        repo.deleteDraft(DraftKind.RECEIVE, sevkId)
     }
 
     val stack = mutableStateListOf<Route>(Route.Login)
@@ -168,6 +200,8 @@ class AppVm(app: Application) : AndroidViewModel(app) {
     init {
         // İlk açılışta cihaz boşsa ana veriyi hemen almaya çalış.
         if (repo.db.isEmpty()) viewModelScope.launch { sync.run() }
+        // Aylardır dokunulmayan yarım belge taslakları (belge çoktan başka yerde bitmiştir) temizlenir.
+        viewModelScope.launch(Dispatchers.IO) { runCatching { repo.db.pruneDrafts(DRAFT_KEEP_MS) } }
     }
 
     // ---- Kullanıcı yetkisi (yönetici programı Kullanıcılar sayfası; docs/API.md "Kullanıcı yetkisi") --------

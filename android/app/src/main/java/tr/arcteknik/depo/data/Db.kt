@@ -19,7 +19,7 @@ import java.io.Reader
  * Çok depo: raf, raf stoku, Vega stoku ve asıl raf depoya bağlıdır. [depot] terminalin çalıştığı depodur
  * (transfer, sayım, sorgu); mal kabul belgesi kendi deposunu taşır ve rafa kaldırma orada olur.
  */
-class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 9) {
+class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 10) {
 
     init {
         // Eşitleme ana veriyi yazarken ekranlar (ana iş parçacığı) beklemeden son kaydedilmiş hali okusun.
@@ -41,6 +41,12 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 9) {
         // perms / depots / shelves: virgülle ayrılmış liste; NULL = sınırsız (bkz. [User]).
         db.execSQL("CREATE TABLE app_user(username TEXT PRIMARY KEY, name TEXT NOT NULL, pin_hash TEXT NOT NULL, salt TEXT NOT NULL, perms TEXT, depots TEXT, shelves TEXT)")
         createParts(db)
+        createDraft(db)
+    }
+
+    /** Yarım bırakılan belgelerin taslağı (bkz. [saveDraft]); ana veri değildir, eşitleme dokunmaz. */
+    private fun createDraft(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS doc_draft(kind TEXT NOT NULL, doc_id TEXT NOT NULL, payload TEXT NOT NULL, user_name TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL, PRIMARY KEY(kind, doc_id))")
     }
 
     /** Boş olarak sayılan raflar: count_line'da satırları yoktur ama sayılmıştır. */
@@ -134,6 +140,8 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 9) {
             addColumn(db, "app_user", "shelves", "TEXT")
             db.execSQL("DELETE FROM master_part WHERE key='head'")
         }
+        // 10: yarım bırakılan belgelerin taslağı (okutulanlar uygulama kapansa da kaybolmaz).
+        if (oldVersion < 10) createDraft(db)
     }
 
     // ---- Ana veri ------------------------------------------------------------------------
@@ -815,9 +823,43 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 9) {
 
     fun clearAll() {
         val db = writableDatabase
-        for (t in listOf("product", "product_stock", "barcode", "depot", "shelf", "location", "home", "receipt", "receipt_line", "count_session", "count_line", "count_shelf", "op", "movement", "app_user", "master_part")) {
+        for (t in listOf("product", "product_stock", "barcode", "depot", "shelf", "location", "home", "receipt", "receipt_line", "count_session", "count_line", "count_shelf", "op", "movement", "app_user", "master_part", "doc_draft")) {
             db.delete(t, null, null)
         }
+    }
+
+    // ---- Yarım bırakılan belgeler --------------------------------------------------------
+
+    /**
+     * Yarım bırakılan belgenin taslağını yazar (belge başına bir satır). Aynı içerik tekrar yazılmaz; [user] boşsa
+     * (çıkış yapılmış) önceki çalışanın adı korunur.
+     */
+    fun saveDraft(kind: String, docId: String, payload: String, user: String) {
+        val old = loadDraft(kind, docId)
+        if (old != null && old.payload == payload) return
+        writableDatabase.execSQL(
+            "INSERT OR REPLACE INTO doc_draft(kind, doc_id, payload, user_name, updated_at) VALUES(?,?,?,?,?)",
+            arrayOf<Any>(kind, docId, payload, user.ifBlank { old?.user.orEmpty() }, System.currentTimeMillis()),
+        )
+    }
+
+    fun loadDraft(kind: String, docId: String): DraftRow? =
+        query("SELECT kind, doc_id, payload, user_name, updated_at FROM doc_draft WHERE kind=? AND doc_id=?", kind, docId) {
+            DraftRow(it.getString(0), it.getString(1), it.getString(2), it.getString(3), it.getLong(4))
+        }.firstOrNull()
+
+    fun deleteDraft(kind: String, docId: String) {
+        writableDatabase.delete("doc_draft", "kind=? AND doc_id=?", arrayOf(kind, docId))
+    }
+
+    fun drafts(kind: String): List<DraftRow> =
+        query("SELECT kind, doc_id, payload, user_name, updated_at FROM doc_draft WHERE kind=? ORDER BY updated_at DESC", kind) {
+            DraftRow(it.getString(0), it.getString(1), it.getString(2), it.getString(3), it.getLong(4))
+        }
+
+    /** [olderThanMs]'den uzun süredir dokunulmayan taslakları siler (belge çoktan başka yerde bitmiştir). */
+    fun pruneDrafts(olderThanMs: Long) {
+        writableDatabase.delete("doc_draft", "updated_at<?", arrayOf((System.currentTimeMillis() - olderThanMs).toString()))
     }
 
     // ---- Yardımcılar ---------------------------------------------------------------------

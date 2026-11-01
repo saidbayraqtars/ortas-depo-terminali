@@ -21,6 +21,25 @@ listeye girer, **aynı ürün tekrar okutulunca adet 1 artar**, arada başka ür
 sıralıdır (son okutulan renkli), satırdaki **−** tek adım geri alır. Beklenen miktar (belgede kalan, raftaki stok, gönderilen) aşılırsa okutma
 **engellenmez**: sesli ve görüntülü uyarı verilir, işlem sonunda onay penceresinde ayrıca uyarılır.
 
+## Belgeyi yarım bırakma (1.13.0+)
+
+**Rafa Kaldır** (belge içi), **Gönderim Kabul** ve **Depoya Gönder** belgeleri yarım bırakılabilir: okutulanlar her okutmada
+terminale (cihazdaki `doc_draft` tablosu) yazılır, belgeden çıkınca, uygulama kapanınca, terminal yeniden başlayınca ya da başka
+kullanıcı girince **kaybolmaz**; belgeye dönünce kaldığı yerden devam edilir ("Yarım bırakılan okutma geri yüklendi · kim · ne zaman").
+Taslak **Vega'ya ve sunucuya hiçbir şey yazmaz**; okutulanlar ancak **Rafa kaldır / Kısmi kaydet / Kabulü bitir / Gönder** ile işlenir.
+
+- Okutulanlarla geri tuşuna basınca açılan pencerede birincil seçenek **Yarım bırak**tır. Diğerleri: **Rafa kaldır** (Rafa Kaldır) ya da
+  **Kısmi kaydet (Vega'ya yaz)** (Gönderim Kabul), **Atıp çık**, **Belgede kal**. Depoya Gönder'de geri tuşu sormadan yarım bırakır.
+  Gönderim Kabul'de ayrıca listenin sonunda **Yarım bırak** bağlantısı vardır.
+- Yarım bırakılan belgeler görünür: belge kartında **Yarım · 12 adet okutuldu · Ahmet · 31.10 17:40**, ana menüde ilgili kartın altında
+  sarı **"2 belge yarım"** / **"Yarım gönderim var"** / **"Yarım kalan var"** (Raf Düzenle) yazısı.
+- Taslak **terminale** aittir (başka terminalde görünmez). Aynı belgeyi başka terminal alırsa ya da yönetici kilidi açarsa, bu terminaldeki
+  taslak değil işlenmiş kısım esas alınır: kilit gidince terminal okutulanları kaydedip (Rafa kaldır / kısmi kabul) belgeden çıkar (1.8.0).
+- Gönderim kapanmış / belge tamamlanmış ise taslağın işi kalmaz: Gönderim Kabul'de "Yarım okutmayı sil" düğmesi çıkar; 30 gün
+  dokunulmayan taslak kendiliğinden silinir.
+- Raftan Al, Raf Transferi ve belgesiz Rafa Kaldır (ürün okutarak) anlık işlemlerdir, belge değildir; yarım bırakılmaz. Sayım ve Raf Düzenle
+  oturumları zaten cihazda saklanır.
+
 ## Rafa kaldırma ve raftan alma (1.5.0+)
 
 - **Rafa Kaldır** listesi çalışılan deponun belgelerini gösterir ("Bütün depolar" ile hepsi). Okutma alanına belge

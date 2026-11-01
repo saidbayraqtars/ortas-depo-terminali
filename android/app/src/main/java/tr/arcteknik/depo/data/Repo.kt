@@ -52,6 +52,42 @@ class Repo(val db: Db, val prefs: Prefs) {
         return if (hashPin(u.salt, pin) == u.pinHash) u.also { prefs.lastUser = it.username } else null
     }
 
+    // ---- Yarım bırakılan belgeler (taslak) -----------------------------------------------
+
+    /**
+     * Belgeyi yarım bırakmak: okutulanlar cihazda saklanır (uygulama kapansa, terminal yeniden başlasa, başka kullanıcı girse de),
+     * belgeye dönülünce kaldığı yerden devam edilir. Taslak Vega'ya ya da sunucuya hiçbir şey yazmaz; satır kalmadıysa silinir.
+     */
+    fun saveDraft(kind: String, docId: String, d: DraftData, user: String) {
+        if (d.lines.isEmpty()) return db.deleteDraft(kind, docId)
+        val lines = JSONArray()
+        d.lines.forEach { lines.put(JSONObject().put("p", it.productId).put("q", it.qty).put("s", it.shelf)) }
+        val payload = JSONObject().put("shelf", d.shelf).put("from", d.from).put("confirmed", d.confirmed).put("lines", lines).toString()
+        db.saveDraft(kind, docId, payload, user)
+    }
+
+    fun loadDraft(kind: String, docId: String): DraftData? = db.loadDraft(kind, docId)?.let { decodeDraft(it.payload) }
+
+    fun deleteDraft(kind: String, docId: String) = db.deleteDraft(kind, docId)
+
+    /** Türdeki bütün taslakların özeti (liste ekranlarında "yarım" etiketi için); belge kimliği → özet. */
+    fun draftInfos(kind: String): Map<String, DraftInfo> =
+        db.drafts(kind).mapNotNull { r ->
+            val d = decodeDraft(r.payload) ?: return@mapNotNull null
+            if (d.lines.isEmpty()) null else r.docId to DraftInfo(d.lines.map { it.productId }.distinct().size, d.lines.sumOf { it.qty }, r.user, r.at)
+        }.toMap()
+
+    fun draftInfo(kind: String, docId: String): DraftInfo? = draftInfos(kind)[docId]
+
+    private fun decodeDraft(payload: String): DraftData? = runCatching {
+        val j = JSONObject(payload)
+        val a = j.optJSONArray("lines") ?: JSONArray()
+        DraftData(
+            lines = (0 until a.length()).map { i -> a.getJSONObject(i).let { TransferLine(it.getString("p"), it.optDouble("q", 0.0), it.optString("s", "")) } }.filter { it.qty > 1e-9 },
+            shelf = j.optString("shelf", ""), from = j.optInt("from", 0), confirmed = j.optBoolean("confirmed", false),
+        )
+    }.getOrNull()
+
     // ---- Rafa kaldırma -------------------------------------------------------------------
 
     fun putAway(line: ReceiptLine, shelf: String, qty: Double, user: String) {
