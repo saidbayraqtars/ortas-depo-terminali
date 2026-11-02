@@ -26,6 +26,10 @@ listeye girer, **aynı ürün tekrar okutulunca adet 1 artar**, arada başka ür
 sıralıdır (son okutulan renkli), satırdaki **−** tek adım geri alır. Beklenen miktar (belgede kalan, raftaki stok, gönderilen) aşılırsa okutma
 **engellenmez**: sesli ve görüntülü uyarı verilir, işlem sonunda onay penceresinde ayrıca uyarılır.
 
+**Gönderim Kabul'de elle ekleme (1.13.2+):** okutulmayan mal (ör. dükkâna girmeden müşteriye verilen) için her satırda **+** düğmesi vardır
+(Okunan, Kalan ve Tümü sekmelerinde); her dokunuş 1 adet ekler, **−** geri alır. Satırın adedine (`2/3`) dokununca adet yazılabilir. Elle ekleme de
+okutma gibi sayılır (yarım bırakılınca saklanır, Kısmi kaydet / Kabulü bitir ile işlenir) ama gönderilen miktarı aşamaz.
+
 ## Belgeyi yarım bırakma (1.13.0+)
 
 **Rafa Kaldır** (belge içi), **Gönderim Kabul** ve **Depoya Gönder** belgeleri yarım bırakılabilir: okutulanlar her okutmada

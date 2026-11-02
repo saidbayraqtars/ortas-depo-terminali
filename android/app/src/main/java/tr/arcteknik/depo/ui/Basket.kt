@@ -89,6 +89,16 @@ fun UndoButton(onClick: () -> Unit) {
     ) { Icon(Ic.Minus, contentDescription = "Bir adet geri al", tint = C.Ink, modifier = Modifier.size(20.dp)) }
 }
 
+/** Satıra elle bir adet ekler (okutulmayan mal için: ör. dükkâna girmeden müşteriye verilen). */
+@Composable
+fun PlusButton(onClick: () -> Unit) {
+    val shape = RoundedCornerShape(10.dp)
+    Box(
+        Modifier.size(40.dp).clip(shape).border(1.5.dp, C.Bar, shape).focusProperties { canFocus = false }.clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { Icon(Ic.Plus, contentDescription = "Bir adet ekle", tint = C.Ink, modifier = Modifier.size(20.dp)) }
+}
+
 /**
  * Üstte sabit [header], altında kendi kaydırmasında satırlar. Anahtarlı liste başa eklenen satırda eski konumunu
  * korur; [scrollKey] değişince (her okutma, sekme değişimi) en başa dönülür ki son okutulan görünsün. Ekran `scroll = false`

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -75,6 +76,7 @@ import tr.arcteknik.depo.ui.ScanField
 import tr.arcteknik.depo.ui.Screen
 import tr.arcteknik.depo.ui.SecondaryButton
 import tr.arcteknik.depo.ui.Tone
+import tr.arcteknik.depo.ui.PlusButton
 import tr.arcteknik.depo.ui.UndoButton
 import tr.arcteknik.depo.ui.draftLine
 import tr.arcteknik.depo.ui.draftRestored
@@ -508,6 +510,8 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
     var tab by remember { mutableStateOf(0) }
     var lastPid by remember { mutableStateOf<String?>(null) }
     var scanTick by remember { mutableStateOf(0) }
+    // Satırın adedine dokununca açılan "adet yaz" penceresinin ürünü.
+    var editPid by remember { mutableStateOf<String?>(null) }
 
     // Belge kilidi: girerken alınır; yönetici açarsa ya da başka terminal alırsa okutulanlar kısmi kabul olarak kaydedilip çıkılır.
     DocLockEffect(vm, "SEVK-$sevkId", "TRANSFER", sevk?.no ?: sevkId)
@@ -556,6 +560,17 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
         // Gönderilen aşılsa da okutma geçer: sesli ve görüntülü uyarı verilir, belge sonunda ayrıca uyarılır.
         if (n - l.open > 1e-9) vm.error("${p.name}: gönderilenden fazla · ${fmt(n)}/${fmt(l.open)}")
         else vm.ok("${p.name} · ${fmt(n)}/${fmt(l.open)}")
+    }
+
+    /**
+     * Okutulmayan mal elle eklenir (ör. dükkâna girmeden müşteriye verilen). Sıra ve kaydırma okutmadaki gibi değişmez: 50-60 kalemlik
+     * "Kalan" listesinde her dokunuşta başa dönülmesin. Gönderilen (açık) miktarı aşamaz.
+     */
+    fun manualAdd(pid: String, delta: Double) {
+        val open = sevk.lines.firstOrNull { it.productId == pid }?.open ?: return
+        draft.setQty(pid, (have(pid) + delta).coerceIn(0.0, open))
+        lastPid = pid
+        showRestored = false
     }
 
     /** Okutulanlar kısmi kabul olarak gider; gönderim açık kalır, eksik kaydı açılmaz. */
@@ -645,9 +660,13 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
                                     fontSize = 12.sp, color = C.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
                                 )
                             }
-                            // Adet girilmez: okutma sayar. Yanlış okutma için tek adım geri alınır.
-                            MonoText("${fmt(got)}/${fmt(l.open)}", size = 18, color = renk)
-                            if (got > 1e-9) UndoButton { draft.setQty(l.productId, got - 1) }
+                            // Okutma sayar; yanlış okutma − ile tek adım geri alınır. Okutulmayan mal (ör. dükkâna girmeden müşteriye verilen)
+                            // + ile satırdan elle eklenir; adedin üstüne dokununca adet yazılır. Gönderilenden fazlası elle girilemez.
+                            Box(
+                                Modifier.focusProperties { canFocus = false }.clickable { editPid = l.productId }.padding(horizontal = 4.dp, vertical = 8.dp),
+                            ) { MonoText("${fmt(got)}/${fmt(l.open)}", size = 18, color = renk) }
+                            if (got > 1e-9) UndoButton { draft.setQty(l.productId, got - 1) } else Spacer(Modifier.size(40.dp))
+                            if (l.open - got > 1e-9) PlusButton { manualAdd(l.productId, 1.0) } else Spacer(Modifier.size(40.dp))
                         }
                     }
                     item {
@@ -670,6 +689,32 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
         }
     }
 
+    editPid?.let { pid ->
+        val l = sevk.lines.firstOrNull { it.productId == pid }
+        if (l == null) editPid = null else {
+            var q by remember(pid) { mutableStateOf(have(pid)) }
+            AlertDialog(
+                onDismissRequest = { editPid = null },
+                title = { Text(db.productById(pid)?.name ?: pid, maxLines = 2) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Hint("Gönderilen ${fmt(l.open)}. Okutulmayan mal (ör. dükkâna girmeden müşteriye verilen) buradan elle girilir.")
+                        QtyStepper(q, { q = it }, max = l.open)
+                    }
+                },
+                // Düğmeler odak almaz: el terminalinin okuyucusu Enter gönderir, sonraki okutma kendiliğinden "Tamam"a basmasın.
+                confirmButton = {
+                    TextButton({
+                        draft.setQty(pid, q.coerceIn(0.0, l.open))
+                        lastPid = pid
+                        showRestored = false
+                        editPid = null
+                    }, Modifier.focusProperties { canFocus = false }) { Text("Tamam", fontWeight = FontWeight.Bold) }
+                },
+                dismissButton = { TextButton({ editPid = null }, Modifier.focusProperties { canFocus = false }) { Text("Vazgeç") } },
+            )
+        }
+    }
     if (leaveAsk) {
         LeaveDocDialog(
             title = "Belgeyi yarım mı bırakıyorsunuz?",
