@@ -38,6 +38,11 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onInterceptKeyBeforeSoftKeyboard
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
@@ -86,8 +91,12 @@ fun ProductSearchDialog(
     LaunchedEffect(Unit) {
         Diag.crumb("isimle ara açıldı" + if (initial.isNotEmpty()) ": $initial" else "")
         runCatching { focus.requestFocus() }
-        delay(150)
-        keyboard?.show()
+        // Okutulan kod bulunamayıp pencere kendiliğinden açıldıysa (note var) klavye açılmaz: el terminalinde ekranın yarısını
+        // kaplayıp çıkışı güçleştiriyordu (Batuhan, 2026-11-02). Elle yazmak için alana dokunulur.
+        if (note == null) {
+            delay(150)
+            keyboard?.show()
+        }
     }
     // Okutma alanı pencere açıkken pasif: yayın modundaki okuyucunun okuması burada karşılanmazsa sessizce kaybolur ve ekran "takılı" kalır.
     LaunchedEffect(Unit) {
@@ -140,12 +149,20 @@ fun ProductSearchDialog(
                             singleLine = true,
                             textStyle = TextStyle(fontFamily = Sans, fontSize = 17.sp, color = C.Ink),
                             cursorBrush = SolidColor(C.Ink),
-                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, imeAction = ImeAction.Search),
+                            // Okutulan kod bulunamadığı için açıldıysa alan odak alınca klavye kendiliğinden açılmaz (dokunulunca açılır).
+                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, imeAction = ImeAction.Search, showKeyboardOnFocus = note == null),
                             // Klavye modundaki okuyucu kodu yazıp Enter basar: tam barkod/kod eşleşirse ürün seçilir.
                             keyboardActions = KeyboardActions(onSearch = {
                                 vm.repo.db.findProduct(ScanBus.clean(q.text))?.let { keyboard?.hide(); onPick(it) }
                             }),
-                            modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                            // Geri tuşu klavye açık olsa da pencereyi kapatır; önce klavyeyi kapatıp ikinci basışı beklemek el terminalinde
+                            // "geri dönemiyoruz" demekti.
+                            modifier = Modifier.fillMaxWidth().focusRequester(focus).onInterceptKeyBeforeSoftKeyboard { e ->
+                                if (e.key == Key.Back) {
+                                    if (e.type == KeyEventType.KeyUp) { keyboard?.hide(); onDismiss() }
+                                    true
+                                } else false
+                            },
                         )
                     }
                 }
@@ -194,6 +211,11 @@ fun ProductScanField(
     onTextChange: ((String) -> Unit)? = null,
     /** Alttaki "İsimle ara" bağlantısı; küçük ekranda yer açmak için kapatılabilir (klavye düğmesiyle yazılan ad yine aranır). */
     showSearchLink: Boolean = true,
+    /**
+     * Raf bu ekranda anlamsızsa (Rafa Kaldır listesi, transfer kabul/gönderim) ne okutulması gerektiği ("ürün", "ürün ya da belge"):
+     * raf barkodu okutulursa isimle arama penceresi açılmaz, "Raf barkodu okuttunuz. Şimdi ... okutun" denir. Boşsa kod her zamanki gibi aranır.
+     */
+    expects: String? = null,
 ) {
     var search by remember { mutableStateOf<Pair<String, String?>?>(null) }
     // Okunan kod ürünse [onProduct], "diğer" (raf, belge) ise [onOther] işler; ikisi de değilse false.
@@ -207,6 +229,8 @@ fun ProductScanField(
     ScanField(title, hint, search == null, vm.repo.prefs.cameraButton, onTextChange = onTextChange, onScan = { code ->
         when {
             route(code) -> Unit
+            // Ürün beklenirken raf okutuldu: isimle arama penceresi (ve klavye) açılmaz, ne yapılacağı söylenir.
+            expects != null && vm.repo.db.shelfKnown(code) -> vm.error("Raf barkodu okuttunuz (${code.trim().uppercase()}). Şimdi $expects okutun.")
             // Sırf rakamsa okutulan barkoddur; isimde aramanın anlamı yok.
             code.all { it.isDigit() } -> vm.error("\"$code\" barkodu tanımlı değil. İsimle arayabilirsiniz.")
             else -> { vm.feedback.error(); search = code to "\"$code\" kod ya da barkod olarak bulunamadı. Benzer adlar:" }

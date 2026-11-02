@@ -303,6 +303,8 @@ fun CountDiffScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String)
                     vm.repo.submitCount(session, vm.userName)
                     vm.saved(if (arrange) "Raf düzenleme kuyruğa alındı" else "Sayım gönderilmek üzere kuyruğa alındı")
                     vm.stack.removeAll { it is Route.Count || it is Route.CountDiff }
+                    // Raf Düzenle'de iş bitince ana menüye dönülmez: yeni (boş) düzenleme açılır, sıradaki raf okutulur. Geri tuşu menüye götürür.
+                    if (arrange) vm.go(Route.Count(vm.repo.startArrange().id))
                 }) { Text(if (arrange) "Kaydet" else "Gönder") }
             },
             dismissButton = { TextButton(onClick = { confirm = false }) { Text("Vazgeç") } },

@@ -117,12 +117,15 @@ fun ReceiptListScreen(vm: AppVm, online: Boolean, version: Int) {
             title = "Ürün ya da belge okutun",
             hint = "Belge no ya da firma adı yazın; ürün okutunca belgesiz de kalkar",
             onProduct = { vm.go(Route.PutAwayProduct(it.id)) },
+            expects = "ürün ya da belge",
             onOther = { raw ->
                 val code = eInvoiceNo(raw) ?: raw
                 val open0 = db.receipts(true).filter { vm.canDepot(it.depot) }
                 val r = open0.firstOrNull { it.docNo.equals(code, true) || it.id == code }
                 when {
                     r != null -> { query = ""; vm.go(Route.PutAway(r.id)); true }
+                    // Raf barkodu belge süzgeci olmaz (raf kodundaki harf/rakam bir belgeye uyup listeyi sessizce daraltmasın): ürün alanı uyarır.
+                    db.shelfKnown(code) -> false
                     open0.any { receiptMatches(it, code) } -> {
                         query = code; open = true
                         if (open0.none { it.depot == db.depot && receiptMatches(it, code) }) onlyHere = false

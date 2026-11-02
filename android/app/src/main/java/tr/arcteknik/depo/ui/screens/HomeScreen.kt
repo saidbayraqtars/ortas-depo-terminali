@@ -63,7 +63,8 @@ fun HomeScreen(vm: AppVm, online: Boolean, version: Int) {
     val halfReceipts = remember(version) { vm.repo.draftInfos(DraftKind.PUTAWAY).keys.count { db.receipt(it) != null } }
     val halfIncoming = remember(version) { vm.repo.draftInfos(DraftKind.RECEIVE).keys.count { id -> transfer.incoming.any { it.id == id } } }
     val halfSend = remember(version) { vm.repo.draftInfo(DraftKind.SEND, DraftKind.SEND_DRAFT_ID)?.items ?: 0 }
-    val halfArrange = remember(version) { db.openArrange() != null }
+    // Hiç raf düzenlenmemiş boş oturum (kaydettikten sonra açılan ekran) yarım iş sayılmaz.
+    val halfArrange = remember(version) { db.openArrange()?.let { db.countedShelves(it.id).isNotEmpty() } == true }
 
     Column(Modifier.fillMaxSize().background(C.Ground)) {
         Row(

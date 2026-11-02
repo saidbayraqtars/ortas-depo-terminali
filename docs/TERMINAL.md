@@ -14,6 +14,11 @@ Barkodu okunmayan ürün için her okutma alanının altında **İsimle ara** va
 olsa da yakın adlar listelenir. Ürün Sorgu ve Raf Sorgu ekranlarındaki **Etiket bas** düğmesi etiketi yönetici
 programının bilgisayarındaki etiket yazıcısından çıkarır.
 
+**Ürün beklenirken raf okutulursa (1.13.1+):** Rafa Kaldır listesinde, Gönderim Kabul ve Depoya Gönder'de raf barkodu okutulunca
+isimle arama penceresi açılmaz; "Raf barkodu okuttunuz (TK2-NSN-20). Şimdi ürün ya da belge okutun." uyarısı çıkar. Okutulan kod hiçbir
+şeye uymadığı için İsimle ara kendiliğinden açıldığında klavye açılmaz (elle yazmak için alana dokunulur) ve **Geri tuşu pencereyi tek
+basışta kapatır** (klavye açık olsa bile).
+
 ## Okutma mantığı: sepet (1.8.2+)
 
 Rafa Kaldır (belge içi), Raftan Al, Raf Transferi, Depoya Gönder ve Gönderim Kabul aynı mantıkla çalışır: **adet sorulmaz**. Ürün okutulunca

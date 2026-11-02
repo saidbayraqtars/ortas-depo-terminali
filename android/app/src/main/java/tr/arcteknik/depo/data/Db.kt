@@ -591,6 +591,10 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 10) {
     fun shelfExists(code: String, d: Int = depot): Boolean =
         shelfAllowed(code) && scalar("SELECT 1 FROM shelf WHERE depot=? AND code=?", d.toString(), code.trim().uppercase()) != null
 
+    /** Kod herhangi bir depoda tanımlı bir raf mı (raf sınırı içinde)? Ürün beklenen yerde raf okutulunca uyarmak için. */
+    fun shelfKnown(code: String): Boolean =
+        shelfAllowed(code) && scalar("SELECT 1 FROM shelf WHERE code=? LIMIT 1", code.trim().uppercase()) != null
+
     fun locationsOf(productId: String, d: Int = depot): List<Location> {
         val p = productById(productId, d) ?: return emptyList()
         return query("SELECT shelf, qty FROM location WHERE depot=? AND product_id=? AND qty>0 ORDER BY qty DESC", d.toString(), productId) {

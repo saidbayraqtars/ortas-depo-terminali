@@ -232,7 +232,7 @@ fun SendDepotScreen(vm: AppVm, online: Boolean, version: Int) {
     ) {
         // Çıkış ve varış üst çubukta yazılı; okutma alanı sabit, yalnız liste kayar (küçük ekranda da okutulanlar görünür).
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            ProductScanField(vm, "Ürün okutun", "Her okutma +1 adet", onProduct = ::quickAdd, showSearchLink = false)
+            ProductScanField(vm, "Ürün okutun", "Her okutma +1 adet", onProduct = ::quickAdd, showSearchLink = false, expects = "ürün")
             MessageBar(vm.message?.takeIf { it.second }?.first, true)
             val shape = RoundedCornerShape(12.dp)
             val groups = lines.groupBy { it.productId }.entries.toList().asReversed()
@@ -597,7 +597,7 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
             ProductScanField(
                 vm, "Ürün okutun",
                 "${fmt(gotTotal)}/${fmt(totalOpen)}" + if (over.isNotEmpty()) " · fazla +${fmt(over.sumOf { -remaining(it.productId) })}" else " adet",
-                ::onProduct, showSearchLink = false,
+                ::onProduct, showSearchLink = false, expects = "ürün",
             )
             // Başarılı okutma listenin başındaki vurgulu satırda görünür; çubuk yalnız hatada çıkar (liste yerinden oynamasın).
             MessageBar(vm.message?.takeIf { it.second }?.first, true)
