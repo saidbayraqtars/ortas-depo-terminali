@@ -13,7 +13,7 @@ const TURLER = [
 function kabulGovde(k) {
   const bilinen = k.izahat.filter((x) => TURLER.some(([t]) => t === x));
   const diger = k.ekTur === undefined ? k.izahat.filter((x) => !bilinen.includes(x)) : k.ekTur.split(/[^\d]+/).filter(Boolean);
-  return { izahat: [...new Set([...bilinen, ...diger])], baslangic: k.baslangic };
+  return { izahat: [...new Set([...bilinen, ...diger])], baslangic: k.baslangic, gun: Number(k.gun) || 0 };
 }
 
 function Bolum({ ikon, baslik, aciklama, children, alt }) {
@@ -336,7 +336,10 @@ export default function Ayarlar() {
                 onChange={(e) => setT('kabul.ekTur', e.target.value.replace(/[^\d, ]/g, ''))}
               />
             </Alan>
-            <Alan etiket="Başlangıç tarihi" ipucu="Bundan eski belgeler gelmez (kurulum günü önerilir)">
+            <Alan etiket="Ek olarak yalnız son kaç gün" ipucu="Örnek 3: 3 günden eski mal rafa bekleyenlerde görünmez. 0 (varsayılan) = yalnız aşağıdaki başlangıç tarihi (milat) geçerli.">
+              <input type="number" min="0" max="365" className="inp" style={{ width: 100 }} value={t.kabul.gun ?? 0} onChange={(e) => setT('kabul.gun', e.target.value)} />
+            </Alan>
+            <Alan etiket="Başlangıç tarihi (milat)" ipucu="Bundan eski belgeler hiçbir zaman gelmez. Ortaş: terminallerin gerçek kullanıma başladığı gün, 31.10.2026.">
               <input type="date" className="inp" style={{ width: 180 }} value={t.kabul.baslangic || ''} onChange={(e) => setT('kabul.baslangic', e.target.value)} />
             </Alan>
           </Bolum>

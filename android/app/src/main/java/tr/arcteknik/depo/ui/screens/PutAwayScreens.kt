@@ -173,13 +173,18 @@ fun ReceiptListScreen(vm: AppVm, online: Boolean, version: Int) {
                     Text(r.supplier, fontWeight = FontWeight.SemiBold)
                     LockTag(vm, r.id)
                     half[r.id]?.let { Text(draftLine(it), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = C.Warn) }
-                    val ratio = if (r.lineCount == 0) 0f else r.doneLines.toFloat() / r.lineCount
-                    Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(C.LineSoft)) {
-                        Box(Modifier.fillMaxWidth(ratio).height(8.dp).background(C.Ok))
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("${r.doneLines} / ${r.lineCount} kalem rafta", fontSize = 13.sp, color = C.Text2)
-                        if (r.lineCount > r.doneLines) Text("${r.lineCount - r.doneLines} bekliyor", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = C.Warn)
+                    if (r.id.startsWith("BEK-")) {
+                        // Ürün bazlı bekleyen liste (sunucu 1.15.0+): ilerleme çubuğu yok, kaç ürün beklediği yazar.
+                        Text("${r.lineCount - r.doneLines} ürün rafa kaldırılmayı bekliyor", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = C.Warn)
+                    } else {
+                        val ratio = if (r.lineCount == 0) 0f else r.doneLines.toFloat() / r.lineCount
+                        Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(C.LineSoft)) {
+                            Box(Modifier.fillMaxWidth(ratio).height(8.dp).background(C.Ok))
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("${r.doneLines} / ${r.lineCount} kalem rafta", fontSize = 13.sp, color = C.Text2)
+                            if (r.lineCount > r.doneLines) Text("${r.lineCount - r.doneLines} bekliyor", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = C.Warn)
+                        }
                     }
                 }
             }

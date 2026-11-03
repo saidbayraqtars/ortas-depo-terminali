@@ -76,7 +76,10 @@ test('açıkken fatura Merkez belgesi olur, çalışan Merkez rafına kaldırır
   // Terminal: Merkez'de stok ve belge görünür, 109 yok.
   const m = JSON.parse(depo.master().json);
   assert.deepStrictEqual(m.depots.map((d) => d.id), [1, 108]);
-  assert.strictEqual(m.receipts.find((r) => r.id === F1.id).depot, 1);
+  const bek = m.receipts.find((r) => r.id === 'BEK-1');
+  assert.strictEqual(bek.depot, 1);
+  assert.deepStrictEqual(bek.lines.filter((l) => l.productId === '101').map((l) => l.accepted), [100]);
+  assert.ok(!m.receipts.some((r) => r.depot === 109));
   assert.strictEqual(m.products.find((p) => p.id === '101').stocks['1'], 100);
   assert.strictEqual(m.products.find((p) => p.id === '101').stocks['109'], undefined);
 

@@ -51,8 +51,9 @@ test('rafa kaldırma raf stokunu ve belge ilerlemesini artırır', () => {
   assert.strictEqual(depo.miktar(1, '101', 'A-01-01'), 20);
   assert.strictEqual(depo.miktar(1, '101', 'A-01-02'), 4);
   const m = JSON.parse(depo.master().json);
-  const belge = m.receipts.find((x) => x.id === '26-9-1');
-  assert.strictEqual(belge.lines.find((l) => l.id === '26-9-1-101').shelved, 24);
+  const bek = m.receipts.find((x) => x.id === 'BEK-1');
+  assert.ok(!bek.lines.some((l) => l.productId === '101'), '101 tamamen rafa kalktı, bekleyen listede yok');
+  assert.strictEqual(bek.lines.find((l) => l.productId === '102').accepted, 10);
   assert.strictEqual(depo.bekleyenKabul(1).get('101'), undefined);
   assert.strictEqual(depo.bekleyenKabul(1).get('102'), 10);
 });

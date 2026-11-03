@@ -7,6 +7,9 @@ const crypto = require('crypto');
 
 const KEY = crypto.createHash('sha256').update('ortas-depo-yonetici::v1').digest();
 
+// Terminaller bu tarihten itibaren gerçek işte kullanılıyor; öncesi test aşamasıydı (Said, 2026-11-03).
+const MILAT = '2026-10-31';
+
 const DEFAULTS = {
   port: 5480,
   vega: {
@@ -23,7 +26,9 @@ const DEFAULTS = {
   // Mal kabul: hangi stok girişleri rafa kaldırılacak belge sayılır.
   kabul: {
     izahat: ['20', '26'], // 20 alış faturası, 26 alış irsaliyesi
-    baslangic: null, // YYYY-MM-DD; bundan eski belgeler gelmez (ilk açılışta bugün)
+    baslangic: MILAT, // YYYY-MM-DD (milat); bundan eski belgeler gelmez. Ortaş: terminaller 2026-10-31'den beri canlı, öncesi testti
+    gun: 0, // ek olarak yalnız son N günün belgeleri (0 = kapalı, yalnız milat)
+    milatSurum: 0, // 1 = milat bir kez uygulandı (eski kurulumun başlangıç tarihi MILAT'a çekildi)
   },
   // Raf adresi Vega stok kartında: alan (KOD14 gibi) boşsa okunmaz. Bir kartta birden çok adres virgülle ayrılır.
   // Adresler `depo` deposunun raflarıdır (boş = varsayılan depo); ürün bu raflara zimmetlenir.
@@ -110,8 +115,11 @@ function load() {
   const cfg = merge(DEFAULTS, raw);
   cfg.vega.password = raw.vega && raw.vega.passwordEnc ? decrypt(raw.vega.passwordEnc) : '';
   delete cfg.vega.passwordEnc;
-  if (!cfg.kabul.baslangic) {
-    cfg.kabul.baslangic = new Date().toISOString().slice(0, 10);
+  if (!cfg.kabul.baslangic || cfg.kabul.milatSurum !== 1) {
+    // 1.15.0: rafa bekleyen mal ürün bazlı; test dönemi belgeleri bir kez kesilir (sonra Ayarlar'dan değişebilir).
+    cfg.kabul.baslangic = MILAT;
+    cfg.kabul.gun = 0;
+    cfg.kabul.milatSurum = 1;
     cache = cfg;
     save(cfg);
   }
@@ -158,4 +166,19 @@ function parolaDogru(parola, cfg = load()) {
   return crypto.timingSafeEqual(beklenen, gelen);
 }
 
-module.exports = { init, load, save, update, publicView, parolaOzeti, parolaDogru, DEFAULTS };
+/**
+ * Mal kabulde gerçekten geçerli başlangıç tarihi (YYYY-MM-DD): ayardaki sabit başlangıç ile "son N gün" sınırından yeni olanı.
+ * Gün sınırı her gün kayar; Vega okuması bu tarihle yapılır, eski açık kalanlar listeye girmez.
+ */
+function kabulBaslangic(cfg = load()) {
+  const sabit = cfg.kabul?.baslangic || '2000-01-01';
+  const gun = Math.max(0, Math.min(365, Math.floor(Number(cfg.kabul?.gun) || 0)));
+  if (!gun) return sabit;
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - gun);
+  const yerel = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return yerel > sabit ? yerel : sabit;
+}
+
+module.exports = { init, kabulBaslangic, load, save, update, publicView, parolaOzeti, parolaDogru, DEFAULTS };

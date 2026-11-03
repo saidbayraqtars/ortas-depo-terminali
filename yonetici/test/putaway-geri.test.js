@@ -64,8 +64,8 @@ test('belgeli rafa kaldırma geri alınır: raf düşer, belgede kalan geri geli
   const geri = db.get("SELECT delta, after, kind, ref, user, device FROM movement WHERE kind='PUTAWAY_GERI' AND shelf='A-01-01'");
   assert.deepStrictEqual({ ...geri }, { delta: -20, after: 0, kind: 'PUTAWAY_GERI', ref: 'IRS-1', user: 'yönetici', device: 'PC' });
   // Terminale giden ana veride belge yeniden açık.
-  const belge = JSON.parse(depo.master().json).receipts.find((x) => x.id === 'R-1');
-  assert.strictEqual(belge.lines.find((l) => l.id === 'R-1-101').shelved, 0);
+  const bek = JSON.parse(depo.master().json).receipts.find((x) => x.id === 'BEK-1');
+  assert.strictEqual(bek.lines.find((l) => l.productId === '101').accepted, 24);
 });
 
 test('aynı hareket ikinci kez geri alınmaz', () => {

@@ -733,16 +733,18 @@ function islemUygula(op, cihaz, kullanici) {
       const shelf = rafKodu(p.shelf);
       if (!shelf) throw new Ret('Raf yok');
       // Belge depo bazlı: mal belgenin deposunda rafa kalkar.
-      const belge = p.receiptId ? receiptById(String(p.receiptId)) : null;
+      // Ürün bazlı bekleyen listeden (BEK-) gelen kaldırma belgesiz kaydedilir; bekleyen miktar hareketlerden hesaplanır (bekleyenUrunler).
+      const bekSatir = String(p.lineId || '').startsWith('BEK-') || String(p.receiptId || '').startsWith('BEK-');
+      const belge = p.receiptId && !bekSatir ? receiptById(String(p.receiptId)) : null;
       // Terminal eşitlemeden önce gizlenmiş grup içi belge (bekleme.js): mal yine rafa kondu, miktar açık fatura satırına yazılır.
-      const gizli = p.receiptId && !belge && goruntu ? goruntu.receipts.find((r) => r.id === String(p.receiptId)) : null;
+      const gizli = p.receiptId && !belge && !bekSatir && goruntu ? goruntu.receipts.find((r) => r.id === String(p.receiptId)) : null;
       const depo = belge ? belge.depo : depoCoz(p.depot);
       yetkiDenetle(null, depo, shelf);
       // Mal fiziken rafa kondu; raf tanımı sonradan silinmiş olsa bile kayıt kaybolmasın.
       if (!rafVarMi(depo, shelf)) rafEkle(depo, shelf, { source: 'TERMINAL', note: 'Terminalden geldi' });
-      miktarEkle(depo, pid, shelf, qty, { ...h, kind: 'PUTAWAY', ref: belge ? belge.docNo : gizli ? gizli.docNo : p.receiptId || null });
+      miktarEkle(depo, pid, shelf, qty, { ...h, kind: 'PUTAWAY', ref: belge ? belge.docNo : gizli ? gizli.docNo : bekSatir ? null : p.receiptId || null });
       terminalZimmet(depo, pid, shelf);
-      if (p.lineId) {
+      if (p.lineId && !bekSatir) {
         db.run(
           `INSERT INTO receipt_shelved(line_id, receipt_id, product_id, shelved, updated_at) VALUES(?,?,?,?,?)
            ON CONFLICT(line_id) DO UPDATE SET shelved = shelved + excluded.shelved, updated_at = excluded.updated_at`,
@@ -1045,25 +1047,119 @@ function belgeler({ shelved, kapali } = kabulDurumu()) {
   });
 }
 
+/**
+ * Rafa bekleyen mal, ürün bazlı: belge eşleşmesi aranmaz (Ortaş malı belgeye göre ayırmıyor).
+ * Depo + ürün başına:
+ *   gelen    = milattan (Ayarlar › Mal kabul) beri Vega'da kabul edilen miktar; elle kapatılan belgeler sayılmaz
+ *   rafa     = aynı ürün için rafa kaldırılan miktar: belge satırlarına yazılanlar + belgesiz rafa kaldırmalar (geri alınanlar hariç)
+ *   bekleyen = max(0, gelen - rafa)
+ * Önce raf sonra fatura gelse de, mal hangi belgenin adına kalkmış olursa olsun toplam doğru çıkar.
+ */
+function bekleyenUrunler() {
+  const out = new Map();
+  const anahtar = (d, pid) => `${d}|${pid}`;
+  for (const r of belgeler()) {
+    if (r.elleKapali) continue;
+    for (const l of r.lines) {
+      const k = anahtar(r.depo, l.productId);
+      let x = out.get(k);
+      if (!x) out.set(k, (x = { depo: r.depo, productId: l.productId, gelen: 0, rafa: 0, enEski: r.ts, belgeler: new Set() }));
+      x.gelen += l.accepted;
+      x.rafa += l.shelved;
+      x.enEski = Math.min(x.enEski, r.ts);
+      x.belgeler.add(r.id);
+    }
+  }
+  // Belgesiz rafa kaldırmalar (ve eski terminalin belge numarası olmayan kayıtları): ürün başına gelenden düşer.
+  const bas = new Date(`${config.kabulBaslangic(config.load())}T00:00:00`).getTime();
+  const belgesiz = db.all(
+    `SELECT m.depo AS depo, m.product_id AS pid, SUM(m.delta) AS q
+       FROM movement m LEFT JOIN op o ON o.id = m.op_id
+      WHERE m.kind = 'PUTAWAY' AND m.geri_at IS NULL AND m.ts >= ?
+        AND ((o.payload IS NULL AND m.ref IS NULL)
+          OR (o.payload IS NOT NULL AND (json_extract(o.payload, '$.lineId') IS NULL OR json_extract(o.payload, '$.lineId') LIKE 'BEK-%')))
+      GROUP BY m.depo, m.product_id`,
+    bas,
+  );
+  for (const b of belgesiz) {
+    const x = out.get(anahtar(depoCoz(b.depo), String(b.pid)));
+    if (x) x.rafa += Number(b.q);
+  }
+  for (const x of out.values()) {
+    x.gelen = yuvarla(x.gelen);
+    x.rafa = yuvarla(x.rafa);
+    x.bekleyen = yuvarla(Math.max(0, x.gelen - x.rafa));
+  }
+  return out;
+}
+
+/**
+ * Yönetici ekranı: rafa bekleyen ürünler. `depoNo` ve `metin` (stok kodu, ad, barkod) süzer; ozet süzgeçten bağımsız depo bazında toplamdır.
+ * Dönen: { urunler: [{ depo, depoAd, productId, urunKod, urunAd, birim, gelen, rafa, bekleyen, enEski, belgeSayisi }], ozet: { urun, adet, depolar } }.
+ */
+function bekleyenListe({ depoNo = null, metin = '', limit = 1000 } = {}) {
+  const tum = [...bekleyenUrunler().values()].filter((x) => x.bekleyen > EPS);
+  const depolar = new Map();
+  for (const x of tum) {
+    const d = depolar.get(x.depo) || { depo: x.depo, depoAd: depoAdi(x.depo), urun: 0, adet: 0 };
+    d.urun++;
+    d.adet = yuvarla(d.adet + x.bekleyen);
+    depolar.set(x.depo, d);
+  }
+  const q = String(metin || '').trim().toLocaleLowerCase('tr');
+  const liste = tum
+    .filter((x) => depoNo === null || x.depo === depoNo)
+    .map((x) => ({ x, p: urun(x.productId) }))
+    .filter(({ x, p }) => !q || [p?.code, p?.name, x.productId, ...(goruntu?.barcodes[x.productId] || [])].some((s) => String(s || '').toLocaleLowerCase('tr').includes(q)))
+    .sort((a, b) => a.x.enEski - b.x.enEski || String(a.p?.code || '').localeCompare(String(b.p?.code || '')))
+    .slice(0, limit)
+    .map(({ x, p }) => ({
+      depo: x.depo, depoAd: depoAdi(x.depo), productId: x.productId, urunKod: p ? p.code : x.productId, urunAd: p ? p.name : '', birim: p?.unit || '',
+      gelen: x.gelen, rafa: x.rafa, bekleyen: x.bekleyen, enEski: x.enEski, belgeSayisi: x.belgeler.size,
+    }));
+  return {
+    urunler: liste,
+    ozet: { urun: tum.length, adet: yuvarla(tum.reduce((t, x) => t + x.bekleyen, 0)), depolar: [...depolar.values()].sort((a, b) => a.depo - b.depo) },
+  };
+}
+
 function receiptById(id) {
   if (!goruntu) return null;
   return goruntu.belgeGorunum.find((r) => r.id === id) || require('./transfer').programKabulFisleri().find((r) => r.id === id) || null;
 }
 
-/** Açık belgelerde rafa kaldırılmayı bekleyen miktar, ürün başına (depo verilirse o depoda). Vega stoku bunu içerir. */
+/** Rafa kaldırılmayı bekleyen miktar, ürün başına (depo verilirse o depoda). Vega stoku bunu içerir. */
 function bekleyenKabul(depo = null) {
   const out = new Map();
-  for (const r of belgeler()) {
-    if (!r.acik || (depo !== null && r.depo !== depo)) continue;
-    for (const l of r.lines) {
-      const k = Math.max(0, l.accepted - l.shelved);
-      if (k > EPS) out.set(l.productId, (out.get(l.productId) || 0) + k);
-    }
+  for (const x of bekleyenUrunler().values()) {
+    if (x.bekleyen <= EPS || (depo !== null && x.depo !== depo)) continue;
+    out.set(x.productId, (out.get(x.productId) || 0) + x.bekleyen);
   }
   return out;
 }
 
 // ---- Ana veri (terminale) --------------------------------------------------------------------
+
+/** Bekleyen ürünler, terminalin belge listesi biçiminde: depo başına tek belge, satır kimliği `BEK-<depo>-<ürün>` (PUTAWAY'de belgesiz sayılır). */
+function bekleyenBelgeleri(bekleyenler, gonderilen) {
+  const gruplar = new Map();
+  for (const x of bekleyenler) {
+    if (!gonderilen.has(x.productId)) continue;
+    if (!gruplar.has(x.depo)) gruplar.set(x.depo, []);
+    gruplar.get(x.depo).push({ id: `BEK-${x.depo}-${x.productId}`, productId: x.productId, accepted: x.bekleyen, shelved: 0 });
+  }
+  return [...gruplar.entries()]
+    .sort((p, q) => p[0] - q[0])
+    .map(([d, lines]) => ({
+      id: `BEK-${d}`,
+      docNo: 'Rafa bekleyen ürünler',
+      supplier: '',
+      date: '',
+      depot: d,
+      depotName: depoAdi(d),
+      lines: lines.sort((p, q) => (p.id < q.id ? -1 : p.id > q.id ? 1 : 0)),
+    }));
+}
 
 /** Terminale giden ana verinin tamamı (nesne). `master()` tek parça, `masterParcalari()` kovalara bölünmüş verir. */
 function masterGovde() {
@@ -1073,13 +1169,14 @@ function masterGovde() {
     throw e;
   }
   const cfg = config.load();
-  const acik = belgeler().filter((r) => r.acik);
+  // Terminale belge değil ürün bazlı bekleyen liste gider: depo başına tek "Rafa bekleyen ürünler" belgesi (satır = ürün).
+  const bekleyenler = [...bekleyenUrunler().values()].filter((x) => x.bekleyen > EPS);
   // Sıra sabit olmalı: Vega ürünleri her yenilemede farklı sırayla verebiliyor; sıra değişince ETag ve kova özetleri
   // de değişip terminaller (2 dakikada bir) değişmemiş veriyi baştan indiriyordu.
   const locations = db.all('SELECT depo, product_id, shelf, qty FROM location WHERE qty > 0 ORDER BY depo, product_id, shelf');
   const ref = new Set(locations.map((l) => l.product_id));
   for (const h of db.all('SELECT DISTINCT product_id FROM product_home')) ref.add(h.product_id);
-  for (const r of acik) for (const l of r.lines) ref.add(l.productId);
+  for (const x of bekleyenler) ref.add(x.productId);
 
   const tum = cfg.urun.kapsam === 'tum';
   // Pasif kart terminale gitmez; yalnız programda bir rafta duruyorsa (raf stoku görünsün, kaldırılabilsin) gider.
@@ -1121,20 +1218,7 @@ function masterGovde() {
       .all('SELECT depo, product_id, shelf FROM product_home ORDER BY depo, product_id, shelf')
       .filter((h) => gonderilen.has(h.product_id))
       .map((h) => ({ depot: h.depo, productId: h.product_id, shelf: h.shelf })),
-    receipts: acik
-      .map((r) => ({
-        id: r.id,
-        docNo: r.docNo,
-        supplier: r.supplier,
-        date: r.date,
-        depot: r.depo,
-        depotName: r.depoAd,
-        lines: r.lines
-          .filter((l) => gonderilen.has(l.productId))
-          .map((l) => ({ id: l.id, productId: l.productId, accepted: l.accepted, shelved: l.shelved }))
-          .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
-      }))
-      .filter((r) => r.lines.length),
+    receipts: bekleyenBelgeleri(bekleyenler, gonderilen),
     counts,
     users,
     // Depolar arası transfer: açık gönderimler ve hedef depo listesi (kapalıyken { on: false }).
@@ -1699,6 +1783,8 @@ module.exports = {
   terminalZimmetBosalt,
   islemler,
   belgeler,
+  bekleyenUrunler,
+  bekleyenListe,
   bekleyenKabul,
   master,
   urunListesi,

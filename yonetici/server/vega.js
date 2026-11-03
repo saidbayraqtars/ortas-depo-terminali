@@ -5,6 +5,7 @@
 // kaydından alındı (Galya F0102D0002 Z0000048/Z0000022, Vega Kılavuzu §23.7).
 const sql = require('mssql');
 const crypto = require('crypto');
+const config = require('./config');
 
 let pool = null;
 let poolKey = '';
@@ -224,7 +225,7 @@ async function goruntu(cfg) {
   const bFirma = basliklar.filter((b) => b.firma).map((b) => `${b.a}.FIRMANO, `).join('');
   // Belge depo bazlı: bir belgenin satırları hangi depoya girdiyse o depoda rafa kaldırılır.
   const kabul = izahat.length
-    ? await olc('kabul', () => p.request().input('bas', sql.DateTime, new Date(`${cfg.kabul.baslangic || '2000-01-01'}T00:00:00`)).query(`
+    ? await olc('kabul', () => p.request().input('bas', sql.DateTime, new Date(`${config.kabulBaslangic(cfg)}T00:00:00`)).query(`
       WITH G AS (
         SELECT H.IZAHAT, H.BELGENO, H.DEPO, MAX(H.EVRAKNO) AS EVRAKNO, H.STOKNO, SUM(H.GIREN) AS GIREN,
                MIN(H.TARIH) AS TARIH, MAX(H.FIRMANO) AS FIRMANO
@@ -246,7 +247,7 @@ async function goruntu(cfg) {
   const tDH = `${FD}TBLDEPOHARBASLIK`;
   if (transferTip.length && (await tabloVar(p, tDH))) {
     const tumDepo = new Map((await depolar(v, v.firma)).map((d) => [Number(d.ind), d.ad]));
-    const t = await olc('depoTransfer', () => p.request().input('bas', sql.DateTime, new Date(`${cfg.kabul.baslangic || '2000-01-01'}T00:00:00`)).query(`
+    const t = await olc('depoTransfer', () => p.request().input('bas', sql.DateTime, new Date(`${config.kabulBaslangic(cfg)}T00:00:00`)).query(`
       SELECT E.BELGETIPI, E.BELGEIND, E.DEPO, E.STOKNO, SUM(E.ENVANTER) AS GIREN, MIN(B.TARIH) AS TARIH,
              MAX(B.BELGENO) AS EVRAKNO, MAX(CASE WHEN B.BELGETIPI = 129 THEN B.HAREKETDEPOSU ELSE B.DEPO END) AS KAYNAK
       FROM [${FD}TBLDEPOENVANTER] E

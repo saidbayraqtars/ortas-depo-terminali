@@ -18,7 +18,7 @@ import Ayarlar from './sayfalar/Ayarlar.jsx';
 const MENU = [
   ['/ozet', 'home', 'Özet'],
   ['#', 'Günlük iş'],
-  ['/kabul', 'package', 'Mal kabul', (d) => d?.sayilar.acikBelge],
+  ['/kabul', 'package', 'Mal kabul', (d) => d?.sayilar.bekleyenUrun],
   ['/transfer', 'truck', 'Depo transferi', (d) => d?.sayilar.transferDikkat],
   ['/sayimlar', 'count', 'Sayımlar', (d) => d?.sayilar.onayBekleyen],
   ['#', 'Stok'],

@@ -218,7 +218,10 @@ test('rafsız kabul: mal rafa kaldırılacak belge olarak bekler, rafla alınan 
   assert.deepStrictEqual(fis.lines.map((l) => [l.productId, l.accepted, l.shelved]), [['101', 4, 1], ['103', 2, 0]]);
   assert.strictEqual(depo.bekleyenKabul(108).get('101'), 3);
   const m = JSON.parse(depo.master().json);
-  assert.ok(m.receipts.some((x) => x.id === fis.id && x.depot === 108 && x.lines.length === 2));
+  // Terminale belge değil ürün bazlı bekleyen liste gider (depo başına tek belge).
+  const bek = m.receipts.find((x) => x.id === 'BEK-108');
+  assert.ok(bek && bek.depot === 108);
+  assert.deepStrictEqual(bek.lines.filter((l) => l.productId !== '102').map((l) => [l.productId, l.accepted, l.shelved]), [['101', 3, 0], ['103', 2, 0]]);
 
   // Rafa kaldır: belge satırı üzerinden (terminal PUTAWAY).
   const satir = fis.lines.find((l) => l.productId === '101');

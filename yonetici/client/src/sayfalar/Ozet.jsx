@@ -137,9 +137,9 @@ export default function Ozet() {
       ))}
       <div className="grid g4" style={{ marginBottom: 14 }}>
         <a className="card stat" href="#/kabul">
-          <span className="k"><Icon name="package" size={16} /> Açık mal kabul</span>
-          <span className="v">{s.acikBelge}</span>
-          <span className="s">{s.bekleyenKalem} kalem rafa kaldırılmayı bekliyor</span>
+          <span className="k"><Icon name="package" size={16} /> Rafa bekleyen ürün</span>
+          <span className="v">{s.bekleyenUrun}</span>
+          <span className="s">{miktar(s.bekleyenAdet)} adet rafa kaldırılmayı bekliyor</span>
         </a>
         <a className={`card stat ${s.onayBekleyen ? 'warn' : ''}`} href="#/sayimlar">
           <span className="k"><Icon name="count" size={16} /> Sayımlar</span>

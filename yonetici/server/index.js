@@ -402,7 +402,7 @@ function yoneticiApi() {
       const g = depo.goruntu();
       const bugun = new Date();
       bugun.setHours(0, 0, 0, 0);
-      const bel = depo.belgeler();
+      const bek = depo.bekleyenListe({ limit: 0 }).ozet;
       const cihazlar = db.all('SELECT id, name, active, last_seen, last_ip, last_name, last_user, app_version FROM device ORDER BY name');
       const islem = db.all(
         'SELECT type, COUNT(*) AS n, SUM(ok) AS ok FROM op WHERE received_at >= ? GROUP BY type',
@@ -413,6 +413,8 @@ function yoneticiApi() {
         surum: SURUM,
         degisiklik: depo.surum(),
         port: cfg.port,
+        kabulGun: Number(cfg.kabul?.gun) || 0,
+        kabulBaslangic: config.kabulBaslangic(cfg),
         adresler: adresler(),
         vega: {
           ...depo.vegaDurum,
@@ -428,8 +430,8 @@ function yoneticiApi() {
           raf: db.get('SELECT COUNT(*) AS n FROM shelf').n,
           doluRaf: db.get('SELECT COUNT(*) AS n FROM (SELECT DISTINCT depo, shelf FROM location WHERE qty>0)').n,
           rafUrun: db.get('SELECT COUNT(DISTINCT product_id) AS n FROM location WHERE qty>0').n,
-          acikBelge: bel.filter((b) => b.acik).length,
-          bekleyenKalem: bel.filter((b) => b.acik).reduce((t, b) => t + (b.kalemSayisi - b.biten), 0),
+          bekleyenUrun: bek.urun,
+          bekleyenAdet: bek.adet,
           acikSayim: db.get("SELECT COUNT(*) AS n FROM count_session WHERE status='OPEN'").n,
           onayBekleyen: db.get("SELECT COUNT(*) AS n FROM count_session WHERE status='CLOSED'").n,
           kullanici: db.get('SELECT COUNT(*) AS n FROM app_user WHERE active=1').n,
@@ -466,6 +468,7 @@ function yoneticiApi() {
         // Sayı: stok hareketi IZAHAT'ı; D + sayı: depo hareket fişi türü (D37 transfer, D129 gönderim kabulü).
         if (Array.isArray(b.kabul.izahat)) yeni.kabul.izahat = b.kabul.izahat.map(String).filter((x) => /^D?\d+$/.test(x));
         if (b.kabul.baslangic && /^\d{4}-\d{2}-\d{2}$/.test(b.kabul.baslangic)) yeni.kabul.baslangic = b.kabul.baslangic;
+        if (b.kabul.gun !== undefined) yeni.kabul.gun = Math.max(0, Math.min(365, Math.floor(Number(b.kabul.gun) || 0)));
       }
       if (b.rafAdresi) {
         if ('alan' in b.rafAdresi) {
@@ -781,6 +784,8 @@ function yoneticiApi() {
       .filter((b) => (d === 'acik' ? b.acik : d === 'kapali' ? !b.acik : true) && (dp === null || b.depo === dp))
       .map(({ lines, ...b }) => b);
   }));
+  // Rafa bekleyen ürünler (ürün bazlı, belge aranmaz): depo ve metin süzgeci.
+  r.get('/bekleyen', sar((req) => depo.bekleyenListe({ depoNo: depo.depoSuzgec(req.query.depo), metin: req.query.q || '', limit: Math.min(5000, Number(req.query.limit) || 1000) })));
   r.get('/kabul/:id', sar((req) => {
     const b = depo.belgeler().find((x) => x.id === req.params.id);
     if (!b) throw Object.assign(new Error('Belge bulunamadı'), { status: 404 });

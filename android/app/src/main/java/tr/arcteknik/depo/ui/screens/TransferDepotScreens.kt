@@ -470,15 +470,58 @@ fun ReceiveListScreen(vm: AppVm, online: Boolean, version: Int) {
     val info = remember(version) { vm.repo.transferInfo() }
     val d = db.depot
     // Kullanıcının çalışamayacağı depoya gelen gönderimler hiç görünmez (yetki).
-    val mine = info.incoming.filter { it.to == d && vm.canDepot(it.to) }
+    val allMine = info.incoming.filter { it.to == d && vm.canDepot(it.to) }
     val others = info.incoming.filter { it.to != d && vm.canDepot(it.to) }
+    // Arama: okutulan ürün hangi gönderimlerde varsa yalnız onlar görünür (kartta o üründen kalan miktar yazar);
+    // yazılan metin gönderim numarası, gönderen depo ya da ürün koduna/adına göre süzer.
+    var scanned by remember { mutableStateOf<Product?>(null) }
+    var typed by remember { mutableStateOf("") }
+    val hits: Map<String, Double> = remember(scanned, allMine) {
+        val p = scanned
+        if (p == null) emptyMap() else allMine.mapNotNull { s -> s.lines.firstOrNull { it.productId == p.id }?.let { s.id to it.open } }.toMap()
+    }
+    val text = typed.trim()
+    val mine = when {
+        scanned != null -> allMine.filter { it.id in hits }
+        text.isEmpty() -> allMine
+        else -> allMine.filter { s ->
+            s.no.contains(text, true) || s.fromName.contains(text, true) ||
+                s.lines.any { l -> db.productById(l.productId, d)?.let { it.code.contains(text, true) || it.name.contains(text, true) } == true }
+        }
+    }
     LocksPoller(vm)
     // Yarım bırakılan okutmalar (cihazda saklı): kartta "Yarım · 12 adet okutuldu" olarak görünür.
     val half = remember { vm.repo.draftInfos(DraftKind.RECEIVE) }
     Screen("Gönderim Kabul", sub = db.depotName(d).ifBlank { null }, online = online, onBack = { vm.back() }, scroll = false) {
+        ProductScanField(
+            vm, "Ürün okutun ya da arayın", "Hangi gönderimlerde olduğunu gösterir; gönderim no ya da ürün adı yazarak da süzülür",
+            onProduct = { scanned = it; typed = "" },
+            onTextChange = { typed = it },
+            showSearchLink = false, expects = "ürün",
+        )
+        MessageBar(vm.message?.first, vm.message?.second == true)
+        scanned?.let { p ->
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(C.InfoBg).clickable { scanned = null }.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(p.name, color = C.InfoText, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text("${p.code} · ${mine.size} gönderimde var", color = C.InfoText, fontSize = 12.sp)
+                }
+                Text("Temizle", color = C.Info, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+            }
+        }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (mine.isEmpty()) {
-                Notice("Bu depoya kabul bekleyen gönderim yok. Gönderen taraf fişi kestikten sonra liste birkaç saniye içinde yenilenir.", Tone.Info, icon = Ic.Inbox)
+                Notice(
+                    when {
+                        scanned != null -> "Bu ürün, bu depoya gelen hiçbir gönderimde yok."
+                        text.isNotEmpty() -> "\"$text\" ile eşleşen gönderim yok."
+                        else -> "Bu depoya kabul bekleyen gönderim yok. Gönderen taraf fişi kestikten sonra liste birkaç saniye içinde yenilenir."
+                    },
+                    Tone.Info, icon = Ic.Inbox,
+                )
             }
             mine.forEach { s ->
                 Card(onClick = { vm.go(Route.ReceiveDoc(s.id)) }) {
@@ -489,6 +532,7 @@ fun ReceiveListScreen(vm: AppVm, online: Boolean, version: Int) {
                     Text("${s.fromName} deposundan", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                     LockTag(vm, "SEVK-${s.id}")
                     Hint("${s.lines.size} kalem · toplam ${fmt(s.lines.sumOf { it.open })}")
+                    hits[s.id]?.let { q -> Text("Bu üründen ${fmt(q)} adet bekliyor", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = C.Info) }
                     half[s.id]?.let { Text(draftLine(it), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = C.Warn) }
                 }
             }

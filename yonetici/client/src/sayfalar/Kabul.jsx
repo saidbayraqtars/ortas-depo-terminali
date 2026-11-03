@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { api, Ara, Btn, Durum, Icon, Ilerleme, miktar, Rozet, SayfaBaslik, Secim, tarihSaat, useApp, useDepo, useOnay, useVeri } from '../lib.jsx';
+import { api, Ara, Btn, Durum, Icon, Ilerleme, miktar, Modal, Rozet, SayfaBaslik, Secim, tarihSaat, useApp, useDepo, useOnay, useVeri } from '../lib.jsx';
 
 // Depolar arası gönderim belgeleri (Vega 37/129 ve terminalden kabul edilenler); gerisi alış belgesidir.
 const depoArasi = (b) => b.izahat === 'D37' || b.izahat === 'D129';
@@ -11,11 +11,72 @@ function RafDurumu({ b }) {
   return b.kalan >= b.kabul - 1e-9 ? <Rozet tur="b-warn">Rafa kalkmadı</Rozet> : <Rozet tur="b-info">Kısmen kalktı</Rozet>;
 }
 
+const gunAd = (ts) => new Date(ts).toLocaleDateString('tr-TR');
+
+/** Rafa bekleyen ürünler: belge eşleşmesi yok; ürün başına gelen − rafa kaldırılan (sunucu `bekleyenUrunler`). */
+function BekleyenUrunler() {
+  const { cok, depo, ad } = useDepo();
+  const [q, setQ] = useState('');
+  const { veri, hata, yukleniyor } = useVeri('/bekleyen?limit=5000');
+  const liste = useMemo(() => {
+    const a = q.trim().toLocaleLowerCase('tr');
+    return (veri?.urunler || []).filter((u) => (!depo || u.depo === Number(depo))
+      && (!a || u.urunKod.toLocaleLowerCase('tr').includes(a) || u.urunAd.toLocaleLowerCase('tr').includes(a)));
+  }, [veri, q, depo]);
+  const ozet = veri?.ozet;
+  const depoOzet = depo ? ozet?.depolar.find((d) => d.depo === Number(depo)) : null;
+  const gosterilen = depoOzet || ozet;
+  return (
+    <>
+      <div className="grid g4" style={{ marginBottom: 14 }}>
+        <div className="card stat"><span className="k">Rafa bekleyen ürün</span><span className="v">{gosterilen ? miktar(gosterilen.urun) : '—'}</span><span className="s">çeşit{depoOzet ? ` · ${ad(depo)}` : ''}</span></div>
+        <div className="card stat"><span className="k">Rafa bekleyen adet</span><span className="v">{gosterilen ? miktar(gosterilen.adet) : '—'}</span><span className="s">toplam miktar</span></div>
+        {cok && !depo && ozet?.depolar.map((d) => (
+          <div className="card stat" key={d.depo}><span className="k">{d.depoAd}</span><span className="v">{miktar(d.adet)}</span><span className="s">{miktar(d.urun)} ürün</span></div>
+        ))}
+      </div>
+      <div className="card">
+        <div className="toolbar">
+          <Ara deger={q} degis={setQ} yer="Stok kodu ya da ürün adı" />
+          <div className="grow" />
+          <span className="muted">{liste.length} ürün</span>
+        </div>
+        <Durum yukleniyor={yukleniyor && !veri} hata={hata} bos={liste.length === 0 && 'Rafa kaldırılmayı bekleyen ürün yok.'}>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr><th>Ürün</th>{cok && !depo && <th>Depo</th>}<th className="num">Gelen</th><th className="num">Rafa kaldırılan</th><th className="num">Bekleyen</th><th>İlk giriş</th></tr>
+              </thead>
+              <tbody>
+                {liste.map((u) => (
+                  <tr key={`${u.depo}|${u.productId}`} className="click" onClick={() => (window.location.hash = `/urun/${u.productId}`)}>
+                    <td><div className="name">{u.urunAd}</div><div className="code">{u.urunKod}</div></td>
+                    {cok && !depo && <td>{u.depoAd}</td>}
+                    <td className="num">{miktar(u.gelen)}</td>
+                    <td className="num">{miktar(u.rafa)}</td>
+                    <td className="num"><b>{miktar(u.bekleyen)}</b> <span className="muted small">{u.birim}</span></td>
+                    <td className="muted">{gunAd(u.enEski)}{u.belgeSayisi > 1 ? ` · ${u.belgeSayisi} belge` : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Durum>
+        <div className="muted small" style={{ padding: '10px 4px 0' }}>
+          Bekleyen = milattan beri Vega'da kabul edilen − aynı ürün için rafa kaldırılan (belgeli ya da belgesiz fark etmez). Mal önce rafa konup fatura sonra girilse de toplam doğru çıkar.
+        </div>
+      </div>
+    </>
+  );
+}
+
 export default function Kabul() {
-  const [durum, setDurum] = useState('acik');
+  const [sekme, setSekme] = useState('urun');
+  const [durum, setDurum] = useState('tumu');
   const [tur, setTur] = useState('hepsi');
   const [q, setQ] = useState('');
   const { cok, depo, setDepo, ad } = useDepo();
+  const { durum: sunucuDurum } = useApp();
   // Bütün depolar alınır, seçili depo burada süzülür: menüdeki sayı bütün depoları sayıyor; seçili depoda belge
   // yokken liste boş kalıp sayıyla çelişmesin, başka depodaki belge söylensin.
   const { veri, hata, yukleniyor } = useVeri(`/kabul?durum=${durum}`, [durum]);
@@ -26,52 +87,60 @@ export default function Kabul() {
     const secili = ara.filter((b) => !depo || b.depo === Number(depo));
     return { liste: secili, baska: ara.length - secili.length };
   }, [veri, q, depo, tur]);
+  const milat = sunucuDurum?.kabulBaslangic ? new Date(`${sunucuDurum.kabulBaslangic}T00:00:00`).toLocaleDateString('tr-TR') : '';
   return (
     <>
-      <SayfaBaslik baslik="Mal kabul" alt="Vega'da kabul edilen belgeler ve rafa kaldırma ilerlemesi" />
-      <div className="card">
-        <div className="toolbar">
-          <Secim deger={durum} degis={setDurum} secenekler={[['acik', 'Rafa kaldırılacak'], ['kapali', 'Tamamlanan'], ['tumu', 'Tümü']]} />
-          <select className="inp" style={{ width: 160 }} value={tur} onChange={(e) => setTur(e.target.value)} title="Belge türü">
-            <option value="hepsi">Tüm belgeler</option>
-            <option value="alis">Alış belgeleri</option>
-            <option value="depo">Depolar arası</option>
-          </select>
-          <Ara deger={q} degis={setQ} yer="Belge no ya da tedarikçi" />
-          <div className="grow" />
-          <span className="muted">{liste.length} belge</span>
+      <SayfaBaslik baslik="Mal kabul" alt={`Rafa kaldırılmayı bekleyen mal ürün bazlı izlenir${milat ? ` · ${milat} ve sonrası (Ayarlar › Mal kabul'den değişir)` : ''}`}>
+        <Secim deger={sekme} degis={setSekme} secenekler={[['urun', 'Bekleyen ürünler'], ['belge', 'Belgeler']]} />
+      </SayfaBaslik>
+      {sekme === 'urun' ? <BekleyenUrunler /> : (
+        <div className="card">
+          <div className="toolbar">
+            <Secim deger={durum} degis={setDurum} secenekler={[['tumu', 'Tümü'], ['acik', 'Rafa kalkmamış'], ['kapali', 'Rafa kalkmış']]} />
+            <select className="inp" style={{ width: 160 }} value={tur} onChange={(e) => setTur(e.target.value)} title="Belge türü">
+              <option value="hepsi">Tüm belgeler</option>
+              <option value="alis">Alış belgeleri</option>
+              <option value="depo">Depolar arası</option>
+            </select>
+            <Ara deger={q} degis={setQ} yer="Belge no ya da tedarikçi" />
+            <div className="grow" />
+            <span className="muted">{liste.length} belge</span>
+          </div>
+          {baska > 0 && (
+            <div className="notice info" style={{ margin: '0 0 12px', alignItems: 'center' }}>
+              <Icon name="package" />
+              <p style={{ flex: 1 }}>{ad(depo)} dışındaki depolarda {baska} belge daha var.</p>
+              <Btn onClick={() => setDepo('')}>Bütün depoları göster</Btn>
+            </div>
+          )}
+          <Durum yukleniyor={yukleniyor && !veri} hata={hata} bos={liste.length === 0 && "Bu listede belge yok. Vega'da kabul tarihi Ayarlar › Mal kabul başlangıcından eski olanlar gelmez."}>
+            <div className="tbl-wrap">
+              <table className="tbl">
+                <thead>
+                  <tr><th>Tarih</th>{cok && !depo && <th>Depo</th>}<th>Belge</th><th>Tür</th><th>Tedarikçi</th><th className="num">Kalem</th><th className="num">Kalan</th><th /></tr>
+                </thead>
+                <tbody>
+                  {liste.map((b) => (
+                    <tr key={b.id} className="click" onClick={() => (window.location.hash = `/kabul/${encodeURIComponent(b.id)}`)}>
+                      <td className="muted">{b.date}</td>
+                      {cok && !depo && <td>{b.depoAd}</td>}
+                      <td className="mono">{b.docNo}</td>
+                      <td className="muted">{depoArasi(b) ? <Rozet tur="b-info">{b.tur}</Rozet> : b.tur}</td>
+                      <td>{b.supplier || '—'}</td>
+                      <td className="num">{b.biten}/{b.kalemSayisi}</td>
+                      <td className="num">{miktar(b.kalan)}</td>
+                      <td><RafDurumu b={b} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Durum>
+          <div className="muted small" style={{ padding: '10px 4px 0' }}>
+            Belgeler kayıt içindir; hangi belgenin kapandığına bakılmaz. Rafa bekleyen mal "Bekleyen ürünler" sekmesinde ürün bazlı hesaplanır.
+          </div>
         </div>
-        {baska > 0 && (
-          <div className="notice info" style={{ margin: '0 0 12px', alignItems: 'center' }}>
-            <Icon name="package" />
-            <p style={{ flex: 1 }}>{ad(depo)} dışındaki depolarda {baska} belge daha var.</p>
-            <Btn onClick={() => setDepo('')}>Bütün depoları göster</Btn>
-          </div>
-        )}
-        <Durum yukleniyor={yukleniyor && !veri} hata={hata} bos={liste.length === 0 && 'Bu listede belge yok. Vega\'da kabul tarihi Ayarlar › Mal kabul başlangıcından eski olanlar gelmez.'}>
-          <div className="tbl-wrap">
-            <table className="tbl">
-              <thead>
-                <tr><th>Tarih</th>{cok && !depo && <th>Depo</th>}<th>Belge</th><th>Tür</th><th>Tedarikçi</th><th className="num">Kalem</th><th className="num">Kalan</th><th /></tr>
-              </thead>
-              <tbody>
-                {liste.map((b) => (
-                  <tr key={b.id} className="click" onClick={() => (window.location.hash = `/kabul/${encodeURIComponent(b.id)}`)}>
-                    <td className="muted">{b.date}</td>
-                    {cok && !depo && <td>{b.depoAd}</td>}
-                    <td className="mono">{b.docNo}</td>
-                    <td className="muted">{depoArasi(b) ? <Rozet tur="b-info">{b.tur}</Rozet> : b.tur}</td>
-                    <td>{b.supplier || '—'}</td>
-                    <td className="num">{b.biten}/{b.kalemSayisi}</td>
-                    <td className="num">{miktar(b.kalan)}</td>
-                    <td><RafDurumu b={b} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Durum>
-      </div>
+      )}
     </>
   );
 }
