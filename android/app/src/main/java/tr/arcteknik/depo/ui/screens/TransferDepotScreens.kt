@@ -119,6 +119,13 @@ private fun MutableList<TransferLine>.setQty(productId: String, qty: Double) {
 
 private fun List<TransferLine>.qtyOf(productId: String): Double = firstOrNull { it.productId == productId }?.qty ?: 0.0
 
+/** Gönderilenden fazla okutulan miktar (kırpılan kısım); yönetici onayına gider, fişe yazılmaz. */
+private fun overflow(sevk: Incoming, lines: List<TransferLine>): List<TransferLine> =
+    lines.mapNotNull { l ->
+        val open = sevk.lines.firstOrNull { it.productId == l.productId }?.open ?: 0.0
+        (l.qty - open).takeIf { it > 1e-9 }?.let { TransferLine(l.productId, it) }
+    }
+
 /** Kabul fişine yazılacak satırlar: gönderilenden fazla okutulan miktar kırpılır (sunucu fazlasını kalıcı olarak reddeder). */
 private fun writable(sevk: Incoming, lines: List<TransferLine>): List<TransferLine> =
     lines.mapNotNull { l ->
@@ -268,6 +275,7 @@ fun SendDepotScreen(vm: AppVm, online: Boolean, version: Int) {
                         ) {
                             Column(Modifier.weight(1f)) {
                                 Text(p?.name ?: pid, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
+                                p?.code?.takeIf { it.isNotBlank() }?.let { Text(it, fontSize = 12.sp, color = C.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                                 Text(
                                     ls.joinToString(" · ") { (if (it.shelf.isBlank()) "rafsız" else it.shelf) + " ×" + fmt(it.qty) },
                                     fontSize = 12.sp, color = C.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -519,7 +527,7 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
         if (vm.docLock.state == LockState.LOST) {
             val s = info.incoming.firstOrNull { it.id == sevkId }
             if (s != null && draft.isNotEmpty()) {
-                vm.repo.receiveTransfer(s, writable(s, draft.toList()), vm.userName, partial = true)
+                vm.repo.receiveTransfer(s, writable(s, draft.toList()), vm.userName, partial = true, extra = overflow(s, draft.toList()))
                 vm.dropReceiveDraft(sevkId)
                 vm.saved("${vm.docLock.message}; okutulanlar kısmi kabul olarak kaydedildi")
             } else vm.error(vm.docLock.message)
@@ -575,7 +583,7 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
 
     /** Okutulanlar kısmi kabul olarak gider; gönderim açık kalır, eksik kaydı açılmaz. */
     fun savePartial(thenLeave: Boolean) {
-        vm.repo.receiveTransfer(sevk, writable(sevk, draft.toList()), vm.userName, partial = true)
+        vm.repo.receiveTransfer(sevk, writable(sevk, draft.toList()), vm.userName, partial = true, extra = overflow(sevk, draft.toList()))
         vm.dropReceiveDraft(sevk.id)
         vm.saved("Okutulanlar kısmi kabul olarak kaydedildi")
         if (thenLeave) vm.back()
@@ -608,6 +616,8 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             DocUnlockedNotice(vm)
+            // Yönetici eksik/fazla kabulü reddedip geri gönderdiyse sorusu burada durur; belge yeniden kabul edilince kalkar.
+            if (sevk.note.isNotBlank()) Notice("Yönetici: ${sevk.note}", Tone.Warn, icon = Ic.Warning)
             // Okutulan/gönderilen adet okutma alanının ipucunda; gönderilenden fazla okutma engellenmez, ipucunda görünür (ayrıca bitirme penceresinde uyarılır).
             ProductScanField(
                 vm, "Ürün okutun",
@@ -749,7 +759,7 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
                             val pr = db.productById(l.productId)
                             Text("• ${pr?.name ?: l.productId} · ${pr?.code ?: ""} +${fmt(-remaining(l.productId))} (${fmt(have(l.productId))}/${fmt(l.open)})", fontSize = 14.sp, color = C.Err)
                         }
-                        Text("Fazla okutulan miktar fişe yazılmaz; yalnız gönderilen kadar kabul edilir.", fontSize = 13.sp, color = C.Err)
+                        Text("Fazla miktar fişe yazılmaz; yönetici onayına gider. Onaylanınca depoya eklenir.", fontSize = 13.sp, color = C.Err)
                     }
                     Text(
                         "Vega'ya yalnız gelen miktar için kabul fişi yazılır." +
@@ -761,7 +771,7 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
             confirmButton = {
                 TextButton({
                     confirm = false
-                    vm.repo.receiveTransfer(sevk, writable(sevk, draft.toList()), vm.userName)
+                    vm.repo.receiveTransfer(sevk, writable(sevk, draft.toList()), vm.userName, extra = overflow(sevk, draft.toList()))
                     vm.dropReceiveDraft(sevk.id)
                     vm.saved(
                         "Gönderim kabul edildi: ${sevk.no}" + (if (missing.isNotEmpty()) " · eksik ${missing.size} kalem" else "") +

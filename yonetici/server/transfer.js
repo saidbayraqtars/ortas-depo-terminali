@@ -175,6 +175,7 @@ function terminalGorunumu() {
   if (!cfg.transfer?.aktif) return { on: false };
   const ad = (d) => (gorunum.depolar.find((x) => Number(x.ind) === d)?.ad) || depo().depoAdi(d);
   const c = cift(cfg);
+  const notlar = new Map(db.all('SELECT sevk_ind, note FROM transfer_not').map((r) => [r.sevk_ind, r.note]));
   return {
     on: Boolean(gorunum.yolda && c),
     yolda: gorunum.yolda,
@@ -190,6 +191,8 @@ function terminalGorunumu() {
       to: s.hedef,
       toName: ad(s.hedef),
       lines: s.satirlar.map((l) => ({ productId: l.productId, sent: l.sent, open: l.open })),
+      // Yönetici kabulü reddettiyse terminalde belgenin üstünde görünen not.
+      ...(notlar.has(s.ind) ? { note: notlar.get(s.ind) } : {}),
     })),
   };
 }
@@ -316,8 +319,19 @@ function kabulUygula(op, p, h, { Ret, bilinen, yetkiDenetle = () => {} }) {
   // önceden kısmi alınmış gönderimde bitirirken yeni satır olmayabilir (kalan hepsi eksik olur).
   const kismi = p.partial === true || p.partial === 1 || p.partial === 'true';
   const oncekiKismi = Boolean(db.get("SELECT 1 FROM transfer WHERE kind='RECEIVE' AND sevk_ind=? AND kismi=1", sevk.ind));
-  const satirlar = satirlariOku(p, Ret, bilinen, { bosOlur: !kismi && oncekiKismi });
+  // extra: belgeden fazla okutulan mal (terminal fişe yalnız gönderilen kadarını koyar, fazlasını ayrı yollar). Yönetici onayı
+  // beklemek üzere transfer_fazla'ya yazılır; stok ve belge onaylanana kadar değişmez.
+  const fazlalar = [];
+  for (const l of Array.isArray(p.extra) ? p.extra : []) {
+    const pid = String(l.productId || '');
+    const qty = Number(l.qty);
+    if (!pid || !(qty > 0)) throw new Ret('Fazla satırında ürün ya da miktar geçersiz');
+    bilinen(pid);
+    fazlalar.push({ pid, qty: yuvarla(qty) });
+  }
+  const satirlar = satirlariOku(p, Ret, bilinen, { bosOlur: (!kismi && oncekiKismi) || fazlalar.length > 0 });
   for (const l of satirlar) if (l.shelf) yetkiDenetle(null, sevk.hedef, l.shelf);
+  db.run('DELETE FROM transfer_not WHERE sevk_ind=?', sevk.ind);
   const acik = new Map(sevk.satirlar.map((l) => [l.productId, l.open]));
   const gelen = new Map();
   for (const l of satirlar) {
@@ -356,6 +370,13 @@ function kabulUygula(op, p, h, { Ret, bilinen, yetkiDenetle = () => {} }) {
     }
   }
   fisOnbellek.surum = -1;
+  const gonderilenToplam = new Map(sevk.satirlar.map((l) => [l.productId, l.sent]));
+  for (const f of fazlalar) {
+    db.run(
+      'INSERT INTO transfer_fazla(transfer_id, sevk_ind, sevk_no, from_depo, to_depo, product_id, sent, qty, user, device, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+      op.id, sevk.ind, sevk.no, from, to, f.pid, gonderilenToplam.get(f.pid) ?? 0, f.qty, h.user, h.device, now(),
+    );
+  }
   if (kismi) {
     // Gönderim açık kalır; alınan kadarı terminallere gidecek açık miktardan düşer (Vega okuması beklenmeden).
     for (const s of gorunum.sevkler) {
@@ -496,7 +517,7 @@ function programKabulFisleri() {
   const satirlar = db.all(
     `SELECT t.id, t.from_depo, t.to_depo, t.sevk_no, t.belge_no, t.created_at, l.product_id, SUM(l.qty) AS q
      FROM transfer t JOIN transfer_line l ON l.transfer_id = t.id
-     WHERE t.kind = 'RECEIVE' AND t.created_at >= ? AND t.durum <> 'GERI'
+     WHERE t.kind IN ('RECEIVE', 'FAZLA') AND t.created_at >= ? AND t.durum <> 'GERI'
      GROUP BY t.id, l.product_id ORDER BY t.created_at, t.id, l.product_id`,
     bas,
   );
@@ -507,7 +528,7 @@ function programKabulFisleri() {
         id: `TRF-${r.id}`,
         izahat: 'D129',
         tur: 'Gönderim kabulü',
-        docNo: String(r.belge_no || r.sevk_no || 'Gönderim').trim(),
+        docNo: String(r.belge_no || r.sevk_no || 'Gönderim').trim() + (String(r.id).startsWith('FAZLA-') ? ' (fazla)' : ''),
         supplier: `${depo().depoAdi(r.from_depo)} deposundan`,
         date: tarihStr(new Date(r.created_at)),
         ts: r.created_at,
@@ -537,6 +558,10 @@ function liste(limit = 200) {
     const u = depo().urun(f.product_id);
     return { ...f, kod: u?.code || f.product_id, ad: u?.name || '', fromAd: ad(f.from_depo), toAd: ad(f.to_depo) };
   });
+  const fazlalar = db.all("SELECT * FROM transfer_fazla ORDER BY (durum='BEKLIYOR') DESC, created_at DESC LIMIT 500").map((f) => {
+    const u = depo().urun(f.product_id);
+    return { ...f, kod: u?.code || f.product_id, ad: u?.name || '', fromAd: ad(f.from_depo), toAd: ad(f.to_depo) };
+  });
   const acik = gorunum.sevkler.map((s) => ({
     ind: s.ind, no: s.no, tarih: tarihStr(s.tarih), fromAd: ad(s.kaynak), toAd: ad(s.hedef),
     satirlar: s.satirlar.map((l) => ({ ...l, kod: depo().urun(l.productId)?.code || l.productId })),
@@ -551,8 +576,10 @@ function liste(limit = 200) {
     bekleyen: db.get("SELECT COUNT(*) AS n FROM transfer WHERE durum='BEKLIYOR'").n,
     hatali: db.get("SELECT COUNT(*) AS n FROM transfer WHERE durum='HATA'").n,
     acikFark: db.get("SELECT COUNT(*) AS n, COALESCE(SUM(eksik),0) AS q FROM transfer_fark WHERE durum='ACIK'"),
+    bekleyenFazla: db.get("SELECT COUNT(*) AS n, COALESCE(SUM(qty),0) AS q FROM transfer_fazla WHERE durum='BEKLIYOR'"),
     transferler,
     farklar,
+    fazlalar,
     acik,
   };
 }
@@ -607,6 +634,56 @@ function acikKapat(ind, kim) {
   gorunum.sevkler = gorunum.sevkler.filter((x) => x.ind !== s.ind);
   depo().degisti();
   return true;
+}
+
+/**
+ * Yönetici belgeden fazla gelen malı onaylar: miktar alan depoya rafa kaldırılacak belge olarak girer (Mal kabul'de "(fazla)"
+ * işaretli, terminalde Rafa Kaldır'da görünür). Vega'ya yazılmaz ve gönderen depoya dokunulmaz; Vega'daki belgeyi İsmail düzeltir.
+ */
+function fazlaOnayla(id, kim = 'yönetici', not = '') {
+  const f = db.get('SELECT * FROM transfer_fazla WHERE id=?', Number(id));
+  if (!f) return false;
+  if (f.durum !== 'BEKLIYOR') throw hataYap('Bu fazla zaten karara bağlanmış');
+  db.tx(() => {
+    const tid = `FAZLA-${f.id}`;
+    db.run(
+      "INSERT INTO transfer(id, kind, from_depo, to_depo, sevk_ind, sevk_no, durum, user, device, created_at, yazildi_at) VALUES(?,?,?,?,?,?,'YAZILDI',?,?,?,?)",
+      tid, 'FAZLA', f.from_depo, f.to_depo, f.sevk_ind, f.sevk_no, f.user, f.device, now(), now(),
+    );
+    db.run('INSERT INTO transfer_line(transfer_id, product_id, qty, shelf) VALUES(?,?,?,?)', tid, f.product_id, f.qty, '');
+    db.run("UPDATE transfer_fazla SET durum='ONAYLANDI', karar_at=?, karar_user=?, karar_not=?, onay_transfer_id=? WHERE id=?", now(), String(kim), String(not || '').slice(0, 300) || null, tid, f.id);
+  });
+  fisOnbellek.surum = -1;
+  depo().degisti();
+  return true;
+}
+
+function fazlaReddet(id, kim = 'yönetici', not = '') {
+  const f = db.get('SELECT id, durum FROM transfer_fazla WHERE id=?', Number(id));
+  if (!f) return false;
+  if (f.durum !== 'BEKLIYOR') throw hataYap('Bu fazla zaten karara bağlanmış');
+  db.run("UPDATE transfer_fazla SET durum='REDDEDILDI', karar_at=?, karar_user=?, karar_not=? WHERE id=?", now(), String(kim), String(not || '').slice(0, 300) || null, f.id);
+  return true;
+}
+
+/**
+ * Yönetici eksik ya da fazla çıkan kabulü reddeder: kabul geri alınır (raf girişi düşer, Vega 129 silinir, eksik kaydı kalkar) ve
+ * gönderim terminallerde yeniden açılır; yöneticinin notu ("kaç olmalıydı?") belgenin üstünde görünür. Aynı kabulün diğer fazla
+ * kayıtları da reddedilmiş sayılır. tur: 'fark' (eksik) ya da 'fazla'.
+ */
+async function tekrarIste(tur, id, kim = 'yönetici', not = '') {
+  const tablo = tur === 'fazla' ? 'transfer_fazla' : 'transfer_fark';
+  const f = db.get(`SELECT transfer_id, sevk_ind, sevk_no FROM ${tablo} WHERE id=?`, Number(id));
+  if (!f) return null;
+  const metin = String(not || '').trim().slice(0, 300) || 'Yönetici belgeyi geri gönderdi: kaç adet olması gerektiğini kontrol edip yeniden girin.';
+  const sonuc = await geriAl(f.transfer_id, kim, `Yönetici reddetti: ${metin}`);
+  db.tx(() => {
+    db.run("UPDATE transfer_fazla SET durum='REDDEDILDI', karar_at=?, karar_user=?, karar_not=? WHERE transfer_id=? AND durum='BEKLIYOR'", now(), String(kim), metin, f.transfer_id);
+    db.run('INSERT OR REPLACE INTO transfer_not(sevk_ind, note, user, at) VALUES(?,?,?,?)', f.sevk_ind, metin, String(kim), now());
+  });
+  yenile().catch(() => {});
+  depo().degisti();
+  return { ...sonuc, sevkNo: f.sevk_no };
 }
 
 // ---- Geri alma (yalnız yönetici) ---------------------------------------------------------------
@@ -702,7 +779,7 @@ module.exports = {
   programKabulFisleri,
   acikKapat,
   geriAl,
-  uygula, yaz, yaziciTetikle, yenile, terminalGorunumu, programKabulBelgeleri, liste, yenidenDene, farkCoz, farkAc,
+  uygula, yaz, yaziciTetikle, yenile, terminalGorunumu, programKabulBelgeleri, liste, yenidenDene, farkCoz, farkAc, fazlaOnayla, fazlaReddet, tekrarIste,
   yoldaDepo, tumDepolar, cift,
   // Testler için
   _gorunum: (g) => { if (g) gorunum = { ...gorunum, ...g }; return gorunum; },

@@ -9,20 +9,27 @@ import Bekleme from './sayfalar/Bekleme.jsx';
 import Transferler from './sayfalar/Transferler.jsx';
 import VegaYazimlari from './sayfalar/VegaYazimlari.jsx';
 import Hareketler from './sayfalar/Hareketler.jsx';
+import Raporlar from './sayfalar/Raporlar.jsx';
 import Kullanicilar from './sayfalar/Kullanicilar.jsx';
 import Cihazlar from './sayfalar/Cihazlar.jsx';
 import Ayarlar from './sayfalar/Ayarlar.jsx';
 
+// ['#', başlık] menüde grup başlığıdır; gerisi [yol, simge, ad, sayı].
 const MENU = [
   ['/ozet', 'home', 'Özet'],
+  ['#', 'Günlük iş'],
   ['/kabul', 'package', 'Mal kabul', (d) => d?.sayilar.acikBelge],
-  ['/bekleme', 'calendar', 'Bekleme depoları'],
+  ['/transfer', 'truck', 'Depo transferi', (d) => d?.sayilar.transferDikkat],
+  ['/sayimlar', 'count', 'Sayımlar', (d) => d?.sayilar.onayBekleyen],
+  ['#', 'Stok'],
   ['/urunler', 'box', 'Ürün ve stok'],
   ['/raflar', 'layers', 'Raflar'],
-  ['/sayimlar', 'count', 'Sayımlar', (d) => d?.sayilar.onayBekleyen],
-  ['/transfer', 'truck', 'Depo transferi', (d) => d?.sayilar.transferDikkat],
+  ['/bekleme', 'calendar', 'Bekleme depoları'],
+  ['#', 'Takip'],
   ['/hareketler', 'history', 'Hareketler'],
+  ['/raporlar', 'users', 'Çalışan raporu'],
   ['/vega-yazimlari', 'undo', "Vega'ya yazılanlar"],
+  ['#', 'Yönetim'],
   ['/kullanicilar', 'users', 'Kullanıcılar'],
   ['/cihazlar', 'mobile', 'Cihazlar'],
   ['/ayarlar', 'settings', 'Ayarlar'],
@@ -52,6 +59,8 @@ function Sayfa({ yol }) {
       return <Transferler />;
     case 'hareketler':
       return <Hareketler />;
+    case 'raporlar':
+      return <Raporlar />;
     case 'vega-yazimlari':
       return <VegaYazimlari />;
     case 'kullanicilar':
@@ -179,6 +188,7 @@ export default function App() {
             </select>
           )}
           {MENU.map(([h, ic, ad, say]) => {
+            if (h === '#') return <div key={ic} className="nav-grup">{ic}</div>;
             const n = say ? say(durum) : 0;
             return (
               <a key={h} href={'#' + h} className={`nav-item ${secili === h ? 'on' : ''}`} title={ad}>

@@ -106,7 +106,7 @@ export default function Hareketler() {
                       <td className="mono">{h.shelf}</td>
                       {cok && !depo && <td className="muted">{h.depoAd}</td>}
                       <td className={`num ${h.delta > 0 ? 'pos' : h.delta < 0 ? 'neg' : ''}`}>{miktar(h.delta, true)}</td>
-                      <td className="num">{miktar(h.after)}</td>
+                      <td className="num">{h.after == null ? <span className="muted">—</span> : miktar(h.after)}</td>
                       <td className="muted">{h.ref || ''}</td>
                       <td>{h.user || '—'}</td>
                       <td className="muted">{h.device || '—'}</td>

@@ -365,6 +365,46 @@ function migrate() {
     `);
     set('surum', '12');
   }
+  if (Number(get("SELECT value FROM meta WHERE key='surum'")?.value) < 13) {
+    // 13: kabulde belgeden fazla gelen mal (okutulan > gönderilen). Yönetici onaylayana kadar bekler; onaylanınca alan depoya
+    // rafa kaldırılacak belge olarak eklenir (transfer kind='FAZLA'), reddedilirse yalnız kayıt kalır. Vega'ya hiçbir şey yazılmaz.
+    db.exec(`
+      CREATE TABLE transfer_fazla(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        transfer_id TEXT NOT NULL,
+        sevk_ind INTEGER NOT NULL,
+        sevk_no TEXT,
+        from_depo INTEGER NOT NULL,
+        to_depo INTEGER NOT NULL,
+        product_id TEXT NOT NULL,
+        sent REAL NOT NULL,
+        qty REAL NOT NULL,
+        user TEXT,
+        device TEXT,
+        created_at INTEGER NOT NULL,
+        durum TEXT NOT NULL DEFAULT 'BEKLIYOR',
+        karar_at INTEGER,
+        karar_user TEXT,
+        karar_not TEXT,
+        onay_transfer_id TEXT
+      );
+      CREATE INDEX ix_transfer_fazla_durum ON transfer_fazla(durum);
+    `);
+    set('surum', '13');
+  }
+  if (Number(get("SELECT value FROM meta WHERE key='surum'")?.value) < 14) {
+    // 14: yöneticinin reddettiği (eksik/fazla çıkan) kabulün terminale döndüğü gönderimdeki not ("kaç olmalıydı?").
+    // Gönderimin kabulü yeniden yapılınca silinir.
+    db.exec(`
+      CREATE TABLE transfer_not(
+        sevk_ind INTEGER PRIMARY KEY,
+        note TEXT NOT NULL,
+        user TEXT,
+        at INTEGER NOT NULL
+      );
+    `);
+    set('surum', '14');
+  }
 }
 
 function get(sql, ...args) {

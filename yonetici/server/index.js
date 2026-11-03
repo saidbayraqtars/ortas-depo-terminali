@@ -20,6 +20,7 @@ const apk = require('./apk');
 const etiket = require('./etiket');
 const iceaktar = require('./iceaktar');
 const rapor = require('./rapor');
+const calisan = require('./calisan');
 const kapsam = require('./kapsam');
 const transfer = require('./transfer');
 const kilit = require('./kilit');
@@ -433,7 +434,7 @@ function yoneticiApi() {
           onayBekleyen: db.get("SELECT COUNT(*) AS n FROM count_session WHERE status='CLOSED'").n,
           kullanici: db.get('SELECT COUNT(*) AS n FROM app_user WHERE active=1').n,
           hataliIslem: db.get('SELECT COUNT(*) AS n FROM op WHERE ok=0 AND received_at >= ?', bugun.getTime()).n,
-          transferDikkat: db.get("SELECT (SELECT COUNT(*) FROM transfer_fark WHERE durum='ACIK') + (SELECT COUNT(*) FROM transfer WHERE durum='HATA') AS n").n,
+          transferDikkat: db.get("SELECT (SELECT COUNT(*) FROM transfer_fark WHERE durum='ACIK') + (SELECT COUNT(*) FROM transfer WHERE durum='HATA') + (SELECT COUNT(*) FROM transfer_fazla WHERE durum='BEKLIYOR') AS n").n,
         },
         bugun: islem,
         cihazlar,
@@ -733,6 +734,22 @@ function yoneticiApi() {
     if (!transfer.farkCoz(req.params.id, String(req.body?.cozum || ''), req.body?.not, 'yönetici')) throw Object.assign(new Error('Fark kaydı bulunamadı'), { status: 404 });
     return { ok: true };
   }));
+  // Belgeden fazla gelen mal: yönetici onaylarsa alıcı depoya rafa kaldırılacak belge olarak eklenir.
+  r.post('/transfer/fazla/:id/onayla', sar((req) => {
+    if (!transfer.fazlaOnayla(req.params.id, 'yönetici', req.body?.not)) throw Object.assign(new Error('Fazla kaydı bulunamadı'), { status: 404 });
+    return { ok: true };
+  }));
+  r.post('/transfer/fazla/:id/reddet', sar((req) => {
+    if (!transfer.fazlaReddet(req.params.id, 'yönetici', req.body?.not)) throw Object.assign(new Error('Fazla kaydı bulunamadı'), { status: 404 });
+    return { ok: true };
+  }));
+  // Eksik/fazla çıkan kabulü reddet: kabul geri alınır, gönderim terminale döner, not belgenin üstünde görünür.
+  r.post('/transfer/tekrar', sar(async (req) => {
+    const b = req.body || {};
+    const r = await transfer.tekrarIste(b.tur === 'fazla' ? 'fazla' : 'fark', b.id, 'yönetici', b.not);
+    if (!r) throw Object.assign(new Error('Kayıt bulunamadı'), { status: 404 });
+    return { ok: true, ...r };
+  }));
   r.post('/transfer/fark/:id/ac', sar((req) => {
     if (!transfer.farkAc(req.params.id)) throw Object.assign(new Error('Fark kaydı bulunamadı'), { status: 404 });
     return { ok: true };
@@ -814,14 +831,24 @@ function yoneticiApi() {
     const duzAdet = onekler.length ? depo.kapsamRaflari(d, duz).length : 0;
     return { onekler, adet: raflar.length, ornek: raflar.slice(0, 12), oneri: duzAdet > raflar.length ? { kapsam: duz.join(', '), adet: duzAdet } : null };
   }));
+  // Ürün sayımı önizlemesi: yapıştırılan stok kodlarının raflarını bulur.
+  r.get('/sayim-urun', sar((req) => depo.urunRaflari(depo.depoCoz(req.query.depo), req.query.kodlar)));
   r.post('/sayimlar', sar((req) => {
     const b = req.body || {};
     const kind = b.kind === 'GENEL' ? 'GENEL' : 'RAF';
     const d = depo.depoCoz(b.depo);
-    // Genel sayım bütün depoyu sayar; kapsam yalnız raf sayımında.
-    const onekler = kind === 'RAF' ? kapsam.coz(b.scope) : [];
-    if (onekler.length && !depo.kapsamRaflari(d, onekler).length) {
-      throw Object.assign(new Error(`Kapsama uyan raf yok (${onekler.join(', ')})`), { status: 400 });
+    // Genel sayım bütün depoyu sayar; kapsam yalnız raf sayımında. Ürün sayımında kapsam, ürünlerin bulunduğu raflardır
+    // (tam raf kodları; önek sınırı uygulanmaz).
+    let onekler;
+    if (kind === 'RAF' && b.urunler) {
+      const u = depo.urunRaflari(d, b.urunler);
+      if (!u.raflar.length) throw Object.assign(new Error('Bu ürünlerin depoda rafı yok; sayılacak raf bulunamadı'), { status: 400 });
+      onekler = u.raflar.map((x) => x.toLocaleUpperCase('tr-TR'));
+    } else {
+      onekler = kind === 'RAF' ? kapsam.coz(b.scope) : [];
+      if (onekler.length && !depo.kapsamRaflari(d, onekler).length) {
+        throw Object.assign(new Error(`Kapsama uyan raf yok (${onekler.join(', ')})`), { status: 400 });
+      }
     }
     const id = 'C' + crypto.randomBytes(5).toString('hex');
     const no = depo.sayimNo();
@@ -905,14 +932,72 @@ function yoneticiApi() {
     if (q.urun) { w.push('product_id = ?'); a.push(String(q.urun)); }
     return { where: w.length ? 'WHERE ' + w.join(' AND ') : '', args: a };
   };
+  // Rafsız geçen transfer satırı (rafta stoğu olmayan ürün) raf hareketi üretmez; Hareketler'de görünsün diye
+  // transfer kaydından hareket satırı türetilir. Gönderen/alan, tarih, kullanıcı, cihaz ve ürün süzgeçleri aynen uygulanır.
+  const rafsizTransferHareketleri = (q) => {
+    if (q.raf) return [];
+    const turler = q.tur ? String(q.tur).split(',') : null;
+    const gonder = !turler || turler.includes('TRANSFER_OUT_DEPO');
+    const kabul = !turler || turler.includes('TRANSFER_IN_DEPO');
+    if (!gonder && !kabul) return [];
+    const w = ["t.durum <> 'GERI'", "l.shelf = ''"];
+    const a = [];
+    if (q.bas) { w.push('t.created_at >= ?'); a.push(new Date(`${q.bas}T00:00:00`).getTime()); }
+    if (q.bit) { w.push('t.created_at < ?'); a.push(new Date(`${q.bit}T00:00:00`).getTime() + 86400000); }
+    if (q.kullanici) { w.push('t.user = ?'); a.push(q.kullanici); }
+    if (q.cihaz) { w.push('t.device = ?'); a.push(q.cihaz); }
+    if (q.urun) { w.push('l.product_id = ?'); a.push(String(q.urun)); }
+    const dp = depo.depoSuzgec(q.depo);
+    return db
+      .all(`SELECT t.id AS tid, t.kind, t.from_depo, t.to_depo, t.sevk_no, t.belge_no, t.user, t.device, t.created_at, l.product_id, SUM(l.qty) AS qty
+            FROM transfer t JOIN transfer_line l ON l.transfer_id = t.id WHERE ${w.join(' AND ')} GROUP BY t.id, l.product_id`, ...a)
+      .filter((t) => (t.kind === 'SEND' ? gonder : kabul))
+      .map((t) => {
+        const send = t.kind === 'SEND';
+        return {
+          id: `T${t.tid}-${t.product_id}`,
+          kind: send ? 'TRANSFER_OUT_DEPO' : 'TRANSFER_IN_DEPO',
+          ts: t.created_at,
+          depo: send ? t.from_depo : t.to_depo,
+          shelf: 'rafsız',
+          delta: send ? -t.qty : t.qty,
+          after: null,
+          ref: send ? `→ ${depo.depoAdi(t.to_depo)}` : `${t.sevk_no || t.belge_no || ''}${t.kind === 'FAZLA' ? ' (fazla, onaylandı)' : ''} · ${depo.depoAdi(t.from_depo)}`,
+          user: t.user,
+          device: t.device,
+          product_id: t.product_id,
+        };
+      })
+      .filter((h) => dp === null || h.depo === dp);
+  };
   r.get('/hareketler', sar((req) => {
     const { where, args } = hareketSorgu(req.query);
     const limit = Math.min(5000, Number(req.query.limit) || 500);
-    const liste = db.all(`SELECT * FROM movement ${where} ORDER BY ts DESC, id DESC LIMIT ${limit}`, ...args).map((h) => ({ ...h, depoAd: depo.depoAdi(h.depo), ...depo.urunAdi(h.product_id) }));
-    const toplam = db.get(`SELECT COUNT(*) AS n FROM movement ${where}`, ...args).n;
+    const rafsiz = rafsizTransferHareketleri(req.query);
+    const liste = [...db.all(`SELECT * FROM movement ${where} ORDER BY ts DESC, id DESC LIMIT ${limit}`, ...args), ...rafsiz]
+      .sort((x, y) => y.ts - x.ts)
+      .slice(0, limit)
+      .map((h) => ({ ...h, depoAd: depo.depoAdi(h.depo), ...depo.urunAdi(h.product_id) }));
+    const toplam = db.get(`SELECT COUNT(*) AS n FROM movement ${where}`, ...args).n + rafsiz.length;
     const kisiler = db.all('SELECT DISTINCT user FROM movement WHERE user IS NOT NULL ORDER BY user').map((x) => x.user);
     const cihazlar = db.all('SELECT DISTINCT device FROM movement WHERE device IS NOT NULL ORDER BY device').map((x) => x.device);
     return { toplam, liste, kisiler, cihazlar };
+  }));
+  // Çalışan bazlı rapor (prim): kullanıcı başına iş satırı/adet, türe göre kırılım, günlük döküm. Excel: /calisan-rapor.xlsx
+  const calisanSatirlari = (q) => {
+    const { where, args } = hareketSorgu({ bas: q.bas, bit: q.bit, depo: q.depo, kullanici: q.kullanici });
+    const ek = where ? `${where} AND user IS NOT NULL` : 'WHERE user IS NOT NULL';
+    const satirlar = db.all(`SELECT user, kind, product_id, delta, ts FROM movement ${ek}`, ...args);
+    return [...satirlar, ...rafsizTransferHareketleri({ bas: q.bas, bit: q.bit, depo: q.depo, kullanici: q.kullanici })];
+  };
+  r.get('/calisan-rapor', sar((req) => ({ bas: req.query.bas || '', bit: req.query.bit || '', ...calisan.ozetle(calisanSatirlari(req.query)) })));
+  r.get('/calisan-rapor.xlsx', sar(async (req, res) => {
+    const rapor = calisan.ozetle(calisanSatirlari(req.query));
+    const dp = depo.depoSuzgec(req.query.depo);
+    const buf = await calisan.excel(rapor, { bas: req.query.bas, bit: req.query.bit, depoAd: dp === null ? '' : depo.depoAdi(dp) });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent('calisan-raporu.xlsx')}`);
+    res.send(Buffer.from(buf));
   }));
   r.get('/hareketler.csv', sar((req, res) => {
     const { where, args } = hareketSorgu(req.query);

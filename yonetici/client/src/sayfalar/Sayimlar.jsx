@@ -27,6 +27,52 @@ function RafSecici({ depo, kapsam, degis }) {
   );
 }
 
+// Ürüne göre sayım: stok kodları yapıştırılır ya da aranıp eklenir; o ürünlerin bulunduğu raflar sayılır.
+function UrunSecici({ depo, kodlar, degis, onizleme }) {
+  const [q, setQ] = useState('');
+  const [sonuc, setSonuc] = useState([]);
+  useEffect(() => {
+    if (q.trim().length < 2) return setSonuc([]);
+    let iptal = false;
+    const t = setTimeout(() => {
+      api(`/urunler?q=${encodeURIComponent(q)}&filtre=rafta&depo=${encodeURIComponent(depo)}&limit=6`).then((d) => !iptal && setSonuc(d.liste || [])).catch(() => {});
+    }, 250);
+    return () => { iptal = true; clearTimeout(t); };
+  }, [q, depo]);
+  const ekle = (kod) => { degis((kodlar.trim() ? kodlar.trim() + '\n' : '') + kod); setQ(''); setSonuc([]); };
+  return (
+    <>
+      <div className={`notice ${kodlar.trim() ? 'info' : 'ok'}`}>
+        <Icon name="info" />
+        <p>{kodlar.trim() ? 'Yalnız aşağıdaki ürünler sayılır.' : 'Ürün girmezseniz depodaki bütün ürünler sayılır. Belirli ürünleri saymak için aşağıya girin.'}</p>
+      </div>
+      <Alan etiket="Ürün ara (isteğe bağlı)" ipucu="Adı ya da koduyla arayıp tıklayın; ya da aşağıya stok kodlarını yapıştırın.">
+        <input className="inp" value={q} placeholder="Ürün adı ya da kodu" onChange={(e) => setQ(e.target.value)} />
+        {sonuc.length > 0 && (
+          <div className="chip-list" style={{ marginTop: 6 }}>
+            {sonuc.map((u) => <button key={u.id} type="button" className="chip sec-chip" onClick={() => ekle(u.code)} title={u.name}>{u.code}</button>)}
+          </div>
+        )}
+      </Alan>
+      <Alan etiket="Sayılacak ürünler (stok kodu, isteğe bağlı)" ipucu="Her satıra bir kod. Excel'den sütunu kopyalayıp yapıştırabilirsiniz.">
+        <textarea className="inp mono" rows={5} value={kodlar} onChange={(e) => degis(e.target.value)} placeholder={'KAP-75311-1A740\nNGK-7938-BKR5E'} />
+      </Alan>
+      {onizleme && (
+        <div className={`notice ${onizleme.raflar.length ? 'info' : 'warn'}`}>
+          <Icon name="info" />
+          <div>
+            <p style={{ margin: 0 }}>
+              <b>{onizleme.bulunan.length} ürün</b>, <b>{onizleme.raflar.length} raf</b> sayılacak (raftaki diğer ürünler de sayılır).
+              {onizleme.bulunamayan.length > 0 && <> Bulunamadı: <span className="mono">{onizleme.bulunamayan.join(', ')}</span>.</>}
+              {onizleme.rafsiz.length > 0 && <> Bu depoda rafı yok: <span className="mono">{onizleme.rafsiz.join(', ')}</span>.</>}
+            </p>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function YeniSayim({ kapat, tamam }) {
   const { toast } = useApp();
   const [title, setTitle] = useState('');
@@ -37,7 +83,19 @@ function YeniSayim({ kapat, tamam }) {
   const [depo, setDepo] = useState(String(secili || varsayilan || depolar[0]?.ind || ''));
   const [kapsam, setKapsam] = useState('');
   const [onizleme, setOnizleme] = useState(null);
-  const kapsamli = kind === 'RAF' && kapsam.trim() !== '';
+  const [yol, setYol] = useState('raf'); // 'raf': raflara göre, 'urun': ürüne göre
+  const [kodlar, setKodlar] = useState('');
+  const [urunOn, setUrunOn] = useState(null);
+  const urunlu = kind === 'RAF' && yol === 'urun';
+  const kapsamli = kind === 'RAF' && !urunlu && kapsam.trim() !== '';
+  useEffect(() => {
+    if (!urunlu || !kodlar.trim()) return setUrunOn(null);
+    let iptal = false;
+    const t = setTimeout(() => {
+      api(`/sayim-urun?depo=${encodeURIComponent(depo)}&kodlar=${encodeURIComponent(kodlar)}`).then((d) => !iptal && setUrunOn(d)).catch(() => {});
+    }, 300);
+    return () => { iptal = true; clearTimeout(t); };
+  }, [urunlu, kodlar, depo]);
   useEffect(() => {
     if (!kapsamli) return setOnizleme(null);
     let iptal = false;
@@ -48,10 +106,10 @@ function YeniSayim({ kapat, tamam }) {
     }, 250);
     return () => { iptal = true; clearTimeout(t); };
   }, [kapsam, depo, kapsamli]);
-  const varsayilanBaslik = kind === 'GENEL' ? 'Genel sayım' : kapsamli ? `${kapsam.split(',').map((x) => x.trim().toLocaleUpperCase('tr-TR')).filter(Boolean).join(', ')} raf sayımı` : 'Raf sayımı';
+  const varsayilanBaslik = kind === 'GENEL' ? 'Genel sayım' : urunlu ? (kodlar.trim() ? 'Ürün sayımı' : 'Tüm ürünlerin sayımı') : kapsamli ? `${kapsam.split(',').map((x) => x.trim().toLocaleUpperCase('tr-TR')).filter(Boolean).join(', ')} raf sayımı` : 'Raf sayımı';
   const ac = async () => {
     try {
-      const r = await api('/sayimlar', { method: 'POST', body: { title: title || varsayilanBaslik, kind, blind, note, depo, scope: kind === 'RAF' ? kapsam : '' } });
+      const r = await api('/sayimlar', { method: 'POST', body: { title: title || varsayilanBaslik, kind, blind, note, depo, scope: kind === 'RAF' && !urunlu ? kapsam : '', urunler: urunlu && kodlar.trim() ? kodlar : undefined } });
       toast(`${r.no} açıldı; terminallerde bir dakika içinde görünür`);
       tamam(r.id);
     } catch (e) {
@@ -59,7 +117,7 @@ function YeniSayim({ kapat, tamam }) {
     }
   };
   return (
-    <Modal baslik="Yeni sayım" kapat={kapat} alt={<><Btn onClick={kapat}>Vazgeç</Btn><Btn kind="primary" onClick={ac} disabled={kapsamli && (!onizleme || Boolean(onizleme.hata) || onizleme.adet === 0)}>Sayımı aç</Btn></>}>
+    <Modal baslik="Yeni sayım" kapat={kapat} alt={<><Btn onClick={kapat}>Vazgeç</Btn><Btn kind="primary" onClick={ac} disabled={urunlu ? Boolean(kodlar.trim()) && !urunOn?.raflar.length : kapsamli && (!onizleme || Boolean(onizleme.hata) || onizleme.adet === 0)}>Sayımı aç</Btn></>}>
       {cok && (
         <Alan etiket="Depo" ipucu="Terminalde yalnız bu depoyu seçen cihazlar sayar">
           <select className="inp" value={depo} onChange={(e) => setDepo(e.target.value)}>
@@ -79,8 +137,14 @@ function YeniSayim({ kapat, tamam }) {
             : 'Yalnız raf miktarları düzelir; Vega stoku değişmez. İlk yerleşim ve bölüm sayımları için.'}
         </p>
       </div>
-      {kind === 'RAF' && <RafSecici depo={depo} kapsam={kapsam} degis={setKapsam} />}
       {kind === 'RAF' && (
+        <Alan etiket="Neye göre sayılsın?">
+          <Secim deger={yol} degis={setYol} secenekler={[['raf', 'Raflara göre'], ['urun', 'Ürüne göre']]} />
+        </Alan>
+      )}
+      {urunlu && <UrunSecici depo={depo} kodlar={kodlar} degis={setKodlar} onizleme={urunOn} />}
+      {kind === 'RAF' && !urunlu && <RafSecici depo={depo} kapsam={kapsam} degis={setKapsam} />}
+      {kind === 'RAF' && !urunlu && (
         <Alan etiket="Sayılacak raflar" ipucu={'Yukarıdan seçin ya da raf kodunun başını yazın, virgülle birden çok: KAT-1, KO-4, TK2-HY. "KAT-1" KAT-10\'u kapsamaz; kapsasın isterseniz KAT-1* yazın. Boş: bütün raflar.'}>
           <input className="inp mono" value={kapsam} placeholder="Bütün raflar" onChange={(e) => setKapsam(e.target.value)} />
         </Alan>
@@ -272,11 +336,11 @@ export function SayimDetay({ id }) {
               {s.status === 'OPEN' && <Btn icon="lock" onClick={() => durumDegis('kapat', ['Sayım kapatılsın mı?', 'Terminallerde görünmez olur; onay için hazır hale gelir. Gerekirse yeniden açılabilir.', { tamam: 'Kapat' }])}>Sayımı kapat</Btn>}
               {s.status === 'CLOSED' && <Btn icon="refresh" onClick={() => durumDegis('ac')}>Yeniden aç</Btn>}
               {['OPEN', 'CLOSED'].includes(s.status) && <Btn kind="danger" icon="x" onClick={() => durumDegis('iptal', ['Sayım iptal edilsin mi?', 'Raf miktarları sayım gönderilirken güncellendi; iptal bunları geri almaz, yalnız sayımı kapatır ve Vega\'ya yazılmasını engeller.', { tamam: 'İptal et', tehlike: true }])}>İptal</Btn>}
-              {['OPEN', 'CLOSED'].includes(s.status) && <Btn kind="primary" icon="check" disabled={!o.satirlar.length} onClick={() => setOnay(true)}>Onayla</Btn>}
+              {['OPEN', 'CLOSED'].includes(s.status) && <Btn kind="primary" icon="check" disabled={!o.satirlar.length} title={o.satirlar.length ? '' : 'Onaylamak için terminalden en az bir raf sayılıp gönderilmeli'} onClick={() => setOnay(true)}>Onayla</Btn>}
               {s.status === 'APPROVED' && <Btn icon="undo" onClick={() => durumDegis('geri-al', ['Onay geri alınsın mı?', docs.length ? `Vega'daki ${docs.map((d) => d.belgeNo).join(', ')} fişleri silinir ve sayım "onay bekliyor"a döner.` : 'Sayım "onay bekliyor" durumuna döner.', { tamam: 'Geri al', tehlike: docs.length > 0 }])}>Onayı geri al</Btn>}
             </SayfaBaslik>
 
-            {s.status === 'OPEN' && <div className="notice info" style={{ marginBottom: 14 }}><Icon name="info" /><p>Sayım sürüyor. Terminaller raf raf sayıp gönderdikçe aşağıdaki liste dolar. Aynı raf tekrar sayılırsa son gönderim geçerlidir.</p></div>}
+            {s.status === 'OPEN' && <div className="notice info" style={{ marginBottom: 14 }}><Icon name="info" /><p>Sayım sürüyor. Terminaller raf raf sayıp gönderdikçe aşağıdaki liste dolar. Aynı raf tekrar sayılırsa son gönderim geçerlidir.{!o.satirlar.length && <> <b>Henüz hiçbir raf sayılıp gönderilmediği için Onayla kapalı</b>; terminalden en az bir raf gönderilince açılır.</>}</p></div>}
             {docs.length > 0 && (
               <div className="notice ok" style={{ marginBottom: 14 }}>
                 <Icon name="check" />

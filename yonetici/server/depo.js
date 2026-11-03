@@ -1550,6 +1550,34 @@ function kapsamRaflari(depo, onekler) {
 }
 
 /**
+ * Ürün sayımı: stok kodlarından (satır, virgül ya da noktalı virgülle ayrılmış; barkod da olur) ürünleri bulur ve o ürünlerin
+ * depodaki raflarını çıkarır. Sayım yine raf sayımıdır; kapsam bu raflar olur (raftaki başka ürünler de sayılır).
+ * Dönen: { bulunan: [{ kod, ad, raflar }], bulunamayan: [girdi], rafsiz: [kod] (bulundu ama bu depoda rafı yok), raflar }.
+ */
+function urunRaflari(depoNo, metin) {
+  const girdi = [...new Set(String(Array.isArray(metin) ? metin.join('\n') : metin || '').split(/[,;\n\r\t]+/).map((x) => x.trim()).filter(Boolean))];
+  const bulunan = [];
+  const bulunamayan = [];
+  const rafsiz = [];
+  const tum = new Set();
+  if (!goruntu) return { bulunan, bulunamayan: girdi, rafsiz, raflar: [] };
+  const kodlu = new Map(goruntu.products.map((p) => [String(p.code).toLocaleUpperCase('tr-TR'), p]));
+  const barkodlu = new Map();
+  for (const [pid, liste] of Object.entries(goruntu.barcodes || {})) for (const b of liste) barkodlu.set(String(b), pid);
+  const kimlik = new Map(goruntu.products.map((p) => [String(p.id), p]));
+  for (const g of girdi) {
+    const p = kodlu.get(g.toLocaleUpperCase('tr-TR')) || kimlik.get(barkodlu.get(g));
+    if (!p) { bulunamayan.push(g); continue; }
+    if (bulunan.some((b) => b.id === String(p.id))) continue;
+    const raflar = db.all('SELECT shelf FROM location WHERE depo=? AND product_id=? AND qty>0 ORDER BY shelf', depoNo, String(p.id)).map((r) => r.shelf);
+    if (!raflar.length) { rafsiz.push(p.code); continue; }
+    raflar.forEach((r) => tum.add(r));
+    bulunan.push({ id: String(p.id), kod: p.code, ad: p.name, raflar });
+  }
+  return { bulunan, bulunamayan, rafsiz, raflar: [...tum].sort((a, b) => a.localeCompare(b, 'tr', { numeric: true })) };
+}
+
+/**
  * Raf sayımında kapsam seçimi için depodaki raflar, Ortaş'ın adlandırmasına göre: ilk parça bölge (KAT, KO, KUTU,
  * DEPO, TK2…), ilk iki parça grup (KAT-1, KAT-B, KO-4). Üçten az rafı olan grup (yazım hatası, tek tük adres) listelenmez;
  * bölgenin tamamı seçilince onlar da sayılır.
@@ -1681,6 +1709,7 @@ module.exports = {
   urunAdi,
   sayimNo,
   kapsamRaflari,
+  urunRaflari,
   rafGruplari,
   sayimOzet,
   sayimOnayla,

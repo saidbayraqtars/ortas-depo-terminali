@@ -238,7 +238,7 @@ class Repo(val db: Db, val prefs: Prefs) {
                 true,
                 j.optInt("yolda", 0),
                 (0 until (depots?.length() ?: 0)).map { depots!!.getJSONObject(it).let { d -> Depot(d.getInt("id"), d.optString("name", d.getInt("id").toString())) } },
-                (0 until (inc?.length() ?: 0)).map { inc!!.getJSONObject(it) }.filter { it.getString("id") !in closed }.map { x ->
+                (0 until (inc?.length() ?: 0)).map { inc!!.getJSONObject(it) }.filter { it.getString("id") !in closed || it.optString("note").isNotBlank() }.map { x ->
                     val ls = x.optJSONArray("lines")
                     val got = partial[x.getString("id")]
                     Incoming(
@@ -247,6 +247,7 @@ class Repo(val db: Db, val prefs: Prefs) {
                         (0 until (ls?.length() ?: 0)).map { ls!!.getJSONObject(it) }
                             .map { l -> IncomingLine(l.getString("productId"), l.optDouble("sent", 0.0), l.optDouble("open", 0.0) - (got?.get(l.getString("productId")) ?: 0.0)) }
                             .filter { l -> l.open > 1e-9 },
+                        x.optString("note", ""),
                     )
                 }.filter { it.lines.isNotEmpty() },
             )
@@ -292,8 +293,8 @@ class Repo(val db: Db, val prefs: Prefs) {
      * olarak kayıtlı kalır, gönderim bu terminalde ve sunucuda kapanır; daha önce kısmi alınmışsa [lines] boş olabilir.
      * Sunucu Vega'ya kabul fişi (129) yazar.
      */
-    fun receiveTransfer(sevk: Incoming, lines: List<TransferLine>, user: String, partial: Boolean = false) {
-        require(lines.isNotEmpty() || !partial) { "Satır yok" }
+    fun receiveTransfer(sevk: Incoming, lines: List<TransferLine>, user: String, partial: Boolean = false, extra: List<TransferLine> = emptyList()) {
+        require(lines.isNotEmpty() || extra.isNotEmpty() || !partial) { "Satır yok" }
         val w = db.writableDatabase
         w.beginTransaction()
         try {
@@ -306,10 +307,14 @@ class Repo(val db: Db, val prefs: Prefs) {
                 } else db.addMovement(w, l.productId, "Depodan kabul ← ${sevk.fromName}", 0.0)
                 arr.put(JSONObject().put("productId", l.productId).put("qty", l.qty).put("shelf", l.shelf))
             }
+            // Belgeden fazla gelen mal ayrı gider; sunucu yönetici onayına bırakır, stok ve belge onaylanana kadar değişmez.
+            val extraArr = JSONArray()
+            for (l in extra) extraArr.put(JSONObject().put("productId", l.productId).put("qty", l.qty))
             db.insertOp(w, op(
                 OpType.TRANSFER_RECEIVE,
-                JSONObject().put("sevkId", sevk.id).put("lines", arr).put("depot", sevk.to).put("user", user).put("partial", partial),
-                (if (partial) "Gönderim kabulü (kısmi) · " else "Gönderim kabulü · ") + "${lines.size} kalem|${sevk.no} ← ${sevk.fromName} · toplam ${fmt(lines.sumOf { it.qty })}",
+                JSONObject().put("sevkId", sevk.id).put("lines", arr).put("extra", extraArr).put("depot", sevk.to).put("user", user).put("partial", partial),
+                (if (partial) "Gönderim kabulü (kısmi) · " else "Gönderim kabulü · ") + "${lines.size} kalem|${sevk.no} ← ${sevk.fromName} · toplam ${fmt(lines.sumOf { it.qty })}" +
+                    (if (extra.isNotEmpty()) " · fazla ${fmt(extra.sumOf { it.qty })} (onay bekler)" else ""),
             ))
             w.setTransactionSuccessful()
         } finally {

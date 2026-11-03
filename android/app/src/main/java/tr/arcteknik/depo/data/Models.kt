@@ -97,6 +97,8 @@ data class Incoming(
     val to: Int,
     val toName: String,
     val lines: List<IncomingLine>,
+    /** Yönetici eksik/fazla kabulü reddettiyse belgenin üstünde görünen not ("kaç olmalıydı?"). */
+    val note: String = "",
 )
 
 data class IncomingLine(val productId: String, val sent: Double, val open: Double)

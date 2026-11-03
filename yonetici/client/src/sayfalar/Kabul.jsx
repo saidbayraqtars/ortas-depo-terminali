@@ -1,8 +1,19 @@
 import React, { useMemo, useState } from 'react';
 import { api, Ara, Btn, Durum, Icon, Ilerleme, miktar, Rozet, SayfaBaslik, Secim, tarihSaat, useApp, useDepo, useOnay, useVeri } from '../lib.jsx';
 
+// Depolar arası gönderim belgeleri (Vega 37/129 ve terminalden kabul edilenler); gerisi alış belgesidir.
+const depoArasi = (b) => b.izahat === 'D37' || b.izahat === 'D129';
+
+/** Satırdaki "Bekliyor" yerine malın rafa gidip gitmediğini açıkça söyler. */
+function RafDurumu({ b }) {
+  if (b.elleKapali) return <Rozet tur="b-mute">Elle kapatıldı</Rozet>;
+  if (!b.acik) return <Rozet tur="b-ok">Rafa kalktı</Rozet>;
+  return b.kalan >= b.kabul - 1e-9 ? <Rozet tur="b-warn">Rafa kalkmadı</Rozet> : <Rozet tur="b-info">Kısmen kalktı</Rozet>;
+}
+
 export default function Kabul() {
   const [durum, setDurum] = useState('acik');
+  const [tur, setTur] = useState('hepsi');
   const [q, setQ] = useState('');
   const { cok, depo, setDepo, ad } = useDepo();
   // Bütün depolar alınır, seçili depo burada süzülür: menüdeki sayı bütün depoları sayıyor; seçili depoda belge
@@ -10,16 +21,22 @@ export default function Kabul() {
   const { veri, hata, yukleniyor } = useVeri(`/kabul?durum=${durum}`, [durum]);
   const { liste, baska } = useMemo(() => {
     const a = q.trim().toLocaleUpperCase('tr');
-    const ara = (veri || []).filter((b) => !a || b.docNo.toLocaleUpperCase('tr').includes(a) || b.supplier.toLocaleUpperCase('tr').includes(a));
+    const ara = (veri || []).filter((b) => (!a || b.docNo.toLocaleUpperCase('tr').includes(a) || b.supplier.toLocaleUpperCase('tr').includes(a))
+      && (tur === 'hepsi' || (tur === 'depo' ? depoArasi(b) : !depoArasi(b))));
     const secili = ara.filter((b) => !depo || b.depo === Number(depo));
     return { liste: secili, baska: ara.length - secili.length };
-  }, [veri, q, depo]);
+  }, [veri, q, depo, tur]);
   return (
     <>
       <SayfaBaslik baslik="Mal kabul" alt="Vega'da kabul edilen belgeler ve rafa kaldırma ilerlemesi" />
       <div className="card">
         <div className="toolbar">
           <Secim deger={durum} degis={setDurum} secenekler={[['acik', 'Rafa kaldırılacak'], ['kapali', 'Tamamlanan'], ['tumu', 'Tümü']]} />
+          <select className="inp" style={{ width: 160 }} value={tur} onChange={(e) => setTur(e.target.value)} title="Belge türü">
+            <option value="hepsi">Tüm belgeler</option>
+            <option value="alis">Alış belgeleri</option>
+            <option value="depo">Depolar arası</option>
+          </select>
           <Ara deger={q} degis={setQ} yer="Belge no ya da tedarikçi" />
           <div className="grow" />
           <span className="muted">{liste.length} belge</span>
@@ -35,7 +52,7 @@ export default function Kabul() {
           <div className="tbl-wrap">
             <table className="tbl">
               <thead>
-                <tr><th>Tarih</th>{cok && !depo && <th>Depo</th>}<th>Belge</th><th>Tür</th><th>Tedarikçi</th><th className="num">Kalem</th><th>İlerleme</th><th className="num">Kalan</th><th /></tr>
+                <tr><th>Tarih</th>{cok && !depo && <th>Depo</th>}<th>Belge</th><th>Tür</th><th>Tedarikçi</th><th className="num">Kalem</th><th className="num">Kalan</th><th /></tr>
               </thead>
               <tbody>
                 {liste.map((b) => (
@@ -43,12 +60,11 @@ export default function Kabul() {
                     <td className="muted">{b.date}</td>
                     {cok && !depo && <td>{b.depoAd}</td>}
                     <td className="mono">{b.docNo}</td>
-                    <td className="muted">{b.tur}</td>
+                    <td className="muted">{depoArasi(b) ? <Rozet tur="b-info">{b.tur}</Rozet> : b.tur}</td>
                     <td>{b.supplier || '—'}</td>
                     <td className="num">{b.biten}/{b.kalemSayisi}</td>
-                    <td style={{ width: 140 }}><Ilerleme oran={b.kalemSayisi ? b.biten / b.kalemSayisi : 0} /></td>
                     <td className="num">{miktar(b.kalan)}</td>
-                    <td>{b.elleKapali ? <Rozet tur="b-mute">Elle kapatıldı</Rozet> : b.acik ? <Rozet tur="b-warn">Bekliyor</Rozet> : <Rozet tur="b-ok">Tamam</Rozet>}</td>
+                    <td><RafDurumu b={b} /></td>
                   </tr>
                 ))}
               </tbody>

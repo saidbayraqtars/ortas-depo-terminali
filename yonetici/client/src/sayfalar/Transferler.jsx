@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { GeriAl } from './VegaYazimlari.jsx';
-import { api, Btn, Durum, Icon, miktar, Rozet, SayfaBaslik, Secim, tarihSaat, useApp, useOnay, useVeri } from '../lib.jsx';
+import { Alan, api, Btn, Durum, Icon, miktar, Modal, Rozet, SayfaBaslik, Secim, tarihSaat, useApp, useOnay, useVeri } from '../lib.jsx';
 
 const DURUM = {
   BEKLIYOR: ['Vega\'ya yazılacak', 'b-warn'],
@@ -8,6 +8,45 @@ const DURUM = {
   HATA: ['Yazılamadı', 'b-err'],
   GERI: ['Geri alındı', 'b-mute'],
 };
+
+/** Eksik ya da fazla çıkan kabulü reddeder: kabul geri alınır, gönderim terminale döner; not terminalde belgenin üstünde görünür. */
+function Reddet({ tur, f, yukle }) {
+  const { toast } = useApp();
+  const [acik, setAcik] = useState(false);
+  const [not, setNot] = useState(`${f.ad || f.kod}: kaç adet olmalıydı? Kontrol edip yeniden girin.`);
+  const [mesgul, setMesgul] = useState(false);
+  const gonder = async () => {
+    setMesgul(true);
+    try {
+      const r = await api('/transfer/tekrar', { method: 'POST', body: { tur, id: f.id, not } });
+      toast(`${r.sevkNo || 'Gönderim'} terminale geri gönderildi${r.vegaSilindi ? "; Vega'daki kabul fişi silindi" : ''}`);
+      setAcik(false);
+      yukle();
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      setMesgul(false);
+    }
+  };
+  return (
+    <>
+      <Btn size="sm" onClick={() => setAcik(true)}>Reddet</Btn>
+      {acik && (
+        <Modal baslik="Terminale geri gönderilsin mi?" kapat={() => setAcik(false)} alt={<><Btn onClick={() => setAcik(false)}>Vazgeç</Btn><Btn kind="primary" busy={mesgul} onClick={gonder}>Geri gönder</Btn></>}>
+          <div className="stack" style={{ gridTemplateColumns: 'minmax(0, 1fr)', width: '100%' }}>
+          <p style={{ margin: 0, whiteSpace: 'normal' }}>
+            <b>{f.sevk_no || f.sevk_ind}</b> gönderiminin kabulü geri alınır: alıcı depodaki raf girişi düşer, Vega'ya yazılmış kabul fişi varsa silinir,
+            belge terminalde yeniden açılır. Aşağıdaki not terminalde belgenin üstünde görünür.
+          </p>
+          <Alan etiket="Terminale not" ipucu="Kabul eden kişi bu notu görüp belgeyi yeniden sayar.">
+            <textarea className="inp" style={{ width: '100%', boxSizing: 'border-box', resize: 'vertical' }} rows={3} value={not} maxLength={300} onChange={(e) => setNot(e.target.value)} autoFocus />
+          </Alan>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
 
 const FARK_DURUM = {
   ACIK: ['Eksik açık', 'b-warn'],
@@ -38,25 +77,23 @@ function FarkSatiri({ f, yukle }) {
   return (
     <>
       <tr>
-        <td className="muted">{tarihSaat(f.created_at)}</td>
-        <td className="mono">{f.sevk_no || f.sevk_ind}</td>
-        <td>{f.fromAd} <span className="muted">→</span> {f.toAd}</td>
+        <td className="muted">{tarihSaat(f.created_at)}<div className="small">{f.user}</div></td>
+        <td><span className="mono">{f.sevk_no || f.sevk_ind}</span><div className="muted small">{f.fromAd} → {f.toAd}</div></td>
         <td><div className="name">{f.ad}</div><div className="code">{f.kod}</div></td>
         <td className="num">{miktar(f.sent)}</td>
         <td className="num">{miktar(f.received)}</td>
-        <td className="num"><b>{miktar(f.eksik)}</b></td>
-        <td className="muted">{f.user}</td>
+        <td className="num"><b className="neg">−{miktar(f.eksik)}</b> <span className="muted small">eksik</span></td>
         <td>
           <Rozet tur={dtur}>{dad}</Rozet>
           {f.cozum && <div className="muted small" style={{ marginTop: 4 }}>{f.cozum}</div>}
         </td>
         <td style={{ textAlign: 'right' }}>
-          {f.durum === 'ACIK' ? <Btn size="sm" onClick={() => setAcik((x) => !x)}>Çöz</Btn> : <Btn size="sm" busy={mesgul} onClick={() => gonder('ac')}>Yeniden aç</Btn>}
+          {f.durum === 'ACIK' ? <><Btn size="sm" onClick={() => setAcik((x) => !x)}>Çöz</Btn> <Reddet tur="fark" f={f} yukle={yukle} /></> : <Btn size="sm" busy={mesgul} onClick={() => gonder('ac')}>Yeniden aç</Btn>}
         </td>
       </tr>
       {acik && (
         <tr>
-          <td colSpan={10} style={{ background: 'var(--ground)' }}>
+          <td colSpan={8} style={{ background: 'var(--ground)' }}>
             <div className="toolbar" style={{ margin: 0 }}>
               <Secim deger={cozum} degis={setCozum} secenekler={[['KAYIP', 'Bulunamadı, kayıp'], ['BULUNDU', 'Bulundu, Vega\'da kabul edilecek']]} />
               <input className="inp" style={{ flex: 1, minWidth: 220 }} placeholder="Not (nerede, neden eksik?)" value={not} onChange={(e) => setNot(e.target.value)} />
@@ -69,6 +106,45 @@ function FarkSatiri({ f, yukle }) {
         </tr>
       )}
     </>
+  );
+}
+
+const FAZLA_DURUM = {
+  BEKLIYOR: ['Onay bekliyor', 'b-warn'],
+  ONAYLANDI: ['Alıcıya eklendi', 'b-ok'],
+  REDDEDILDI: ['Reddedildi', 'b-mute'],
+};
+
+/** Belgeden fazla gelen mal: yönetici onaylarsa alıcı depoda rafa kaldırılacak belge olarak eklenir. */
+function FazlaSatiri({ f, yukle }) {
+  const { toast } = useApp();
+  const [mesgul, setMesgul] = useState(false);
+  const karar = async (yol) => {
+    setMesgul(true);
+    try {
+      await api(`/transfer/fazla/${f.id}/${yol}`, { method: 'POST', body: {} });
+      toast(yol === 'onayla' ? `${f.toAd} deposuna eklendi; Rafa Kaldır'da (fazla) belgesi olarak görünür` : 'Fazla reddedildi');
+      yukle();
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      setMesgul(false);
+    }
+  };
+  const [dad, dtur] = FAZLA_DURUM[f.durum] || [f.durum, 'b-mute'];
+  return (
+    <tr>
+      <td className="muted">{tarihSaat(f.created_at)}<div className="small">{f.user}</div></td>
+      <td><span className="mono">{f.sevk_no || f.sevk_ind}</span><div className="muted small">{f.fromAd} → {f.toAd}</div></td>
+      <td><div className="name">{f.ad}</div><div className="code">{f.kod}</div></td>
+      <td className="num">{miktar(f.sent)}</td>
+      <td className="num">{miktar(f.sent + f.qty)}</td>
+      <td className="num"><b className="pos">+{miktar(f.qty)}</b> <span className="muted small">fazla</span></td>
+      <td><Rozet tur={dtur}>{dad}</Rozet>{f.karar_user && <div className="muted small" style={{ marginTop: 4 }}>{f.karar_user} · {tarihSaat(f.karar_at)}</div>}</td>
+      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+        {f.durum === 'BEKLIYOR' && <><Btn size="sm" kind="primary" icon="check" busy={mesgul} onClick={() => karar('onayla')}>Alıcıya ekle</Btn> <Reddet tur="fazla" f={f} yukle={yukle} /></>}
+      </td>
+    </tr>
   );
 }
 
@@ -177,6 +253,10 @@ export default function Transferler() {
     }
   };
   const acikFark = veri?.farklar.filter((f) => f.durum === 'ACIK').length || 0;
+  const bekleyenFazla = veri?.fazlalar.filter((f) => f.durum === 'BEKLIYOR').length || 0;
+  // Eksik ve fazla tek listede: karar bekleyenler üstte, sonra yeniden eskiye.
+  const bekliyor = (f) => (f.tur === 'fazla' ? f.durum === 'BEKLIYOR' : f.durum === 'ACIK');
+  const farklar = veri ? [...veri.farklar.map((f) => ({ ...f, tur: 'eksik' })), ...veri.fazlalar.map((f) => ({ ...f, tur: 'fazla' }))].sort((a, b) => bekliyor(b) - bekliyor(a) || b.created_at - a.created_at) : [];
   return (
     <>
       <SayfaBaslik baslik="Depo transferi" alt="Terminalden gönderilen ve kabul edilen depolar arası transferler; kabulde gelmeyen mal">
@@ -214,7 +294,7 @@ export default function Transferler() {
                 <Secim
                   deger={sekme}
                   degis={setSekme}
-                  secenekler={[['fark', `Eksikler${acikFark ? ` (${acikFark})` : ''}`], ['islem', 'Gönderim ve kabuller'], ['acik', `Yoldaki gönderimler (${veri.acik.length})`]]}
+                  secenekler={[['fark', `Eksik / fazla${acikFark + bekleyenFazla ? ` (${acikFark + bekleyenFazla})` : ''}`], ['islem', 'Gönderim ve kabuller'], ['acik', `Yoldaki gönderimler (${veri.acik.length})`]]}
                 />
                 <div className="grow" />
                 {veri.yoldaAd && <span className="muted">Yoldaki depo: {veri.yoldaAd}</span>}
@@ -222,15 +302,15 @@ export default function Transferler() {
               {sekme === 'fark' && (
                 <>
                   <div className="muted small" style={{ padding: '0 16px 10px' }}>
-                    Kabulde gelmeyen mal burada çözülene kadar kalır: hangi depo gönderdi, hangi ürün, kaç adet eksik. Gönderim terminallerde kapanır; eksik miktar Vega'da yoldaki depoda durur.
+                    Kabulde fiziken gelenle belgedeki fark. Eksik: çözülene kadar kayıtlı kalır. Fazla: siz onaylayınca alıcı depoya eklenir. İkisi de Vega'ya yazılmaz.
                   </div>
-                  {veri.farklar.length === 0 ? (
-                    <div className="empty">Eksik kayıt yok.</div>
+                  {farklar.length === 0 ? (
+                    <div className="empty">Eksik ya da fazla kayıt yok.</div>
                   ) : (
                     <div className="tbl-wrap">
                       <table className="tbl">
-                        <thead><tr><th>Kabul zamanı</th><th>Gönderim</th><th>Depo</th><th>Ürün</th><th className="num">Gönderilen</th><th className="num">Alınan</th><th className="num">Eksik</th><th>Kabul eden</th><th>Durum</th><th /></tr></thead>
-                        <tbody>{veri.farklar.map((f) => <FarkSatiri key={f.id} f={f} yukle={yukle} />)}</tbody>
+                        <thead><tr><th>Kabul</th><th>Gönderim</th><th>Ürün</th><th className="num">Gönderilen</th><th className="num">Alınan</th><th className="num">Fark</th><th>Durum</th><th /></tr></thead>
+                        <tbody>{farklar.map((f) => (f.tur === 'fazla' ? <FazlaSatiri key={`z${f.id}`} f={f} yukle={yukle} /> : <FarkSatiri key={`k${f.id}`} f={f} yukle={yukle} />))}</tbody>
                       </table>
                     </div>
                   )}

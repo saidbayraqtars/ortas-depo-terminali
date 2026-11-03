@@ -193,7 +193,7 @@ select.inp { padding-right: 28px; }
 .modal.wide { width: min(880px, 100%); }
 .modal-head { display: flex; align-items: center; gap: 10px; padding: 16px 18px; border-bottom: 1px solid var(--line-soft); }
 .modal-head h2 { margin: 0; font-size: 17px; flex: 1; }
-.modal-body { padding: 18px; overflow-y: auto; display: grid; gap: 14px; }
+.modal-body { padding: 18px; overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .modal-foot { padding: 14px 18px; border-top: 1px solid var(--line-soft); display: flex; gap: 8px; justify-content: flex-end; }
 
 .toasts { position: fixed; right: 18px; bottom: 18px; display: grid; gap: 8px; z-index: 60; }
@@ -224,3 +224,17 @@ hr.sep { border: 0; border-top: 1px solid var(--line-soft); margin: 4px 0; }
 .depo-sec { background: var(--bar2); border-color: #334155; color: #fff; margin: 0 0 10px; }
 .depo-sec option { color: var(--ink); background: #fff; }
 
+
+/* Yazdırma (PDF): yan menü ve düğmeler gizlenir, rapor tam genişlikte çıkar. */
+.print-only { display: none; }
+@media print {
+  .side, .toasts, .no-print, .page-head .btn, .page-head .seg { display: none !important; }
+  .print-only { display: block !important; }
+  .shell { display: block; }
+  .main { overflow: visible; }
+  .card { box-shadow: none; border: 0; }
+  .tbl-wrap { overflow: visible !important; max-height: none !important; }
+  tr.detay { break-inside: avoid; }
+}
+
+.nav-grup { margin: 12px 10px 2px; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--bar-sub); }
