@@ -102,7 +102,7 @@ fun ReceiptListScreen(vm: AppVm, online: Boolean, version: Int) {
     val receipts = remember(all, q, onlyHere) {
         all.filter { (!multiDepot || !onlyHere || it.depot == db.depot) && receiptMatches(it, q) }
     }
-    val openCount = remember(version, vm.user) { db.receipts(true).count { vm.canDepot(it.depot) && (!multiDepot || !onlyHere || it.depot == db.depot) } }
+    val openCount = remember(version, vm.user, onlyHere) { db.receipts(true).count { vm.canDepot(it.depot) && (!multiDepot || !onlyHere || it.depot == db.depot) } }
 
     // Başka terminallerin açtığı belgeler kilit simgesiyle görünür (belge kilidi).
     LocksPoller(vm)

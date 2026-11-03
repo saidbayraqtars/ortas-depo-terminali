@@ -416,3 +416,13 @@ test('eski kapanış (kapanış kaydı yok): havuzda mal kalan satır yeniden a�
   assert.deepStrictEqual(acik.map((s) => [s.ind, s.satirlar.map((l) => [l.productId, l.open])]), [[831, [['102', 2]]]], 'tamamen alınan 101 görünmez, alınmamış 102 kaybolmaz');
   db.run('DELETE FROM transfer_kapali WHERE sevk_ind=831');
 });
+
+test('milattan (kabul başlangıcı) önceki terminal kabulü rafa bekleyen sayılmaz', () => {
+  const eski = Date.parse('2026-10-28T12:00:00');
+  db.run("INSERT INTO transfer(id, kind, from_depo, to_depo, sevk_ind, sevk_no, user, device, created_at, kismi, durum, yazildi_at) VALUES('milat-eski','RECEIVE',1,108,990,'A0000990','ali','TRM-01',?,0,'YAZILDI',?)", eski, eski);
+  db.run("INSERT INTO transfer_line(transfer_id, product_id, qty, shelf) VALUES('milat-eski','101',7,'')");
+  depo.degisti();
+  assert.ok(!depo.belgeler().some((b) => b.id === 'TRF-milat-eski'), 'milattan önceki kabul belge olarak çıkmaz');
+  db.run("DELETE FROM transfer_line WHERE transfer_id='milat-eski'");
+  db.run("DELETE FROM transfer WHERE id='milat-eski'");
+});

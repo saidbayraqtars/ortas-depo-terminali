@@ -1058,8 +1058,10 @@ function belgeler({ shelved, kapali } = kabulDurumu()) {
 function bekleyenUrunler() {
   const out = new Map();
   const anahtar = (d, pid) => `${d}|${pid}`;
+  // Terminalin çalışabildiği depolar dışındaki belgeler (listede olmayan depo) rafa bekleyen sayılmaz.
+  const kullanilan = new Set(depolar().map((d) => d.ind));
   for (const r of belgeler()) {
-    if (r.elleKapali) continue;
+    if (r.elleKapali || (kullanilan.size && !kullanilan.has(r.depo))) continue;
     for (const l of r.lines) {
       const k = anahtar(r.depo, l.productId);
       let x = out.get(k);

@@ -513,7 +513,9 @@ let fisOnbellek = { surum: -1, liste: [] };
 function programKabulFisleri() {
   const sv = depo().surum();
   if (fisOnbellek.surum === sv) return fisOnbellek.liste;
-  const bas = now() - 60 * 86400000;
+  // Son 60 gün, ama mal kabul başlangıcından (milat) eski olmasın: test dönemindeki kabuller rafa bekleyen sayılmaz.
+  const milat = new Date(`${config.kabulBaslangic()}T00:00:00`).getTime();
+  const bas = Math.max(now() - 60 * 86400000, milat);
   const satirlar = db.all(
     `SELECT t.id, t.from_depo, t.to_depo, t.sevk_no, t.belge_no, t.created_at, l.product_id, SUM(l.qty) AS q
      FROM transfer t JOIN transfer_line l ON l.transfer_id = t.id

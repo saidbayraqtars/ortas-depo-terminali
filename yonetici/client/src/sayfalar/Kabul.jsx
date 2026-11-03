@@ -15,7 +15,7 @@ const gunAd = (ts) => new Date(ts).toLocaleDateString('tr-TR');
 
 /** Rafa bekleyen ürünler: belge eşleşmesi yok; ürün başına gelen − rafa kaldırılan (sunucu `bekleyenUrunler`). */
 function BekleyenUrunler() {
-  const { cok, depo, ad } = useDepo();
+  const { cok, depo, setDepo, ad } = useDepo();
   const [q, setQ] = useState('');
   const { veri, hata, yukleniyor } = useVeri('/bekleyen?limit=5000');
   const liste = useMemo(() => {
@@ -24,8 +24,10 @@ function BekleyenUrunler() {
       && (!a || u.urunKod.toLocaleLowerCase('tr').includes(a) || u.urunAd.toLocaleLowerCase('tr').includes(a)));
   }, [veri, q, depo]);
   const ozet = veri?.ozet;
-  const depoOzet = depo ? ozet?.depolar.find((d) => d.depo === Number(depo)) : null;
+  // Depo seçiliyken o depoda bekleyen yoksa 0 gösterilir (bütün depoların toplamı değil); diğer depodakiler ayrıca söylenir.
+  const depoOzet = depo && ozet ? ozet.depolar.find((d) => d.depo === Number(depo)) || { urun: 0, adet: 0 } : null;
   const gosterilen = depoOzet || ozet;
+  const baska = depoOzet ? ozet.urun - depoOzet.urun : 0;
   return (
     <>
       <div className="grid g4" style={{ marginBottom: 14 }}>
@@ -35,6 +37,13 @@ function BekleyenUrunler() {
           <div className="card stat" key={d.depo}><span className="k">{d.depoAd}</span><span className="v">{miktar(d.adet)}</span><span className="s">{miktar(d.urun)} ürün</span></div>
         ))}
       </div>
+      {baska > 0 && (
+        <div className="notice info" style={{ margin: '0 0 12px', alignItems: 'center' }}>
+          <Icon name="package" />
+          <p style={{ flex: 1 }}>{ad(depo)} dışındaki depolarda {baska} ürün daha rafa bekliyor ({ozet.depolar.filter((d) => d.depo !== Number(depo)).map((d) => `${d.depoAd}: ${miktar(d.adet)} adet`).join(', ')}).</p>
+          <Btn onClick={() => setDepo('')}>Bütün depoları göster</Btn>
+        </div>
+      )}
       <div className="card">
         <div className="toolbar">
           <Ara deger={q} degis={setQ} yer="Stok kodu ya da ürün adı" />
