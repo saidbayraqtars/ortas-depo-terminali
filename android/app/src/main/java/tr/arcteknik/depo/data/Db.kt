@@ -794,6 +794,12 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 10) {
         db.delete("home", "depot=? AND product_id=? AND shelf=?", arrayOf(d.toString(), productId, shelf))
     }
 
+    fun addHome(db: SQLiteDatabase, d: Int, productId: String, shelf: String) {
+        db.insertWithOnConflict("home", null, ContentValues().apply {
+            put("depot", d); put("product_id", productId); put("shelf", shelf); put("bucket", Buckets.of(productId))
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
     fun ensureShelf(db: SQLiteDatabase, d: Int, shelf: String) {
         db.insertWithOnConflict("shelf", null, ContentValues().apply {
             put("depot", d); put("code", shelf); put("zone", shelf.substringBefore('-'))

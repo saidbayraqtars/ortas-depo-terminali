@@ -234,7 +234,7 @@ Her terminal kullanıcısının iki sınırı vardır; ikisi de yönetici progra
   `count` sayım gönder, `count_free` serbest sayım başlat, `depot_send` depoya gönder (Vega 128), `depot_receive` gönderim kabul (Vega 129),
   `label` etiket bas, `queue_manage` kuyruktaki hatalı işlemi yeniden dene/sil. Ürün ve raf sorgusu herkese açıktır.
   İşlem türü → izin: `PUTAWAY`→putaway, `PICK`→pick, `TRANSFER`→transfer, `SHELF_ADD`→shelf_add, `HOME_REMOVE`→home_remove,
-  `SHELF_ARRANGE`→shelf_arrange, `COUNT_SUBMIT`→count (`sessionId` `LOCAL-` ile başlıyorsa ayrıca count_free), `TRANSFER_SEND`→depot_send, `TRANSFER_RECEIVE`→depot_receive,
+  `SHELF_ARRANGE`→shelf_arrange, `HOME_SET`→shelf_arrange (Raf Ata: `productId, shelf, depot, replace`; adres atanır, `replace` ürünün depodaki öbür adreslerini kaldırır, raf miktarı değişmez), `COUNT_SUBMIT`→count (`sessionId` `LOCAL-` ile başlıyorsa ayrıca count_free), `TRANSFER_SEND`→depot_send, `TRANSFER_RECEIVE`→depot_receive,
   `POST /api/label`→label.
 - **`depots` (depo):** kullanıcı yalnız bu depolarda işlem yapabilir. Sunucu işlemin deposuna bakar: `payload.depot` (rafa kaldırmada belgenin deposu,
   sayımda sayımın deposu), `TRANSFER_SEND`'de **gönderen** `from` (mal çıkan depo), `TRANSFER_RECEIVE`'de **alan** depo (gönderimin hedefi).

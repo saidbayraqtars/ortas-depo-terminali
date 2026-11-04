@@ -678,6 +678,30 @@ test('terminalden ürünün raf adresi silinir: raf ve raftaki miktar kalır, ad
   db.run('DELETE FROM product_home');
 });
 
+test('terminalden Raf Ata: adres atanır, replace öbür adresleri kaldırır, miktara dokunmaz, Vega kartı adresi yaz kapalıyken korunur', () => {
+  db.run('DELETE FROM product_home');
+  depo.islemler('TRM-01', 'ali', [op('PUTAWAY', { productId: '103', shelf: 'B-01-01', qty: 4, depot: 1 })]);
+  const once = depo.miktar(1, '103', 'B-01-01');
+  depo.zimmetEkle(1, '103', 'A-01-02', 'IMPORT');
+  // Yanına ekle (replace yok): eskiler kalır.
+  assert.ok(depo.islemler('TRM-01', 'ali', [op('HOME_SET', { productId: '103', shelf: 'a-01-01', depot: 1 })])[0].ok);
+  assert.deepStrictEqual(depo.zimmetler(1, '103').map((z) => z.shelf), ['A-01-01', 'A-01-02', 'B-01-01']);
+  // Yerine koy: yalnız yeni adres kalır; raf stoku değişmez.
+  assert.ok(depo.islemler('TRM-01', 'ali', [op('HOME_SET', { productId: '103', shelf: 'A-01-01', depot: 1, replace: true })])[0].ok);
+  assert.deepStrictEqual(depo.zimmetler(1, '103').map((z) => z.shelf), ['A-01-01']);
+  assert.strictEqual(depo.miktar(1, '103', 'B-01-01'), once);
+  // Aynı işlem iki kez gelse de sonuç aynı.
+  assert.ok(depo.islemler('TRM-01', 'ali', [op('HOME_SET', { productId: '103', shelf: 'A-01-01', depot: 1, replace: true })])[0].ok);
+  assert.deepStrictEqual(depo.zimmetler(1, '103').map((z) => z.shelf), ['A-01-01']);
+  // Raf kodu yok / geçersiz ret.
+  assert.strictEqual(depo.islemler('TRM-01', 'ali', [op('HOME_SET', { productId: '103', depot: 1 })])[0].ok, false);
+  // Vega kartından gelen adres, alanı program yazmıyorsa yerine konamaz ve hiçbir şey değişmez.
+  db.run("UPDATE product_home SET source='VEGA' WHERE product_id='103'");
+  assert.strictEqual(depo.islemler('TRM-01', 'ali', [op('HOME_SET', { productId: '103', shelf: 'A-01-02', depot: 1, replace: true })])[0].ok, false);
+  assert.deepStrictEqual(depo.zimmetler(1, '103').map((z) => z.shelf), ['A-01-01']);
+  db.run('DELETE FROM product_home');
+});
+
 test('güncellemeyle gelen raf listesi bir kez aktarılır: ürünün asıl rafı bütün kullanılan depolara, bilinmeyen ürün atlanır', () => {
   db.run('DELETE FROM product_home');
   const dosya = path.join(dir, 'b2b.tsv');

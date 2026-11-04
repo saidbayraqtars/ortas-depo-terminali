@@ -122,7 +122,7 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
         return
     }
 
-    Screen(session.no, sub = if (arrange) "Raf düzenleme" else "${session.title} · " + if (session.blind) "kör sayım" else "açık sayım", online = online, onBack = { vm.back() }, monoTitle = true, scrollKey = shelf, footer = {
+    Screen(session.no, sub = if (arrange) "Raf düzenleme" else "${session.title} · " + if (session.blind) "kör sayım" else "açık sayım", online = online, onBack = { vm.back() }, monoTitle = true, scrollKey = shelf, tabs = if (arrange) ({ ArrangeTabs(vm, 0) }) else null, footer = {
         MessageBar(vm.message?.first, vm.message?.second == true)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             SecondaryButton("Sonraki raf", { shelf = null }, Modifier.weight(1f), enabled = shelf != null)

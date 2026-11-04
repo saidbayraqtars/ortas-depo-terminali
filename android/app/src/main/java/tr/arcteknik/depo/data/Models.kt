@@ -182,6 +182,8 @@ object OpType {
     const val PICK = "PICK"
     /** Ürünün raf adresini (zimmet) siler; raf ve raftaki miktar değişmez (1.5.1+ sunucu). */
     const val HOME_REMOVE = "HOME_REMOVE"
+    /** Raf Ata: ürüne okutulan rafı adres olarak atar; `replace` ise ürünün depodaki öbür adresleri kalkar. Raftaki miktar değişmez (2.1.0+ sunucu). */
+    const val HOME_SET = "HOME_SET"
     /** Raf Düzenle: rafta duran malı rafa tanımlar; sayım oturumu açmaz, onay beklemez, Vega'ya yazılmaz. Eski yönetici programı bu türü bilmez ve reddeder; yönetici ve APK birlikte güncellenir. */
     const val SHELF_ARRANGE = "SHELF_ARRANGE"
     /** Depolar arası gönderim: gönderen depoda raf düşer, sunucu Vega'ya depo gönderim fişi (128) yazar (1.6.0+ sunucu). */

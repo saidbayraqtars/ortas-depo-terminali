@@ -47,6 +47,7 @@ const ISLEM_IZNI = {
   SHELF_ADD: 'shelf_add',
   HOME_REMOVE: 'home_remove',
   SHELF_ARRANGE: 'shelf_arrange',
+  HOME_SET: 'shelf_arrange',
   COUNT_SUBMIT: 'count',
   TRANSFER_SEND: 'depot_send',
   TRANSFER_RECEIVE: 'depot_receive',
