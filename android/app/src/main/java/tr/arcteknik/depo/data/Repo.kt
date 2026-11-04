@@ -211,32 +211,6 @@ class Repo(val db: Db, val prefs: Prefs) {
         changed()
     }
 
-    /**
-     * Raf Ata: ürüne [shelf] adres olarak atanır; [replace] ise ürünün bu depodaki öbür adresleri kalkar. Raftaki miktar
-     * değişmez. Silinen adreslerin listesi (ekranda "yerine" diye gösterilir) döner.
-     */
-    fun setHome(product: Product, shelf: String, replace: Boolean, user: String, d: Int = db.depot): List<String> {
-        val s = shelf.uppercase()
-        val old = if (replace) db.homeShelves(product.id, d).filter { it != s } else emptyList()
-        val w = db.writableDatabase
-        w.beginTransaction()
-        try {
-            old.forEach { db.removeHome(w, d, product.id, it) }
-            db.addHome(w, d, product.id, s)
-            db.addMovement(w, product.id, "Raf adresi atandı · $s" + if (old.isNotEmpty()) " (yerine ${old.joinToString()})" else "", 0.0)
-            db.insertOp(w, op(
-                OpType.HOME_SET,
-                JSONObject().put("productId", product.id).put("shelf", s).put("depot", d).put("replace", replace).put("user", user),
-                "Raf adresi atandı|${product.code} → $s",
-            ))
-            w.setTransactionSuccessful()
-        } finally {
-            w.endTransaction()
-        }
-        changed()
-        return old
-    }
-
     // ---- Depolar arası transfer ----------------------------------------------------------
 
     /** Ana veriyle gelen transfer bölümü; özellik kapalıysa ya da sunucu eskiyse [TransferInfo.on] false. */

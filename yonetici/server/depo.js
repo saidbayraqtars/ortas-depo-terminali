@@ -804,31 +804,6 @@ function islemUygula(op, cihaz, kullanici) {
       if (zimmetSil(d, pid, shelf)) log.bilgi(`Raf adresi silindi: ${shelf} · ürün ${pid} (${depoAdi(d)}) · ${device} · ${user}`);
       return;
     }
-    case 'HOME_SET': {
-      // Terminalden "Raf Ata": ürünün raf adresi doğrudan atanır; replace ise ürünün bu depodaki öbür adresleri kalkar.
-      // Raftaki miktara dokunulmaz, Vega'ya hareket yazılmaz (yalnız KOD10 adresi, ayara bağlı).
-      const pid = String(p.productId || '');
-      const shelf = rafKodu(p.shelf);
-      if (!pid || !shelf) throw new Ret('Eksik bilgi');
-      bilinen(pid);
-      const d = depoCoz(p.depot);
-      yetkiDenetle(null, d, shelf);
-      if (!rafKoduGecerli(shelf)) throw new Ret(`Geçersiz raf kodu: ${shelf}`);
-      const eskiler = p.replace ? zimmetler(d, pid).filter((z) => z.shelf !== shelf) : [];
-      // Raf sınırı dışındaki eski adres de değiştirilemez; hiçbiri uygulanmadan reddedilir.
-      for (const z of eskiler) yetkiDenetle(null, d, z.shelf);
-      // Vega kartından gelen adres, alanı program yönetiyorsa (rafAdresi.yaz) değiştirilebilir; yoksa kart esas alınır.
-      const yaz = Boolean(config.load().rafAdresi?.yaz);
-      const vegaKilit = eskiler.find((z) => z.source === 'VEGA');
-      if (vegaKilit && !yaz) throw new Ret(`${vegaKilit.shelf} adresi Vega stok kartından geliyor; Vega'da karttaki raf adresinden silin`);
-      if (!rafVarMi(d, shelf)) rafEkle(d, shelf, { source: 'TERMINAL', note: `${device} · ${user}` });
-      db.tx(() => {
-        for (const z of eskiler) db.run('DELETE FROM product_home WHERE depo=? AND product_id=? AND shelf=?', d, pid, z.shelf);
-        zimmetEkle(d, pid, shelf, 'ADMIN');
-      });
-      log.bilgi(`Raf adresi atandı: ${shelf} · ürün ${pid} (${depoAdi(d)})${eskiler.length ? ` · yerine: ${eskiler.map((z) => z.shelf).join(', ')}` : ''} · ${device} · ${user}`);
-      return;
-    }
     case 'COUNT_SUBMIT':
       // Terminalde kendiliğinden açılan serbest sayım ayrı izin ister (yönetici açtığı sayıma gönderim `count`).
       if (String(p.sessionId || '').startsWith('LOCAL-')) yetkiDenetle('count_free');

@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import tr.arcteknik.depo.data.Kapsam
 import tr.arcteknik.depo.data.Repo.Companion.fmt
 import tr.arcteknik.depo.data.Perm
+import tr.arcteknik.depo.data.Product
 import tr.arcteknik.depo.data.isArrangeId
 import tr.arcteknik.depo.ui.AppVm
 import tr.arcteknik.depo.ui.C
@@ -100,7 +101,11 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
     var keep by remember { mutableStateOf(vm.repo.prefs.arrangeKeepOthers) }
     val session = remember(version) { db.countSession(sessionId) }
     var shelf by remember { mutableStateOf<String?>(null) }
+    // Raf Düzenle (Rafa Kaldır gibi): önce ürün, sonra raf okutulur; okutulan ürün o rafa yazılır.
+    var pending by remember { mutableStateOf<Product?>(null) }
+    var pendingQty by remember { mutableStateOf(1.0) }
     val lines = remember(version, shelf) { shelf?.let { db.countLines(sessionId, it) }.orEmpty() }
+    val allLines = remember(version) { if (arrange) db.countLines(sessionId) else emptyList() }
     // Rafta olması gereken (raf stoku ya da zimmet) ama bu sayımda henüz okutulmayan ürünler.
     val contents = remember(version, shelf, session?.depot) { shelf?.let { db.shelfContents(it, session?.depot ?: db.depot) }.orEmpty() }
     val waiting = remember(contents, lines) {
@@ -122,10 +127,10 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
         return
     }
 
-    Screen(session.no, sub = if (arrange) "Raf düzenleme" else "${session.title} · " + if (session.blind) "kör sayım" else "açık sayım", online = online, onBack = { vm.back() }, monoTitle = true, scrollKey = shelf, tabs = if (arrange) ({ ArrangeTabs(vm, 0) }) else null, footer = {
+    Screen(session.no, sub = if (arrange) "Raf düzenleme" else "${session.title} · " + if (session.blind) "kör sayım" else "açık sayım", online = online, onBack = { vm.back() }, monoTitle = true, scrollKey = shelf, footer = {
         MessageBar(vm.message?.first, vm.message?.second == true)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SecondaryButton("Sonraki raf", { shelf = null }, Modifier.weight(1f), enabled = shelf != null)
+            if (!arrange) SecondaryButton("Sonraki raf", { shelf = null }, Modifier.weight(1f), enabled = shelf != null)
             PrimaryButton(if (arrange) "Bitir" else "Sayımı bitir", { vm.go(Route.CountDiff(sessionId)) }, Modifier.weight(1f), enabled = shelves.isNotEmpty())
         }
     }) {
@@ -141,7 +146,59 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
             ) { keep = it; vm.repo.prefs.arrangeKeepOthers = it }
         }
 
-        if (shelf == null) {
+        if (arrange) {
+            fun assign(p: Product, s: String) {
+                vm.repo.addCount(sessionId, s, p, pendingQty)
+                vm.ok("${p.code} → $s" + if (pendingQty > 1) " · ${fmt(pendingQty)}" else "")
+                pending = null
+                pendingQty = 1.0
+            }
+            val p = pending
+            if (p == null) {
+                ProductScanField(
+                    vm, "Ürün okutun", "Önce ürün, sonra raf okutulur; her okutma +1",
+                    onProduct = { pending = it; pendingQty = 1.0; vm.feedback.ok() },
+                )
+            } else {
+                Card(bg = C.OkBg, border = C.Ok, borderWidth = 1.5.dp) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(Modifier.weight(1f)) {
+                            Text(p.name, fontWeight = FontWeight.SemiBold, maxLines = 2)
+                            MonoText(p.code, size = 12, weight = FontWeight.Medium, color = C.Muted)
+                        }
+                        QtyStepper(pendingQty, { pendingQty = it.coerceAtLeast(1.0) }, small = true)
+                    }
+                    Text("Vazgeç", color = C.Info, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.focusProperties { canFocus = false }.clickable { pending = null }.padding(vertical = 4.dp))
+                }
+                ProductScanField(
+                    vm, "Raf okutun", "Ürünü tekrar okutunca +1",
+                    onProduct = { n -> if (n.id == p.id) { pendingQty += 1.0; vm.feedback.ok() } else { pending = n; pendingQty = 1.0; vm.feedback.ok() } },
+                    onOther = { code ->
+                        val s = code.uppercase()
+                        when {
+                            !inScope(s) -> { scopeError(s); true }
+                            !db.shelfExists(s, session.depot) -> { vm.unknownShelf(s, session.depot) { assign(p, it) }; true }
+                            else -> { assign(p, s); true }
+                        }
+                    },
+                    showSearchLink = false,
+                )
+            }
+            Card(padding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp)) {
+                Caption("Düzenlenenler (${allLines.size})")
+                if (allLines.isEmpty()) Hint("Henüz ürün okutulmadı.", Modifier.padding(bottom = 10.dp))
+                LimitedList(allLines, { it.shelf + "|" + it.product.id }, limit = Int.MAX_VALUE) { l ->
+                    Divider()
+                    Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(Modifier.weight(1f)) {
+                            Text(l.product.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                            MonoText(l.product.code + " · " + l.shelf, size = 12, weight = FontWeight.Medium, color = C.Muted)
+                        }
+                        QtyStepper(l.qty, { vm.repo.setCount(sessionId, l.shelf, l.product, it) }, small = true)
+                    }
+                }
+            }
+        } else if (shelf == null) {
             ScanField("Raf okutun", if (arrange) "Düzenleyeceğiniz rafın etiketi" else "Sayacağınız rafın etiketi", true, vm.repo.prefs.cameraButton, { code ->
                 val s = code.uppercase()
                 when {

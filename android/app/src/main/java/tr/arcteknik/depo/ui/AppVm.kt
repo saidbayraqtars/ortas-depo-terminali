@@ -47,7 +47,6 @@ import tr.arcteknik.depo.ui.screens.CountScreen
 import tr.arcteknik.depo.ui.screens.HomeScreen
 import tr.arcteknik.depo.ui.screens.LoginScreen
 import tr.arcteknik.depo.ui.screens.ProductQueryScreen
-import tr.arcteknik.depo.ui.screens.AssignShelfScreen
 import tr.arcteknik.depo.ui.screens.PickScreen
 import tr.arcteknik.depo.ui.screens.ProductPutAwayScreen
 import tr.arcteknik.depo.ui.screens.PutAwayScreen
@@ -68,8 +67,6 @@ sealed interface Route {
     data class PutAway(val receiptId: String) : Route
     data class PutAwayProduct(val productId: String) : Route
     data object Pick : Route
-    /** Raf Ata: raf okut, ürün okut, adres hemen atanır. */
-    data object AssignShelf : Route
     data class ProductQuery(val scan: String? = null) : Route
     data class ShelfQuery(val shelf: String? = null) : Route
     data class Transfer(val productId: String? = null, val from: String? = null) : Route
@@ -239,7 +236,6 @@ class AppVm(app: Application) : AndroidViewModel(app) {
     private fun needed(r: Route): List<String>? = when (r) {
         Route.Receipts, is Route.PutAway, is Route.PutAwayProduct -> listOf(Perm.PUTAWAY)
         Route.Pick -> listOf(Perm.PICK)
-        Route.AssignShelf -> listOf(Perm.SHELF_ARRANGE)
         is Route.Transfer -> listOf(Perm.TRANSFER)
         Route.Counts -> listOf(Perm.COUNT, Perm.COUNT_FREE)
         // Raf Düzenle sayım ekranlarını kullanır ama kendi iznine bağlıdır (Perm.SHELF_ARRANGE).
@@ -444,7 +440,6 @@ fun DepoApp(vm: AppVm) {
         is Route.PutAway -> PutAwayScreen(vm, online, version, r.receiptId)
         is Route.PutAwayProduct -> ProductPutAwayScreen(vm, online, version, r.productId)
         Route.Pick -> PickScreen(vm, online, version)
-        Route.AssignShelf -> AssignShelfScreen(vm, online)
         is Route.ProductQuery -> ProductQueryScreen(vm, online, version, r.scan)
         is Route.ShelfQuery -> ShelfQueryScreen(vm, online, version, r.shelf)
         is Route.Transfer -> TransferScreen(vm, online, version, r.productId, r.from)

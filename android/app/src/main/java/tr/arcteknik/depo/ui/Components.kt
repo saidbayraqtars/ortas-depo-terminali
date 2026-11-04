@@ -102,13 +102,10 @@ fun Screen(
     footer: (@Composable ColumnScope.() -> Unit)? = null,
     scroll: Boolean = true,
     scrollKey: Any? = null,
-    /** Üst çubuğun altında sabit duran sekmeler (Raf Düzenle: Toplu / Tek tek). */
-    tabs: (@Composable () -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(Modifier.fillMaxSize().background(C.Ground)) {
         TopBar(title, sub, online, onBack, monoTitle)
-        tabs?.invoke()
         val scrollState = rememberScrollState()
         if (scroll) LaunchedEffect(scrollKey) { scrollState.scrollTo(0) }
         Column(
