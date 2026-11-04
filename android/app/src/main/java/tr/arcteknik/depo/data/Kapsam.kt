@@ -33,6 +33,13 @@ object Kapsam {
         x.size - y.size
     }
 
-    /** Kapsam boşsa her raf kapsamdadır. */
-    fun icinde(kod: String, onekler: List<String>): Boolean = onekler.isEmpty() || onekler.any { uyar(kod, it) }
+    /**
+     * Kapsam boşsa her raf kapsamdadır. Kullanıcı raf sınırında "-TK*" hariç tutar, tek başına "*" her rafı kapsar;
+     * yalnız hariç varsa geri kalan her raf açıktır (server/kapsam.js ile aynı kural).
+     */
+    fun icinde(kod: String, onekler: List<String>): Boolean {
+        val dahil = onekler.filter { it != "*" && !it.startsWith("-") }
+        if (onekler.any { it.startsWith("-") && uyar(kod, it.drop(1)) }) return false
+        return dahil.isEmpty() || "*" in onekler || dahil.any { uyar(kod, it) }
+    }
 }

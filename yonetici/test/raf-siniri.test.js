@@ -206,3 +206,24 @@ test('yetki modülü: raf sınırı normalleşir, denetim mesaj verir, kayıtsı
   assert.deepStrictEqual(yetki.terminalGorunumu({ role: 'tam', perms: '*', depots: '*', shelves: 'TK*' }).shelves, ['TK*']);
   assert.strictEqual(yetki.terminalGorunumu({ role: 'tam', perms: '*', depots: '*' }).shelves, null);
 });
+
+test('raf sınırında hariç tutma: tümü − TK*', () => {
+  const kapsam = require('../server/kapsam');
+  const yetki = require('../server/yetki');
+  assert.strictEqual(yetki.raflariDogrula('-tk*'), '*,-TK*');
+  assert.strictEqual(yetki.raflariDogrula('*, -TK*'), '*,-TK*');
+  assert.strictEqual(yetki.raflariDogrula('*'), '*');
+  const o = kapsam.coz('*,-TK*');
+  for (const k of ['KAT-1-A-2', 'KO-3', '2KATA1ÖNÜ', 'T-B-D2-9']) assert.ok(kapsam.kapsamda(k, o), k);
+  for (const k of ['TK1-A-1', 'TK2-HY', 'TKB-3']) assert.ok(!kapsam.kapsamda(k, o), k);
+  // Dahil + hariç: hariç kazanır; yalnız dahil eski gibi çalışır.
+  assert.ok(!kapsam.kapsamda('KAT-9', kapsam.coz('K*,-KAT')));
+  assert.ok(kapsam.kapsamda('KO-9', kapsam.coz('K*,-KAT')));
+  assert.ok(kapsam.kapsamda('TK1-A', kapsam.coz('TK*')));
+  assert.ok(!kapsam.kapsamda('KO-9', kapsam.coz('TK*')));
+  const yk = yetki.baglam({ username: 'm', perms: '*', depots: '*', shelves: '*,-TK*' });
+  assert.ok(yk.rafVar('KAT-1'));
+  assert.ok(!yk.rafVar('TK2-HY'));
+  assert.ok(yk.denetle(null, null, 'TK1-A-1'));
+  assert.strictEqual(yk.denetle(null, null, 'KAT-1'), null);
+});

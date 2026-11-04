@@ -22,18 +22,21 @@ function Duzenle({ kullanici, katalog, kapat, tamam }) {
   const [depolar, setDepolar] = useState(() => new Set(kullanici?.depots || []));
   // Raf sınırı: kapsam.js önekleri ("TK*"); null = tüm raflar. Önizleme seçili depolardaki uyan raf sayısını gösterir.
   const [tumRaflar, setTumRaflar] = useState(kullanici ? !kullanici.shelves : true);
-  const [rafOnek, setRafOnek] = useState((kullanici?.shelves || []).join(', '));
+  const [rafOnek, setRafOnek] = useState((kullanici?.shelves || []).filter((x) => x !== '*' && !x.startsWith('-')).join(', '));
+  // Hariç tutulan raf önekleri ("TK*"): kayıtta "-TK*" olarak durur. "Tüm raflar" ile birlikte de kullanılır (Merkez: tümü − TK*).
+  const [rafHaric, setRafHaric] = useState((kullanici?.shelves || []).filter((x) => x.startsWith('-')).map((x) => x.slice(1)).join(', '));
+  const rafMetni = [...(tumRaflar ? ['*'] : [rafOnek]), ...rafHaric.split(',').map((x) => x.trim()).filter(Boolean).map((x) => '-' + x)].join(',');
   const [rafOnizleme, setRafOnizleme] = useState([]);
   const onizlemeDepolari = tumDepolar ? katalog.depolar.map((d) => d.ind) : [...depolar];
   useEffect(() => {
-    if (tumRaflar || !rafOnek.trim() || onizlemeDepolari.length === 0) return setRafOnizleme([]);
+    if ((tumRaflar && !rafHaric.trim()) || (!tumRaflar && !rafOnek.trim()) || onizlemeDepolari.length === 0) return setRafOnizleme([]);
     let iptal = false;
     const t = setTimeout(async () => {
-      const sonuc = await Promise.all(onizlemeDepolari.map((d) => api(`/sayim-kapsam?depo=${d}&kapsam=${encodeURIComponent(rafOnek)}`).then((x) => ({ d, ...x })).catch((e) => ({ d, hata: e.message }))));
+      const sonuc = await Promise.all(onizlemeDepolari.map((d) => api(`/sayim-kapsam?depo=${d}&kapsam=${encodeURIComponent(rafMetni)}`).then((x) => ({ d, ...x })).catch((e) => ({ d, hata: e.message }))));
       if (!iptal) setRafOnizleme(sonuc);
     }, 300);
     return () => { iptal = true; clearTimeout(t); };
-  }, [tumRaflar, rafOnek, tumDepolar, [...depolar].join(',')]);
+  }, [tumRaflar, rafOnek, rafHaric, tumDepolar, [...depolar].join(',')]);
   const gruplar = useMemo(() => {
     const m = new Map();
     for (const i of katalog.izinler) {
@@ -68,8 +71,8 @@ function Duzenle({ kullanici, katalog, kapat, tamam }) {
   const kaydet = async (e) => {
     e?.preventDefault();
     if (!tumDepolar && depolar.size === 0) return toast('En az bir depo seçin ya da "Tüm depolar"ı işaretleyin', true);
-    if (!tumRaflar && !rafOnek.trim()) return toast('En az bir raf öneki yazın (örnek: TK*) ya da "Tüm raflar"ı işaretleyin', true);
-    const yetki = { perms: tamYetki ? '*' : [...izinler], role: tamYetki ? 'tam' : rol, depots: tumDepolar ? '*' : [...depolar], shelves: tumRaflar ? '*' : rafOnek };
+    if (!tumRaflar && !rafOnek.trim() && !rafHaric.trim()) return toast('En az bir raf öneki yazın (örnek: TK*) ya da "Tüm raflar"ı işaretleyin', true);
+    const yetki = { perms: tamYetki ? '*' : [...izinler], role: tamYetki ? 'tam' : rol, depots: tumDepolar ? '*' : [...depolar], shelves: rafMetni };
     try {
       if (yeni) await api('/kullanicilar', { method: 'POST', body: { username, name, pin, ...yetki } });
       else await api(`/kullanici/${encodeURIComponent(kullanici.username)}`, { method: 'PUT', body: { name, ...(pin ? { pin } : {}), ...yetki } });
@@ -110,22 +113,25 @@ function Duzenle({ kullanici, katalog, kapat, tamam }) {
             <input type="checkbox" checked={tumRaflar} onChange={(e) => setTumRaflar(e.target.checked)} />
             <span><b>Tüm raflar</b></span>
           </label>
-          {!tumRaflar && (
-            <div className="stack" style={{ margin: '8px 0 0 26px', gap: 8 }}>
-              <input className="inp mono" value={rafOnek} placeholder="TK*" onChange={(e) => setRafOnek(e.target.value.toLocaleUpperCase('tr-TR'))} />
-              {rafOnizleme.map((o) => (
-                <div key={o.d} className="small" style={o.hata ? { color: 'var(--err, #b42318)' } : undefined}>
-                  <b>{katalog.depolar.find((x) => x.ind === o.d)?.ad || o.d}</b>:{' '}
-                  {o.hata ? o.hata : o.adet === 0 ? 'bu önekle başlayan raf yok' : <>{o.adet} raf <span className="muted mono">({o.ornek.slice(0, 6).join(', ')}{o.adet > 6 ? ' …' : ''})</span></>}
-                  {o.oneri && <> · <a href="#" onClick={(e) => { e.preventDefault(); setRafOnek(o.oneri.kapsam); }}><b>{o.oneri.kapsam}</b></a> yazarsanız {o.oneri.adet} raf</>}
-                </div>
-              ))}
-            </div>
-          )}
+          <div className="stack" style={{ margin: '8px 0 0 26px', gap: 8 }}>
+            {!tumRaflar && <input className="inp mono" value={rafOnek} placeholder="TK*" onChange={(e) => setRafOnek(e.target.value.toLocaleUpperCase('tr-TR'))} />}
+            <label className="small" style={{ display: 'grid', gap: 4 }}>
+              <span><b>Hariç tutulan raflar</b> <span className="muted">(görmesin, işlem yapamasın)</span></span>
+              <input className="inp mono" value={rafHaric} placeholder="örnek: TK*" onChange={(e) => setRafHaric(e.target.value.toLocaleUpperCase('tr-TR'))} />
+              <span><a href="#" onClick={(e) => { e.preventDefault(); setRafHaric((x) => (x.split(',').map((y) => y.trim()).includes('TK*') ? x : [x.trim(), 'TK*'].filter(Boolean).join(', '))); }}>TK* ekle</a> <span className="muted">(Toybelen rafları; Merkez personeli için)</span></span>
+            </label>
+            {rafOnizleme.map((o) => (
+              <div key={o.d} className="small" style={o.hata ? { color: 'var(--err, #b42318)' } : undefined}>
+                <b>{katalog.depolar.find((x) => x.ind === o.d)?.ad || o.d}</b>:{' '}
+                {o.hata ? o.hata : o.adet === 0 ? 'bu kurala uyan raf yok' : <>{o.adet} raf <span className="muted mono">({o.ornek.slice(0, 6).join(', ')}{o.adet > 6 ? ' …' : ''})</span></>}
+                {!tumRaflar && o.oneri && <> · <a href="#" onClick={(e) => { e.preventDefault(); setRafOnek(o.oneri.kapsam); }}><b>{o.oneri.kapsam}</b></a> yazarsanız {o.oneri.adet} raf</>}
+              </div>
+            ))}
+          </div>
           <div className="muted small" style={{ marginTop: 6 }}>
             Kullanıcı yalnız bu rafları görür ve yalnız bu raflarda işlem yapar: terminal diğer rafları göstermez, sunucu da reddeder (Hareketler › işlem günlüğünde "Reddedilen").
             Önek raf kodunun başıyla eşleşir; virgülle birden çok yazılır. <b>TK*</b> TK ile başlayan her rafı kapsar (TK-1-2, TK2-HY, TKB-3). Yıldızsız <b>TK</b> harfle süren TKB-3'ü kapsamaz.
-            Toybelen personeli için depo olarak Toybelen'i, raf olarak TK* seçin.
+            Toybelen personeli için depo olarak Toybelen'i, raf olarak TK* seçin. Merkez personeli için "Tüm raflar"ı işaretleyip hariç tutulanlara TK* yazın: yeni açılan raflar da kendiliğinden görünür.
           </div>
         </div>
 
@@ -210,7 +216,7 @@ export default function Kullanicilar() {
                     </td>
                     <td>
                       {u.depots === null ? <span className="muted">Tüm depolar</span> : u.depots.map(depoAd).join(', ')}
-                      {u.shelves && <div className="mono small" style={{ marginTop: 4 }}>Raflar: {u.shelves.join(', ')}</div>}
+                      {u.shelves && <div className="mono small" style={{ marginTop: 4 }}>Raflar: {u.shelves.map((x) => (x === '*' ? 'tümü' : x.startsWith('-') ? 'hariç ' + x.slice(1) : x)).join(', ')}</div>}
                     </td>
                     <td>{u.active ? <Rozet tur="b-ok">Aktif</Rozet> : <Rozet tur="b-mute">Kapalı</Rozet>}</td>
                     <td className="muted">{tarihSaat(u.created_at)}</td>

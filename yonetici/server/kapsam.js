@@ -2,7 +2,10 @@
 //
 // Önek, raf kodunun başıyla eşleşir ve bir sayı ya da harf dizisini bölmez: "K1" → K1, K1-A3, K1A-2; K10 değil.
 // "TK2-H" → TK2-H1, TK2-H9 (harften sonra rakam gelir, dizi bölünmez). Sonda "*" varsa düz önek: "K1*" → K10 da.
-const DESEN = /^[A-Z0-9ÇĞİÖŞÜ][A-Z0-9ÇĞİÖŞÜ\-./ ]{0,23}\*?$/;
+//
+// Kullanıcı raf sınırında (yetki.js) iki ek biçim: "-TK*" hariç tutar (başında "-"), tek başına "*" her rafı kapsar.
+// "*,-TK*" = TK ile başlayanlar dışındaki bütün raflar. Hariç tutulan her zaman kazanır.
+const DESEN = /^-?[A-Z0-9ÇĞİÖŞÜ][A-Z0-9ÇĞİÖŞÜ\-./ ]{0,23}\*?$/;
 const EN_COK = 20;
 
 function sinif(c) {
@@ -18,6 +21,10 @@ function coz(girdi) {
   for (const ham of parcalar) {
     const p = String(ham || '').trim().toLocaleUpperCase('tr-TR');
     if (!p) continue;
+    if (p === '*') {
+      if (!liste.includes(p)) liste.push(p);
+      continue;
+    }
     if (!DESEN.test(p)) throw Object.assign(new Error(`Kapsam öneki uygun değil: "${p}"`), { status: 400 });
     if (!liste.includes(p)) liste.push(p);
   }
@@ -33,9 +40,12 @@ function uyar(kod, onek) {
   return s === 0 || s !== sinif(kod[onek.length]);
 }
 
-/** Kapsam boşsa her raf kapsamdadır. */
+/** Kapsam boşsa her raf kapsamdadır. Hariç ("-") önekler, "*" ya da yalnız hariç varsa geri kalan her raf kapsamdadır. */
 function kapsamda(kod, onekler) {
-  return !onekler.length || onekler.some((o) => uyar(kod, o));
+  const dahil = onekler.filter((o) => o !== '*' && !o.startsWith('-'));
+  const haric = onekler.filter((o) => o.startsWith('-')).map((o) => o.slice(1));
+  if (haric.some((o) => uyar(kod, o))) return false;
+  return !dahil.length || onekler.includes('*') || dahil.some((o) => uyar(kod, o));
 }
 
 module.exports = { coz, kapsamda };

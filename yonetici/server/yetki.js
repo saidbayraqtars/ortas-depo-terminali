@@ -91,6 +91,8 @@ function depolariDogrula(x) {
 function raflariDogrula(x) {
   if (x === '*' || x === null || x === undefined) return '*';
   const liste = kapsam.coz(x);
+  // Yalnız hariç varsa ("-TK*") geri kalan her raf açıktır; kayıt metni bunu açıkça yazar.
+  if (liste.length && liste.every((o) => o.startsWith('-'))) liste.unshift('*');
   return liste.length ? liste.join(',') : '*';
 }
 
