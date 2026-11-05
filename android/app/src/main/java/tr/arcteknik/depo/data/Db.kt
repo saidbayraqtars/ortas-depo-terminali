@@ -659,13 +659,8 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
             ShelfOption(it.getString(0), 0, it.getDouble(1))
         }.forEach { out.putIfAbsent(it.shelf, it) }
         homeShelves(productId, d).forEach { out.putIfAbsent(it, ShelfOption(it, 1)) }
-        query(
-            "SELECT s.shelf, COALESCE(dp.name, ''), s.qty FROM (" +
-                "SELECT depot, shelf, qty FROM location WHERE product_id=? AND depot<>? AND qty>0 " +
-                "UNION SELECT depot, shelf, 0 FROM home WHERE product_id=? AND depot<>?) s " +
-                "JOIN shelf sh ON sh.depot=? AND sh.code=s.shelf LEFT JOIN depot dp ON dp.id=s.depot ORDER BY s.qty DESC, s.shelf",
-            productId, d.toString(), productId, d.toString(), d.toString(),
-        ) { ShelfOption(it.getString(0), 2, it.getDouble(2), it.getString(1)) }.forEach { out.putIfAbsent(it.shelf, it) }
+        // Yalnız bu depo. Başka depodaki adres/stok gösterilmez (2.2.0): B2B listesi her depoya kopyalandığı için Toybelen'de silinen
+        // TK2-L15 "MERKEZ deposunda adresi" diye görünmeye devam ediyordu; o depodaki kayıt burada iş görmez, yalnız şaşırtır.
         return out.values.filter { shelfAllowed(it.shelf) }
     }
 

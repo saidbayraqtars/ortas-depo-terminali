@@ -649,9 +649,10 @@ function yoneticiApi() {
   }));
   r.delete('/zimmet', sar((req) => {
     const b = req.body || {};
-    const ok = depo.zimmetSil(depo.depoCoz(b.depo), String(b.productId || ''), b.shelf);
+    // Öteki depolardaki B2B liste kopyası da kalkar (bkz. depo.importKopyalariSil).
+    const s = depo.adresSil(depo.depoCoz(b.depo), String(b.productId || ''), b.shelf);
     depo.degisti();
-    return { ok };
+    return { ok: s.ok || s.kopya > 0, kopya: s.kopya };
   }));
   // Yönetici: ürünü raftan rafa taşı (miktar boşsa hepsi).
   r.post('/tasi', sar((req) => {
@@ -1229,6 +1230,11 @@ async function baslat({ veriKlasoru, apkKlasoru, arayuz, host = '0.0.0.0', port 
   apk.kur(apkKlasoru || path.join(__dirname, '..', 'apk'));
 
   depo.goruntuYukleOnbellek();
+  try {
+    depo.silinenAdresKopyalari();
+  } catch (e) {
+    log.hata('Silinmiş adreslerin liste kopyaları temizlenemedi', e);
+  }
   depo.vegaYenile('açılış').catch(() => {});
   depo.vegaZamanla();
   // Önceki oturumdan Vega'ya yazılmamış transferler varsa Vega okumasından sonra yazılır.

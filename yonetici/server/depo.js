@@ -387,6 +387,67 @@ function zimmetSil(depo, productId, shelf) {
 }
 
 /**
+ * Paketle gelen B2B raf listesi (IMPORT) depodan bağımsızdır ama kullanılan her depoya ayrı kopyalanır (iceaktar.otomatik):
+ * Toybelen'in TK2-L15 adresi Merkez'de de adres olur. Bir depoda adres silinince öteki depolardaki aynı liste kopyası da kalkar
+ * (o depoda o rafta mal yoksa); yoksa terminal "MERKEZ deposunda adresi" diye göstermeye, Vega kartının raf alanı da yazmaya
+ * devam ederdi (Toybelen, 2026-11-05). Elle, terminalden ya da Vega'dan verilmiş adrese dokunulmaz.
+ */
+function importKopyalariSil(depo, productId, shelf) {
+  const c = rafKodu(shelf);
+  const pid = String(productId);
+  let n = 0;
+  for (const k of db.all("SELECT depo FROM product_home WHERE product_id=? AND shelf=? AND source='IMPORT' AND depo<>?", pid, c, depo)) {
+    if (miktar(k.depo, pid, c) > EPS) continue;
+    db.run('DELETE FROM product_home WHERE depo=? AND product_id=? AND shelf=?', k.depo, pid, c);
+    n++;
+  }
+  if (n) rafYazTetikle();
+  return n;
+}
+
+/** Terminalden ya da yönetici ekranından adres silme: bu depodaki adres + öteki depolardaki B2B liste kopyaları. */
+function adresSil(depo, productId, shelf) {
+  const ok = zimmetSil(depo, productId, shelf);
+  return { ok, kopya: importKopyalariSil(depo, productId, shelf) };
+}
+
+/**
+ * Bir kez (2.2.0 ilk açılışı): bugüne kadar terminalden silinmiş adreslerin öteki depolarda kalan B2B liste kopyaları silinir.
+ * Adres o depoda sonradan yeniden verildiyse (rafa kaldırma vb.) dokunulmaz.
+ */
+function silinenAdresKopyalari() {
+  if (db.meta('importKopyaTemizlik')) return 0;
+  let n = 0;
+  db.tx(() => {
+    for (const o of db.all("SELECT payload FROM op WHERE type='HOME_REMOVE' AND ok=1 ORDER BY created_at")) {
+      let p;
+      try {
+        p = JSON.parse(o.payload);
+      } catch {
+        continue;
+      }
+      const pid = String(p.productId || '');
+      const shelf = rafKodu(p.shelf);
+      if (!pid || !shelf) continue;
+      let d;
+      try {
+        d = depoCoz(p.depot);
+      } catch {
+        continue;
+      }
+      if (db.get('SELECT 1 FROM product_home WHERE depo=? AND product_id=? AND shelf=?', d, pid, shelf)) continue;
+      n += importKopyalariSil(d, pid, shelf);
+    }
+    db.set('importKopyaTemizlik', String(now()));
+  });
+  if (n) {
+    log.bilgi(`Silinmiş raf adreslerinin öteki depolardaki B2B liste kopyaları temizlendi: ${n} adres`);
+    degisti();
+  }
+  return n;
+}
+
+/**
  * Terminalde ürün bir rafa konunca (rafa kaldırma, transfer hedefi, sayımda bulunma) o raf ürünün adresi olur ve
  * rafAdresi.yaz açıksa Vega kartının raf alanına (Ortaş KOD10) yazılır. Excel ve yönetici zimmetlerine dokunulmaz.
  */
@@ -823,7 +884,8 @@ function islemUygula(op, cihaz, kullanici, { saatFarki = null } = {}) {
       bilinen(pid);
       const d = depoCoz(p.depot);
       yetkiDenetle(null, d, shelf);
-      if (zimmetSil(d, pid, shelf)) log.bilgi(`Raf adresi silindi: ${shelf} · ürün ${pid} (${depoAdi(d)}) · ${device} · ${user}`);
+      const s = adresSil(d, pid, shelf);
+      if (s.ok || s.kopya) log.bilgi(`Raf adresi silindi: ${shelf} · ürün ${pid} (${depoAdi(d)}${s.kopya ? ` + ${s.kopya} depodaki liste kopyası` : ''}) · ${device} · ${user}`);
       return;
     }
     case 'COUNT_SUBMIT':
@@ -2178,6 +2240,8 @@ module.exports = {
   zimmetler,
   zimmetEkle,
   zimmetSil,
+  adresSil,
+  silinenAdresKopyalari,
   adresleriAyir,
   vegaZimmetEsitle,
   vegaRafYaz,

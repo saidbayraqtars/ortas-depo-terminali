@@ -595,9 +595,7 @@ private fun ShelfChoices(vm: AppVm, productId: String, d: Int, typed: String, on
                 known.take(8).forEach { o ->
                     val note = when (o.kind) {
                         0 -> "rafta ${fmt(o.qty)}"
-                        1 -> "asıl raf"
-                        // Başka depodaki adres/stok: bu depodaki adres silinince aynı kod "Merkez" diye görünüyordu; neyin nesi belli olsun.
-                        else -> "${o.depotName.ifBlank { "başka depo" }} deposunda ${if (o.qty > 0) fmt(o.qty) else "adresi"}"
+                        else -> "asıl raf"
                     }
                     ShelfChoiceRow(o.shelf, note, onPick, if (o.shelf in homes && vm.can(Perm.HOME_REMOVE)) ({ removing = o.shelf }) else null)
                 }
