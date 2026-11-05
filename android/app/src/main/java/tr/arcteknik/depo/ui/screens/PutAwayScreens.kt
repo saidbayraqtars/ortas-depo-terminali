@@ -262,7 +262,8 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
     var confirm by remember { mutableStateOf(false) }
     var leaveAsk by remember { mutableStateOf(false) }
     // Belge depo bazlı: raflar ve öneri belgenin deposundan.
-    val rd = receipt?.depot ?: db.depot
+    // Ortak liste (BEK-<depo>) bütün bekleyenler bitince listeden kalkabilir; depo kimliği belge numarasındadır.
+    val rd = receipt?.depot ?: receiptId.takeIf { it.startsWith("BEK-") }?.removePrefix("BEK-")?.toIntOrNull() ?: db.depot
 
     /**
      * Sepetteki her satır rafa kaldırılır: adet ürünün belge satırlarına (en çok kalanı olandan başlayarak) bölünür, artanı
@@ -271,6 +272,12 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
     fun commit(): Int {
         cart.toList().forEach { c ->
             val pl = lines.filter { it.product.id == c.productId }.sortedByDescending { it.remaining }
+            // Ortak liste (ürün bazlı): sepetteki ürün başka bir çalışanca kaldırılıp liste yenilenirken listeden çıkmış olabilir.
+            // Mal fiziken rafa konduğu için kayıt kaybolmasın: belgesiz rafa kaldırılır (sunucu bekleyenden düşer, fazlası stokta kalır).
+            if (pl.isEmpty()) {
+                db.productById(c.productId, rd)?.let { vm.repo.putAwayProduct(it, c.shelf, c.qty, vm.userName, rd) }
+                return@forEach
+            }
             var left = c.qty
             pl.forEachIndexed { i, l ->
                 val q = if (i == pl.lastIndex) left else minOf(left, l.remaining)
@@ -302,7 +309,9 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
     fun remaining(pid: String) = lines.filter { it.product.id == pid }.sumOf { it.remaining }
 
     fun onProduct(p: Product) {
-        if (lines.none { it.product.id == p.id }) return vm.error("${p.name} bu belgede yok")
+        // Ortak ürün listesinde (BEK-) ürünün bekleyeni başka bir çalışanca bitirilmiş olabilir: mal elinizdeyse yine okutulur, belgesiz kaldırılır.
+        val shared = receiptId.startsWith("BEK-")
+        if (lines.none { it.product.id == p.id } && !shared) return vm.error("${p.name} bu belgede yok")
         val suggested = suggestedShelf(vm, p.id, rd)
         val target = shelf ?: suggested ?: return vm.error("${p.name}: önce rafı okutun (kayıtlı rafı yok)")
         val firstOnShelf = cart.cartQty(p.id, target) <= 1e-9

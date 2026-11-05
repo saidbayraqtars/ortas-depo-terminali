@@ -10,6 +10,7 @@ const fuzzy = require('./fuzzy');
 const kapsam = require('./kapsam');
 const yetki = require('./yetki');
 const bekleme = require('./bekleme');
+const { tekSeferde, mesgul } = require('./tekseferde');
 
 const EPS = 1e-9;
 // Depo hareket fişinden gelen belge türleri (ayarda "D37" gibi seçilir); vega.js ile aynı.
@@ -915,7 +916,7 @@ function rafGonderimi(p) {
  * Rafın içeriğini terminalde okutulan değere çeker (sayım ve raf düzenleme ortak). `kaydet(pid, {counted, system}, once)`
  * her ürün için çağrılır (sayım satır kaydını burada tutar).
  */
-function rafiOkutulanaCek(depo, raf, satirlar, olusturma, hareket, kaydet = null, { okutulmayaniDokunma = false } = {}) {
+function rafiOkutulanaCek(depo, raf, satirlar, olusturma, hareket, kaydet = null, { okutulmayaniDokunma = false, farkEkle = false } = {}) {
   const sayilan = new Map();
   const rafSatirlari = satirlar.filter((x) => rafKodu(x.shelf) === raf);
   for (const l of rafSatirlari) {
@@ -932,7 +933,11 @@ function rafiOkutulanaCek(depo, raf, satirlar, olusturma, hareket, kaydet = null
   }
   for (const [pid, x] of sayilan) {
     const once = miktar(depo, pid, raf);
-    miktarAyarla(depo, pid, raf, x.counted, hareket);
+    // `farkEkle` (Raf Düzenle, relative): terminal raftaki miktarı kendi görüntüsüne (`system`) göre yazdı; aynı raf aynı anda başka
+    // bir terminalce düzenlenmiş ya da rafa kaldırılmış olabilir. Mutlak yazılırsa o değişiklik ezilir (12'yi gören iki terminal
+    // +2 ve +3 eklerse 17 yerine 15 kalırdı): terminalin eklediği fark sunucudaki güncel miktara eklenir. 0 "rafta yok" demektir, mutlak kalır.
+    const hedef = farkEkle && x.counted > EPS ? Math.max(0, once + x.counted - x.system) : x.counted;
+    miktarAyarla(depo, pid, raf, hedef, hareket);
     // Rafta bulunan ve hiçbir adresi olmayan ürünün adresi o raf olur; rafta olmadığı bildirilen ürünün terminal adresi kalkar.
     if (x.counted > EPS) {
       if (!zimmetler(depo, pid).length) terminalZimmet(depo, pid, raf);
@@ -957,9 +962,11 @@ function rafDuzenle(p, h, olusturma, yetkiDenetle) {
   const ref = String(p.no || 'Raf düzenleme').slice(0, 60);
   // `keepOthers` (1.12.0+ terminal): okutulmayan ürüne dokunulmaz. Alan yoksa (eski terminal) raf okutulana eşitlenir.
   const dokunma = p.keepOthers === true || p.keepOthers === 1 || p.keepOthers === 'true';
+  // `relative` (2.1.3+ terminal, yalnız okutulmayana dokunma kipinde): satırdaki `system` terminalin gördüğü miktardır, fark eklenir.
+  const goreli = p.relative === true || p.relative === 1 || p.relative === 'true';
   for (const raf of raflar) {
     if (!rafVarMi(depo, raf)) rafEkle(depo, raf, { source: 'TERMINAL', note: 'Raf düzenlemeden geldi' });
-    rafiOkutulanaCek(depo, raf, satirlar, olusturma, { ...h, kind: 'ARRANGE', ref }, null, { okutulmayaniDokunma: dokunma });
+    rafiOkutulanaCek(depo, raf, satirlar, olusturma, { ...h, kind: 'ARRANGE', ref }, null, { okutulmayaniDokunma: dokunma, farkEkle: dokunma && goreli });
   }
 }
 
@@ -1047,6 +1054,52 @@ function belgeler({ shelved, kapali } = kabulDurumu()) {
   });
 }
 
+/** Belgesiz (BEK- satırından ya da belge numarasız) rafa kaldırmalar, milattan beri: [{ depo, pid, q }]. */
+function belgesizRafa() {
+  const bas = new Date(`${config.kabulBaslangic(config.load())}T00:00:00`).getTime();
+  return db.all(
+    `SELECT m.depo AS depo, m.product_id AS pid, SUM(m.delta) AS q
+       FROM movement m LEFT JOIN op o ON o.id = m.op_id
+      WHERE m.kind = 'PUTAWAY' AND m.geri_at IS NULL AND m.ts >= ?
+        AND ((o.payload IS NULL AND m.ref IS NULL)
+          OR (o.payload IS NOT NULL AND (json_extract(o.payload, '$.lineId') IS NULL OR json_extract(o.payload, '$.lineId') LIKE 'BEK-%')))
+      GROUP BY m.depo, m.product_id`,
+    bas,
+  );
+}
+
+/**
+ * Mal kabul belge listesi (yönetici ekranı): `belgeler()` + ürün bazlı rafa kaldırmalar en eski belgeden başlayarak
+ * belge satırlarına dağıtılır. Terminal artık belgesiz (BEK-) kaldırdığı için bu olmadan hiçbir belge "rafa kalktı" olmaz.
+ * Toplam kalan, bekleyenUrunler ile aynıdır.
+ */
+function belgelerDagitimli() {
+  const liste = belgeler().map((r) => ({ ...r, lines: r.lines.map((l) => ({ ...l })) }));
+  const kalanRafa = new Map(belgesizRafa().map((b) => [`${depoCoz(b.depo)}|${b.pid}`, Number(b.q)]));
+  // En eskiden yeniye: liste ts'ye göre yeniden eskiye sıralı geldiği için tersten gidilir.
+  for (let i = liste.length - 1; i >= 0; i--) {
+    const r = liste[i];
+    if (r.elleKapali) continue;
+    let degisti = false;
+    for (const l of r.lines) {
+      const k = `${r.depo}|${l.productId}`;
+      const var_ = kalanRafa.get(k) || 0;
+      const acik = l.accepted - l.shelved;
+      if (var_ <= EPS || acik <= EPS) continue;
+      const x = Math.min(var_, acik);
+      l.shelved = yuvarla(l.shelved + x);
+      kalanRafa.set(k, var_ - x);
+      degisti = true;
+    }
+    if (!degisti) continue;
+    const kalan = r.lines.reduce((t, l) => t + Math.max(0, l.accepted - l.shelved), 0);
+    r.biten = r.lines.filter((l) => l.shelved >= l.accepted - EPS).length;
+    r.kalan = yuvarla(kalan);
+    r.acik = kalan > EPS;
+  }
+  return liste;
+}
+
 /**
  * Rafa bekleyen mal, ürün bazlı: belge eşleşmesi aranmaz (Ortaş malı belgeye göre ayırmıyor).
  * Depo + ürün başına:
@@ -1073,17 +1126,7 @@ function bekleyenUrunler() {
     }
   }
   // Belgesiz rafa kaldırmalar (ve eski terminalin belge numarası olmayan kayıtları): ürün başına gelenden düşer.
-  const bas = new Date(`${config.kabulBaslangic(config.load())}T00:00:00`).getTime();
-  const belgesiz = db.all(
-    `SELECT m.depo AS depo, m.product_id AS pid, SUM(m.delta) AS q
-       FROM movement m LEFT JOIN op o ON o.id = m.op_id
-      WHERE m.kind = 'PUTAWAY' AND m.geri_at IS NULL AND m.ts >= ?
-        AND ((o.payload IS NULL AND m.ref IS NULL)
-          OR (o.payload IS NOT NULL AND (json_extract(o.payload, '$.lineId') IS NULL OR json_extract(o.payload, '$.lineId') LIKE 'BEK-%')))
-      GROUP BY m.depo, m.product_id`,
-    bas,
-  );
-  for (const b of belgesiz) {
+  for (const b of belgesizRafa()) {
     const x = out.get(anahtar(depoCoz(b.depo), String(b.pid)));
     if (x) x.rafa += Number(b.q);
   }
@@ -1402,17 +1445,17 @@ function urunDetay(id) {
   const hareketler = db
     .all('SELECT * FROM movement WHERE product_id=? ORDER BY ts DESC, id DESC LIMIT 200', pid)
     .map((h) => ({ ...h, depoAd: depoAdi(h.depo) }));
-  const kabul = belgeler()
+  const kabul = belgelerDagitimli()
     .filter((r) => r.lines.some((l) => l.productId === pid))
     .slice(0, 30)
     .map((r) => {
       const l = r.lines.find((x) => x.productId === pid);
-      return { id: r.id, docNo: r.docNo, tur: r.tur, date: r.date, supplier: r.supplier, depoAd: r.depoAd, accepted: l.accepted, shelved: l.shelved, acik: r.acik };
+      return { id: r.id, docNo: r.docNo, tur: r.tur, date: r.date, supplier: r.supplier, depo: r.depo, depoAd: r.depoAd, accepted: l.accepted, shelved: l.shelved, acik: r.acik };
     });
   // Depo depo özet: Vega stoku, raflar, bekleyen, yerleşmemiş.
   const depoSet = new Set(konumlar.map((k) => k.depo));
   if (goruntu) for (const [d, m] of goruntu.stokDepo) if (m.get(pid)) depoSet.add(d);
-  for (const r of kabul) if (r.acik) depoSet.add(belgeler().find((x) => x.id === r.id)?.depo);
+  for (const r of kabul) if (r.acik) depoSet.add(r.depo);
   const depolarOzet = [...depoSet]
     .filter((d) => d !== undefined)
     .sort((a, b) => a - b)
@@ -1454,7 +1497,7 @@ async function stokTani(ara) {
   const bek0 = bekleme.ayar();
   const secili = new Set((cfg.kabul.izahat || []).map(String));
   const bas = cfg.kabul.baslangic || '';
-  const blg = new Map(belgeler().map((r) => [r.id, r]));
+  const blg = new Map(belgelerDagitimli().map((r) => [r.id, r]));
   const vegaDepoAd = new Map(v.depolar.map((d) => [Number(d.ind), d.ad]));
   const ad = (d) => vegaDepoAd.get(d) || depoAdi(d);
   const kartlar = v.kartlar.map((k) => {
@@ -1596,7 +1639,9 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
     };
   });
   liste.sort((a, b) => Math.abs(b.fark) - Math.abs(a.fark) || a.name.localeCompare(b.name, 'tr'));
-  const satirDetay = satirlar.map((l) => ({ ...l, ...urunAdi(l.product_id), fark: yuvarla(l.counted - l.server_before) }));
+  // `catisma`: sayım gönderilirken sunucudaki raf miktarı terminalin gördüğünden farklıydı (terminal henüz eşitlenmemişken başka bir
+  // terminal rafa kaldırdı/aldı/düzenledi). Sayım mutlak yazar; o hareket ezilmiş olabilir, yönetici bakıp onaylasın.
+  const satirDetay = satirlar.map((l) => ({ ...l, ...urunAdi(l.product_id), fark: yuvarla(l.counted - l.server_before), catisma: yuvarla(l.server_before - l.terminal_system) }));
   const onekler = s.scope ? s.scope.split(',') : [];
   let kapsamOzet = null;
   if (onekler.length) {
@@ -1702,7 +1747,12 @@ function satirlarRafToplam(depo, sessionId, productId) {
   return Number(r?.q || 0);
 }
 
-async function sayimOnayla(id, { vegaYaz = false, stoknolar = null, dahilSayilmayan = false, kullanici = 'yönetici' } = {}) {
+async function sayimOnayla(id, secenekler = {}) {
+  // Vega'ya yazarken (await) aynı sayım ikinci kez onaylanmasın: ikinci cevap boş gelir ve ilk fişin numaralarını ezerdi.
+  return tekSeferde(`sayim:${id}`, () => sayimOnaylaAsil(id, secenekler), 'Bu sayım şu an onaylanıyor; bitince durumuna bakın');
+}
+
+async function sayimOnaylaAsil(id, { vegaYaz = false, stoknolar = null, dahilSayilmayan = false, kullanici = 'yönetici' } = {}) {
   const ozet = sayimOzet(id, { dahilSayilmayan });
   if (!ozet) throw new Error('Sayım bulunamadı');
   const s = ozet.oturum;
@@ -1734,8 +1784,14 @@ async function sayimOnayla(id, { vegaYaz = false, stoknolar = null, dahilSayilma
 }
 
 async function sayimGeriAl(id) {
+  return tekSeferde(`sayim:${id}`, () => sayimGeriAlAsil(id), 'Bu sayım şu an işleniyor; bitince durumuna bakın');
+}
+
+async function sayimGeriAlAsil(id) {
   const s = db.get('SELECT * FROM count_session WHERE id=?', id);
   if (!s) throw new Error('Sayım bulunamadı');
+  // Yalnız onaylanmış sayım geri alınır: iptal edilmiş ya da açık sayım "onay bekliyor"a döndürülmesin.
+  if (s.status !== 'APPROVED') throw new Error('Sayım onaylanmış durumda değil; geri alınacak onay yok');
   const docs = s.vega_docs ? JSON.parse(s.vega_docs).docs : [];
   if (docs.length) await vega.sayimGeriAl(config.load(), docs);
   db.run("UPDATE count_session SET status='CLOSED', vega_docs=NULL, vega_written_at=NULL, note=TRIM(note || ' · onay geri alındı') WHERE id=?", id);
@@ -1745,6 +1801,7 @@ async function sayimGeriAl(id) {
 }
 
 module.exports = {
+  sayimMesgul: (id) => mesgul(`sayim:${id}`),
   _goruntuKur: goruntuKur,
   yenidenKur,
   degisti,
@@ -1785,6 +1842,7 @@ module.exports = {
   terminalZimmetBosalt,
   islemler,
   belgeler,
+  belgelerDagitimli,
   bekleyenUrunler,
   bekleyenListe,
   bekleyenKabul,

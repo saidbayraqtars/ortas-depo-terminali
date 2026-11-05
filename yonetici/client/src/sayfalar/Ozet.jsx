@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { api, Btn, Durum, HAREKET, Icon, kilitDestegiYok, miktar, once, Rozet, SayfaBaslik, tarihSaat, useApp, useOnay, useVeri } from '../lib.jsx';
+import { api, Btn, Durum, HAREKET, Icon, kilitDestegiYok, miktar, once, Rozet, SayfaBaslik, tarihSaat, urunKabulDestegiYok, useApp, useOnay, useVeri } from '../lib.jsx';
 
 const ISLEM_AD = { PUTAWAY: 'Rafa kaldırma', TRANSFER: 'Transfer', COUNT_SUBMIT: 'Sayım gönderimi', SHELF_ARRANGE: 'Raf düzenleme' };
 
@@ -153,9 +153,9 @@ export default function Ozet() {
         </a>
         <a className="card stat" href="#/hareketler">
           <span className="k"><Icon name="history" size={16} /> Bugün</span>
-          <span className="v">{(bugun.PUTAWAY?.n || 0) + (bugun.TRANSFER?.n || 0) + (bugun.COUNT_SUBMIT?.n || 0) + (bugun.SHELF_ARRANGE?.n || 0)}</span>
+          <span className="v">{(bugun.PUTAWAY?.n || 0) + (bugun.TRANSFER?.n || 0) + (bugun.COUNT_SUBMIT?.n || 0) + (bugun.SHELF_ARRANGE?.n || 0) + (bugun.TRANSFER_SEND?.n || 0) + (bugun.TRANSFER_RECEIVE?.n || 0)}</span>
           <span className="s">
-            {bugun.PUTAWAY?.n || 0} rafa kaldırma · {bugun.TRANSFER?.n || 0} transfer · {bugun.COUNT_SUBMIT?.n || 0} sayım{bugun.SHELF_ARRANGE?.n ? ` · ${bugun.SHELF_ARRANGE.n} raf düzenleme` : ''}
+            {bugun.PUTAWAY?.n || 0} rafa kaldırma · {bugun.TRANSFER?.n || 0} transfer · {bugun.COUNT_SUBMIT?.n || 0} sayım{bugun.SHELF_ARRANGE?.n ? ` · ${bugun.SHELF_ARRANGE.n} raf düzenleme` : ''}{bugun.TRANSFER_SEND?.n || bugun.TRANSFER_RECEIVE?.n ? ` · ${bugun.TRANSFER_SEND?.n || 0} gönderim · ${bugun.TRANSFER_RECEIVE?.n || 0} kabul` : ''}
             {s.hataliIslem ? ` · ${s.hataliIslem} reddedildi` : ''}
           </span>
         </a>
@@ -185,7 +185,7 @@ export default function Ozet() {
                       </td>
                       <td>{c.last_user || '—'}</td>
                       <td className="muted">{once(c.last_seen)}{c.last_ip ? ` · ${c.last_ip}` : ''}</td>
-                      <td className="mono small">{c.app_version || '—'}{kilitDestegiYok(c.app_version) && <div><Rozet tur="b-warn">kilit desteği yok</Rozet></div>}</td>
+                      <td className="mono small">{c.app_version || '—'}{kilitDestegiYok(c.app_version) && <div><Rozet tur="b-warn">kilit desteği yok</Rozet></div>}{urunKabulDestegiYok(c.app_version) && <div><Rozet tur="b-warn">Gönderim Kabul eski: güncelleyin</Rozet></div>}</td>
                     </tr>
                   );
                 })}

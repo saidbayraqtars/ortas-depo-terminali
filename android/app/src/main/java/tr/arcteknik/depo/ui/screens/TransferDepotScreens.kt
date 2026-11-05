@@ -126,6 +126,10 @@ private fun overflow(sevk: Incoming, lines: List<TransferLine>): List<TransferLi
         (l.qty - open).takeIf { it > 1e-9 }?.let { TransferLine(l.productId, it) }
     }
 
+/** "URUN-<gönderen>-<alan>" → (gönderen, alan); ürün bazlı kabul listesi değilse null. */
+private fun parseUrunId(id: String): Pair<Int, Int>? =
+    Regex("^URUN-([0-9]+)-([0-9]+)\$").find(id)?.let { it.groupValues[1].toInt() to it.groupValues[2].toInt() }
+
 /** Kabul fişine yazılacak satırlar: gönderilenden fazla okutulan miktar kırpılır (sunucu fazlasını kalıcı olarak reddeder). */
 private fun writable(sevk: Incoming, lines: List<TransferLine>): List<TransferLine> =
     lines.mapNotNull { l ->
@@ -507,7 +511,7 @@ fun ReceiveListScreen(vm: AppVm, online: Boolean, version: Int) {
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(p.name, color = C.InfoText, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text("${p.code} · ${mine.size} gönderimde var", color = C.InfoText, fontSize = 12.sp)
+                    Text(if (mine.all { it.id.startsWith("URUN-") }) "${p.code} · kabul bekleyenlerde var" else "${p.code} · ${mine.size} gönderimde var", color = C.InfoText, fontSize = 12.sp)
                 }
                 Text("Temizle", color = C.Info, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
             }
@@ -531,7 +535,7 @@ fun ReceiveListScreen(vm: AppVm, online: Boolean, version: Int) {
                     }
                     Text("${s.fromName} deposundan", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                     LockTag(vm, "SEVK-${s.id}")
-                    Hint("${s.lines.size} kalem · toplam ${fmt(s.lines.sumOf { it.open })}")
+                    Hint("${s.lines.size} ${if (s.id.startsWith("URUN-")) "ürün" else "kalem"} · toplam ${fmt(s.lines.sumOf { it.open })}")
                     hits[s.id]?.let { q -> Text("Bu üründen ${fmt(q)} adet bekliyor", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = C.Info) }
                     half[s.id]?.let { Text(draftLine(it), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = C.Warn) }
                 }
@@ -586,10 +590,23 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
         // Okutma alanı bu dalda yoktur; buraya düşen okutmalar kaybolur. Sürerse tanı raporunda görünsün.
         Diag.crumb("kabul: gönderim listede yok ($sevkId, ${info.incoming.size} gönderim)")
         Screen("Gönderim Kabul", online = online, onBack = { vm.back() }) {
-            Notice("Bu gönderim artık açık görünmüyor (kabul edilmiş ya da iptal edilmiş olabilir).", Tone.Warn, icon = Ic.Warning)
+            Notice(
+                if (sevkId.startsWith("URUN-")) "Kabul bekleyen ürün kalmadı (başka bir terminal hepsini kabul etmiş olabilir)." else "Bu gönderim artık açık görünmüyor (kabul edilmiş ya da iptal edilmiş olabilir).",
+                Tone.Warn, icon = Ic.Warning,
+            )
             // Yarım bırakılmış okutma varsa bu ekrandan silinebilir (gönderim çoktan bitmişse taslağın işi kalmaz).
             if (draft.isNotEmpty()) {
                 Hint("Bu gönderim için yarım bırakılmış ${fmt(draft.sumOf { it.qty })} adet okutma saklı.")
+                // Ortak ürün listesi boşaldıysa elinizdeki mal beklenenden fazladır: yönetici onayına gönderilir (kaybolmaz).
+                parseUrunId(sevkId)?.let { (from, to) ->
+                    PrimaryButton("Fazla olarak yönetici onayına gönder · ${fmt(draft.sumOf { it.qty })} adet", {
+                        val bos = Incoming(sevkId, "Kabul bekleyen ürünler", "", from, db.depotName(from), to, db.depotName(to), emptyList())
+                        vm.repo.receiveTransfer(bos, emptyList(), vm.userName, partial = true, extra = draft.toList())
+                        vm.dropReceiveDraft(sevkId)
+                        vm.saved("Fazla olarak yönetici onayına gönderildi")
+                        vm.back()
+                    })
+                }
                 SecondaryButton("Yarım okutmayı sil", { vm.dropReceiveDraft(sevkId) })
             }
             SecondaryButton("Geri", { vm.back() })
@@ -637,14 +654,24 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
     val over = sevk.lines.filter { remaining(it.productId) < -1e-9 }
     // Daha önce kısmi alınmışsa yeni okutma olmasa da kabul bitirilebilir (kalan eksik olur).
     val hadPartial = sevk.lines.any { it.open < it.sent - 1e-9 }
+    // Ürün bazlı liste (sunucu "URUN-<gönderen>-<alan>"): yönün bütün açık gönderimleri tek listedir, gönderim belgesi yoktur.
+    // "Kabulü bitir" ve eksik kavramı yoktur: okutulanlar kabul edilir, okutulmayan ürün listede bekler; gelmeyen mal yöneticinin ekranından kapatılır.
+    val pooled = sevk.id.startsWith("URUN-")
+    // Ürün bazlı listede kabul edilecek: bekleyen kadarı fişe, fazlası yönetici onayına gider. İkisi de boşsa (okutulanlar başkasınca kabul edilmiş) düğme kapalıdır.
+    val sendLines = if (pooled) writable(sevk, draft.toList()) else emptyList()
+    val canSendPooled = pooled && (sendLines.isNotEmpty() || overflow(sevk, draft.toList()).isNotEmpty())
     BackHandler(enabled = draft.isNotEmpty()) { leaveAsk = true }
     Screen(
-        "Gönderim Kabul", sub = "${sevk.no} · ${sevk.fromName} → ${sevk.toName}", online = online,
+        "Gönderim Kabul", sub = if (pooled) "${sevk.fromName} → ${sevk.toName}" else "${sevk.no} · ${sevk.fromName} → ${sevk.toName}", online = online,
         onBack = { if (draft.isNotEmpty()) leaveAsk = true else vm.back() }, scroll = false,
         footer = ({
             PrimaryButton(
-                if (missing.isEmpty()) "Kabulü bitir" else "Kabulü bitir · ${missing.size} kalem eksik",
-                { confirm = true }, enabled = draft.isNotEmpty() || hadPartial,
+                when {
+                    pooled -> "Kabul et · ${fmt(sendLines.sumOf { it.qty })} adet"
+                    missing.isEmpty() -> "Kabulü bitir"
+                    else -> "Kabulü bitir · ${missing.size} kalem eksik"
+                },
+                { confirm = true }, enabled = if (pooled) canSendPooled else (draft.isNotEmpty() || hadPartial),
             )
         }),
     ) {
@@ -660,6 +687,15 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             DocUnlockedNotice(vm)
+            // Ortak liste: okutulan ürün bu arada başka bir çalışanca tamamen kabul edilip listeden çıkmış olabilir.
+            // Okutulan miktar listedeki bekleyenden fazlaysa fazlası yönetici onayına gider; kullanıcı bunu önceden görsün.
+            val gone = if (pooled) draft.filter { d -> sevk.lines.none { it.productId == d.productId } } else emptyList()
+            if (gone.isNotEmpty()) {
+                Notice(
+                    "${gone.size} ürün listeden çıktı (başka terminal kabul etmiş): okutulan ${fmt(gone.sumOf { it.qty })} adet \"Kabul et\" deyince fazla olarak yönetici onayına gider. Vazgeçmek için Sıfırla.",
+                    Tone.Warn, icon = Ic.Warning,
+                )
+            }
             // Yönetici eksik/fazla kabulü reddedip geri gönderdiyse sorusu burada durur; belge yeniden kabul edilince kalkar.
             if (sevk.note.isNotBlank()) Notice("Yönetici: ${sevk.note}", Tone.Warn, icon = Ic.Warning)
             // Okutulan/gönderilen adet okutma alanının ipucunda; gönderilenden fazla okutma engellenmez, ipucunda görünür (ayrıca bitirme penceresinde uyarılır).
@@ -728,14 +764,15 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
                             // Seyrek işlemler listenin sonunda: ekranı sabit başlıkla doldurmasınlar.
                             if (draft.isNotEmpty()) {
                                 Row {
-                                    LinkText("Kısmi kaydet · ${fmt(writable(sevk, draft.toList()).sumOf { it.qty })}") { savePartial(false) }
+                                    // Ürün bazlı listede "Kabul et" zaten kısmi kabuldür; ikinci düğme gerekmez.
+                                    if (!pooled) LinkText("Kısmi kaydet · ${fmt(writable(sevk, draft.toList()).sumOf { it.qty })}") { savePartial(false) }
                                     LinkText("Sıfırla", C.Err) { draft.clear(); lastPid = null; showRestored = false }
                                 }
                                 // Yarım bırakmak için kaydetmek gerekmez: okutulanlar cihazda saklanır, belgeye dönünce kaldığı yerden devam edilir.
                                 LinkText("Yarım bırak · okutulanlar saklanır") { vm.back() }
                             }
-                            if (hadPartial) Hint("Bu gönderimden bir kısmı daha önce alındı; yukarıdakiler kalan miktardır.")
-                            Hint("Alınan mal Rafa Kaldır'da belge olarak bekler; oradan rafa yerleştirilir.")
+                            if (hadPartial && !pooled) Hint("Bu gönderimden bir kısmı daha önce alındı; yukarıdakiler kalan miktardır.")
+                            Hint(if (pooled) "Alınan mal Rafa Kaldır'da \"Rafa bekleyen ürünler\" listesinde bekler; oradan rafa yerleştirilir." else "Alınan mal Rafa Kaldır'da belge olarak bekler; oradan rafa yerleştirilir.")
                         }
                     }
                 }
@@ -782,7 +819,41 @@ fun ReceiveDocScreen(vm: AppVm, online: Boolean, version: Int, sevkId: String) {
             onStay = { leaveAsk = false },
         )
     }
-    if (confirm) {
+    if (confirm && pooled) {
+        // Ürün bazlı liste: eksik yorumu yok. Okutulanlar kabul edilir (kısmi), okutulmayanlar listede bekler.
+        AlertDialog(
+            onDismissRequest = { confirm = false },
+            title = { Text(if (over.isEmpty()) "Okutulanlar kabul edilsin mi?" else "Fazla okutulan var, yine de kabul edilsin mi?") },
+            text = {
+                Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("${sendLines.size} kalem, toplam ${fmt(sendLines.sumOf { it.qty })} adet.", fontWeight = FontWeight.SemiBold)
+                    if (over.isNotEmpty()) {
+                        Text("${over.size} üründe bekleyenden fazla okutuldu:", fontWeight = FontWeight.SemiBold, color = C.Err)
+                        over.forEach { l ->
+                            val pr = db.productById(l.productId)
+                            Text("• ${pr?.name ?: l.productId} · ${pr?.code ?: ""} +${fmt(-remaining(l.productId))} (${fmt(have(l.productId))}/${fmt(l.open)})", fontSize = 14.sp, color = C.Err)
+                        }
+                        Text("Fazla miktar fişe yazılmaz; yönetici onayına gider. Onaylanınca depoya eklenir.", fontSize = 13.sp, color = C.Err)
+                    }
+                    Text(
+                        "Vega'ya yalnız okutulan miktar için gönderim kabul fişi yazılır; mal Rafa Kaldır'da bekler. Okutulmayan ürünler kabul bekleyenler listesinde kalır.",
+                        fontSize = 13.sp, color = C.Muted,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton({
+                    confirm = false
+                    vm.repo.receiveTransfer(sevk, writable(sevk, draft.toList()), vm.userName, partial = true, extra = overflow(sevk, draft.toList()))
+                    vm.dropReceiveDraft(sevk.id)
+                    vm.saved("Gönderim kabul edildi" + (if (over.isNotEmpty()) " · fazla ${over.size} kalem" else ""))
+                    vm.back()
+                }, Modifier.focusProperties { canFocus = false }) { Text(if (over.isEmpty()) "Kabul et" else "Yine de kabul et", fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = { TextButton({ confirm = false }, Modifier.focusProperties { canFocus = false }) { Text("Vazgeç") } },
+        )
+    }
+    if (confirm && !pooled) {
         val eksik = missing.sumOf { remaining(it.productId) }
         AlertDialog(
             onDismissRequest = { confirm = false },

@@ -207,3 +207,30 @@ test('"okutulmayana dokunma" modu: okutulan ürün rafa yazılır, rafta duran d
   assert.ok(r[0].ok);
   assert.strictEqual(depo.miktar(1, '101', 'K-KEEP'), 5);
 });
+
+test('aynı rafı aynı anda iki terminal düzenler: ikisinin eklediği de kalır (relative), eski terminal mutlak yazmaya devam eder', () => {
+  depo.miktarAyarla(1, '103', 'B-01-01', 12, { ts: 1, kind: 'PUTAWAY' });
+  const keep = { keepOthers: true, relative: true };
+  // İki terminal de rafta 12 görüyor; A +2 (14), B +3 (15) ekledi.
+  let r = depo.islemler('TRM-01', 'ali', [duzenle('ali', { ...keep, shelves: ['B-01-01'], lines: [satir('B-01-01', '103', 14, 12)] })])
+    .concat(depo.islemler('TRM-02', 'veli', [duzenle('veli', { ...keep, shelves: ['B-01-01'], lines: [satir('B-01-01', '103', 15, 12)] })]));
+  assert.ok(r.every((x) => x.ok), JSON.stringify(r));
+  assert.strictEqual(depo.miktar(1, '103', 'B-01-01'), 17, '12 + 2 + 3');
+  // Başka bir terminal bu arada rafa kaldırma yaptı (+5), düzenleyen +1 ekledi: ikisi de kalır.
+  depo.islemler('TRM-03', 'ayşe', [op('PUTAWAY', 'ayşe', { productId: '103', shelf: 'B-01-01', qty: 5, depot: 1 })]);
+  r = depo.islemler('TRM-01', 'ali', [duzenle('ali', { ...keep, shelves: ['B-01-01'], lines: [satir('B-01-01', '103', 18, 17)] })]);
+  assert.ok(r[0].ok);
+  assert.strictEqual(depo.miktar(1, '103', 'B-01-01'), 23, '17 + 5 + 1');
+  // Elle düşürme (miktar kutusu): fark negatif. Sıfır yazmak "rafta yok" demektir, mutlak sıfır.
+  depo.islemler('TRM-01', 'ali', [duzenle('ali', { ...keep, shelves: ['B-01-01'], lines: [satir('B-01-01', '103', 21, 23)] })]);
+  assert.strictEqual(depo.miktar(1, '103', 'B-01-01'), 21);
+  depo.islemler('TRM-01', 'ali', [duzenle('ali', { ...keep, shelves: ['B-01-01'], lines: [satir('B-01-01', '103', 0, 21)] })]);
+  assert.strictEqual(depo.miktar(1, '103', 'B-01-01'), 0);
+  // Rafta olmayan ürün: sistem 0, eklenen kadar yazılır.
+  depo.islemler('TRM-01', 'ali', [duzenle('ali', { ...keep, shelves: ['B-01-01'], lines: [satir('B-01-01', '103', 4, 0)] })]);
+  assert.strictEqual(depo.miktar(1, '103', 'B-01-01'), 4);
+  // relative alanı yoksa (1.12.1 terminal) eski mutlak davranış.
+  depo.islemler('TRM-01', 'ali', [duzenle('ali', { keepOthers: true, shelves: ['B-01-01'], lines: [satir('B-01-01', '103', 9, 4)] })]);
+  depo.islemler('TRM-02', 'veli', [duzenle('veli', { keepOthers: true, shelves: ['B-01-01'], lines: [satir('B-01-01', '103', 7, 4)] })]);
+  assert.strictEqual(depo.miktar(1, '103', 'B-01-01'), 7, 'mutlak: son yazan kazanır');
+});

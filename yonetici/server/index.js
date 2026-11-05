@@ -733,6 +733,12 @@ function yoneticiApi() {
     if (!transfer.acikKapat(req.params.ind, 'yönetici')) throw Object.assign(new Error('Gönderim açık görünmüyor'), { status: 404 });
     return { ok: true };
   }));
+  // Kabul bekleyen ürünü kapat (mal gelmedi): ürün bazlı liste.
+  r.post('/transfer/urun-kapat', sar((req) => {
+    const b = req.body || {};
+    if (!transfer.urunKapat(b.kaynak, b.hedef, b.productId, 'yönetici')) throw Object.assign(new Error('Ürün kabul bekleyenler arasında görünmüyor'), { status: 404 });
+    return { ok: true };
+  }));
   r.post('/transfer/fark/:id/coz', sar((req) => {
     if (!transfer.farkCoz(req.params.id, String(req.body?.cozum || ''), req.body?.not, 'yönetici')) throw Object.assign(new Error('Fark kaydı bulunamadı'), { status: 404 });
     return { ok: true };
@@ -780,14 +786,14 @@ function yoneticiApi() {
     const d = req.query.durum || 'acik';
     const dp = depo.depoSuzgec(req.query.depo);
     return depo
-      .belgeler()
+      .belgelerDagitimli()
       .filter((b) => (d === 'acik' ? b.acik : d === 'kapali' ? !b.acik : true) && (dp === null || b.depo === dp))
       .map(({ lines, ...b }) => b);
   }));
   // Rafa bekleyen ürünler (ürün bazlı, belge aranmaz): depo ve metin süzgeci.
   r.get('/bekleyen', sar((req) => depo.bekleyenListe({ depoNo: depo.depoSuzgec(req.query.depo), metin: req.query.q || '', limit: Math.min(5000, Number(req.query.limit) || 1000) })));
   r.get('/kabul/:id', sar((req) => {
-    const b = depo.belgeler().find((x) => x.id === req.params.id);
+    const b = depo.belgelerDagitimli().find((x) => x.id === req.params.id);
     if (!b) throw Object.assign(new Error('Belge bulunamadı'), { status: 404 });
     const hareket = db.all("SELECT * FROM movement WHERE kind='PUTAWAY' AND ref=? ORDER BY ts DESC", b.docNo);
     return {
@@ -902,6 +908,8 @@ function yoneticiApi() {
     const s = db.get('SELECT status FROM count_session WHERE id=?', req.params.id);
     if (!s) throw Object.assign(new Error('Sayım bulunamadı'), { status: 404 });
     if (!izinli.includes(s.status)) throw Object.assign(new Error('Bu durumdaki sayımda yapılamaz'), { status: 400 });
+    // Onay Vega'ya yazılırken sayım kapatılamaz/iptal edilemez/yeniden açılamaz (onay bitince durum değişir).
+    if (depo.sayimMesgul(req.params.id)) throw Object.assign(new Error('Sayım şu an onaylanıyor; bitince yeniden deneyin'), { status: 409 });
     db.run('UPDATE count_session SET status=?, closed_at=CASE WHEN ?=\'OPEN\' THEN NULL ELSE ? END WHERE id=?', durum, durum, Date.now(), req.params.id);
     depo.degisti();
     return { ok: true };

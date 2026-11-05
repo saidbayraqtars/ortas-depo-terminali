@@ -149,7 +149,7 @@ test('yazılmış kabul geri alınır: Vega 129 silinir, rafa giren düşer, eks
   await transfer.yenile();
   assert.deepStrictEqual(
     transfer.terminalGorunumu().incoming.map((s) => [s.id, s.lines.map((l) => [l.productId, l.open])]),
-    [['900', [['101', 5], ['102', 2]]]],
+    [['URUN-1-108', [['101', 5], ['102', 2]]]],
     'gönderim terminallerde yeniden açık',
   );
 });
@@ -198,4 +198,26 @@ test('liste: geri alınan kayıt durumuyla görünür', () => {
   const geri = l.transferler.filter((t) => t.durum === 'GERI');
   assert.ok(geri.length >= 5);
   assert.ok(geri.every((t) => t.geri_user === 'yönetici' && t.geri_at));
+});
+
+test('iki yönetici aynı anda geri alırsa: ikincisi reddedilir, raf stoku ve Vega silme yalnız bir kez uygulanır', async () => {
+  depo.miktarAyarla(1, '101', 'A-01-01', 10, { ts: 9, kind: 'PUTAWAY' });
+  const o = op('TRANSFER_SEND', { from: 1, to: 108, lines: [{ productId: '101', qty: 4, shelf: 'A-01-01' }] });
+  assert.ok(depo.islemler('TRM-01', 'ali', [o])[0].ok);
+  await transfer.yaz();
+  const t = db.get('SELECT * FROM transfer WHERE id=?', o.id);
+  okunan = sevkOku(t, 4);
+  const silinen = silinenler.length;
+  // Vega silme yavaş: ikinci istek ilkinin bitmesini beklemeden başlar (çift tıklama, iki yönetici).
+  const eskiSil = vega.transferGeriAl;
+  vega.transferGeriAl = async (cfg, p) => { await new Promise((r) => setTimeout(r, 30)); return eskiSil(cfg, p); };
+  try {
+    const sonuclar = await Promise.allSettled([transfer.geriAl(o.id, 'yönetici'), transfer.geriAl(o.id, 'yönetici')]);
+    assert.strictEqual(sonuclar.filter((x) => x.status === 'fulfilled').length, 1, JSON.stringify(sonuclar.map((x) => x.status)));
+    assert.match(sonuclar.find((x) => x.status === 'rejected').reason.message, /şu an geri alınıyor|zaten geri/);
+  } finally {
+    vega.transferGeriAl = eskiSil;
+  }
+  assert.strictEqual(silinenler.length, silinen + 1, 'Vega fişi bir kez silindi');
+  assert.strictEqual(depo.miktar(1, '101', 'A-01-01'), 10, 'raf stoku bir kez geri geldi (14 değil)');
 });

@@ -78,6 +78,14 @@ export function kilitDestegiYok(surum) {
   return a < 1 || (a === 1 && b < 8);
 }
 
+/** 2.1.3'ten önceki terminal Gönderim Kabul'ü ürün bazlı listeyle (URUN-) doğru çalışmaz: "Kabulü bitir" listeyi cihazda gizler. */
+export function urunKabulDestegiYok(surum) {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(String(surum || ''));
+  if (!m) return false;
+  const [a, b, c] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  return a < 2 || (a === 2 && (b < 1 || (b === 1 && c < 3)));
+}
+
 export function once(ts) {
   if (!ts) return 'hiç';
   const s = Math.round((Date.now() - ts) / 1000);

@@ -236,6 +236,28 @@ function AcikKapat({ ind, yukle }) {
   );
 }
 
+/** Kabul bekleyen ürünü kapatır (mal gelmedi ya da Vega'da başka yoldan kabul edildi): gönderimlere "kayıp" eksik olarak yazılır. */
+function UrunKapat({ u, yukle }) {
+  const { toast } = useApp();
+  const [sor, onayPenceresi] = useOnay();
+  const kapat = async () => {
+    if (!(await sor('Ürün kapatılsın mı?', `${u.kod} · ${miktar(u.open)} ${u.birim || 'adet'} terminallerde kabul listesinden kalkar. Gelmeyen mal "kayıp" eksik olarak kaydedilir (Eksik / fazla sekmesinde görünür, oradan "Bulundu" yapılabilir). Vega'daki belgeler değişmez. Mal gelmediyse ya da Vega'da başka yoldan kabul edildiyse kullanın.`, { tamam: 'Kapat' }))) return;
+    try {
+      await api('/transfer/urun-kapat', { method: 'POST', body: { kaynak: u.kaynak, hedef: u.hedef, productId: u.productId } });
+      toast('Ürün kapatıldı');
+      yukle();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  return (
+    <>
+      <Btn size="sm" onClick={kapat}>Kapat</Btn>
+      {onayPenceresi}
+    </>
+  );
+}
+
 export default function Transferler() {
   const { toast } = useApp();
   const [sekme, setSekme] = useState('fark');
@@ -294,7 +316,7 @@ export default function Transferler() {
                 <Secim
                   deger={sekme}
                   degis={setSekme}
-                  secenekler={[['fark', `Eksik / fazla${acikFark + bekleyenFazla ? ` (${acikFark + bekleyenFazla})` : ''}`], ['islem', 'Gönderim ve kabuller'], ['acik', `Yoldaki gönderimler (${veri.acik.length})`]]}
+                  secenekler={[['fark', `Eksik / fazla${acikFark + bekleyenFazla ? ` (${acikFark + bekleyenFazla})` : ''}`], ['islem', 'Gönderim ve kabuller'], ['urun', `Kabul bekleyen ürünler (${veri.acikUrunler.length})`], ['acik', `Yoldaki gönderimler (${veri.acik.length})`]]}
                 />
                 <div className="grow" />
                 {veri.yoldaAd && <span className="muted">Yoldaki depo: {veri.yoldaAd}</span>}
@@ -327,6 +349,35 @@ export default function Transferler() {
                     </table>
                   </div>
                 ))}
+              {sekme === 'urun' && (
+                <>
+                  <div className="muted small" style={{ padding: '0 16px 10px' }}>
+                    Terminalde Gönderim Kabul ekranının listesi: gönderim belgesine bakılmaz, ürün başına gönderilen − alınan. Mal gelmediyse "Kapat" ile listeden kaldırın.
+                  </div>
+                  {veri.acikUrunler.length === 0 ? (
+                    <div className="empty">Kabul bekleyen ürün yok.</div>
+                  ) : (
+                    <div className="tbl-wrap">
+                      <table className="tbl">
+                        <thead><tr><th>Ürün</th><th>Depo</th><th className="num">Gönderilen</th><th className="num">Alınan</th><th className="num">Bekleyen</th><th>İlk gönderim</th><th /></tr></thead>
+                        <tbody>
+                          {veri.acikUrunler.map((u) => (
+                            <tr key={`${u.kaynak}|${u.hedef}|${u.productId}`}>
+                              <td><div className="name">{u.ad}</div><div className="code">{u.kod}</div></td>
+                              <td>{u.fromAd} <span className="muted">→</span> {u.toAd}</td>
+                              <td className="num">{miktar(u.sent)}</td>
+                              <td className="num">{miktar(u.alinan)}</td>
+                              <td className="num"><b>{miktar(u.open)}</b> <span className="muted small">{u.birim}</span></td>
+                              <td className="muted">{u.enEski ? new Date(u.enEski).toLocaleDateString('tr-TR') : '—'}{u.belgeSayisi > 1 ? ` · ${u.belgeSayisi} gönderim` : ''}</td>
+                              <td style={{ textAlign: 'right' }}><UrunKapat u={u} yukle={yukle} /></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              )}
               {sekme === 'acik' &&
                 (veri.acik.length === 0 ? (
                   <div className="empty">Kabul bekleyen gönderim yok.</div>

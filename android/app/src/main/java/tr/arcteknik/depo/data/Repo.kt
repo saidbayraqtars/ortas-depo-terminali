@@ -498,6 +498,9 @@ class Repo(val db: Db, val prefs: Prefs) {
                 .put("shelves", JSONArray(db.countedShelves(session.id))).put("lines", lines).put("user", user)
             // 1.12.0+ yönetici: okutulmayan ürüne dokunulmaz. Eski yönetici alanı yok sayar ve rafı okutulana eşitler.
             if (arrange && prefs.arrangeKeepOthers) payload.put("keepOthers", true)
+            // 2.1.3+ yönetici: satırdaki "system" terminalin gördüğü miktardır; aynı raf aynı anda başkasınca değiştiyse fark eklenir
+            // (mutlak yazılırsa iki terminalin eklediği ezilirdi). Eski yönetici alanı yok sayar ve mutlak yazar.
+            if (arrange && prefs.arrangeKeepOthers) payload.put("relative", true)
             db.insertOp(w, if (arrange) {
                 op(OpType.SHELF_ARRANGE, payload, "Raf düzenle · ${session.no}|${diffs.size} kalem, $changedCount değişti")
             } else {

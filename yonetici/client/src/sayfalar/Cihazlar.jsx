@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Alan, api, Btn, Durum, Icon, kilitDestegiYok, Modal, once, Rozet, SayfaBaslik, useApp, useOnay, useVeri } from '../lib.jsx';
+import { Alan, api, Btn, Durum, Icon, kilitDestegiYok, Modal, once, Rozet, SayfaBaslik, urunKabulDestegiYok, useApp, useOnay, useVeri } from '../lib.jsx';
 
 function QrPenceresi({ cihaz, kapat }) {
   const { durum, toast } = useApp();
@@ -119,7 +119,7 @@ export default function Cihazlar() {
                     <td className="mono">{c.key}</td>
                     <td className="muted">{once(c.last_seen)}{c.last_ip ? ` · ${c.last_ip}` : ''}</td>
                     <td>{c.last_user || '—'}</td>
-                    <td className="mono small">{c.app_version || '—'}{kilitDestegiYok(c.app_version) && <div><Rozet tur="b-warn">kilit desteği yok</Rozet></div>}</td>
+                    <td className="mono small">{c.app_version || '—'}{kilitDestegiYok(c.app_version) && <div><Rozet tur="b-warn">kilit desteği yok</Rozet></div>}{urunKabulDestegiYok(c.app_version) && <div><Rozet tur="b-warn">Gönderim Kabul eski: güncelleyin</Rozet></div>}</td>
                     <td>
                       <div className="btns" style={{ justifyContent: 'flex-end' }}>
                         <Btn size="sm" icon="qr" onClick={() => setQr(c)}>Kurulum QR</Btn>

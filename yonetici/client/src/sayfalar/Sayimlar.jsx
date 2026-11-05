@@ -398,7 +398,10 @@ export function SayimDetay({ id }) {
                         <tr key={l.shelf + l.product_id}>
                           <td className="mono"><a href={`#/raf/${o.oturum.depo}/${encodeURIComponent(l.shelf)}`}>{l.shelf}</a></td>
                           <td><div className="name">{l.urunAd}</div><div className="code">{l.urunKod}</div></td>
-                          <td className="num">{miktar(l.server_before)}</td>
+                          <td className="num">
+                            {miktar(l.server_before)}
+                            {Math.abs(l.catisma) > 0.0001 && <div className="small" style={{ color: 'var(--warn)' }} title="Sayım gönderilirken sunucudaki miktar terminalin gördüğünden farklıydı: sayarken başka bir terminal bu rafa kaldırma/alma yapmış olabilir. Sayım mutlak yazar; o hareketi kontrol edin.">terminal {miktar(l.terminal_system)} görüyordu · {miktar(l.catisma, true)}</div>}
+                          </td>
                           <td className="num">{miktar(l.counted)}</td>
                           <td className={`num ${l.fark > 0 ? 'pos' : l.fark < 0 ? 'neg' : 'muted'}`}>{miktar(l.fark, true)}</td>
                           <td className="muted">{l.user} · {l.device}</td>

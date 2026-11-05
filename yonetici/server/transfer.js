@@ -15,6 +15,7 @@ const db = require('./db');
 const config = require('./config');
 const vega = require('./vega');
 const log = require('./log');
+const { tekSeferde } = require('./tekseferde');
 
 const depo = () => require('./depo');
 const EPS = 1e-9;
@@ -169,6 +170,76 @@ async function yenileAsil() {
   return gorunum;
 }
 
+// ---- Kabul bekleyen ürünler (ürün bazlı) ---------------------------------------------------------
+//
+// Ortaş malı gönderim belgesine göre ayırmıyor: Vega'da 128 ile 129 arasında belge bağı yok, depo "şu üründen şu kadar geldi"
+// diye çalışıyor. Bu yüzden terminale gönderim belgeleri değil, (gönderen → alan) yön başına tek ürün listesi gider
+// (rafa bekleyen ürünler `BEK-` ile aynı mantık). Gönderim belgeleri yalnız yönetici ekranında ve hesapta kalır.
+
+const HAVUZ = /^URUN-(\d+)-(\d+)$/;
+const havuzId = (kaynak, hedef) => `URUN-${kaynak}-${hedef}`;
+
+/** Açık gönderimleri yön başına ürün bazında toplar. `sevkler` eskiden yeniye sıralıdır. */
+function havuzlar() {
+  const out = new Map();
+  for (const s of gorunum.sevkler) {
+    const id = havuzId(s.kaynak, s.hedef);
+    let h = out.get(id);
+    if (!h) out.set(id, (h = { id, kaynak: s.kaynak, hedef: s.hedef, sevkler: [], urunler: new Map() }));
+    h.sevkler.push(s);
+    const ts = s.tarih?.getTime?.() || 0;
+    for (const l of s.satirlar) {
+      let u = h.urunler.get(l.productId);
+      if (!u) h.urunler.set(l.productId, (u = { productId: l.productId, sent: 0, open: 0, enEski: ts, belgeSayisi: 0 }));
+      u.sent = yuvarla(u.sent + l.sent);
+      u.open = yuvarla(u.open + l.open);
+      u.enEski = Math.min(u.enEski, ts);
+      u.belgeSayisi++;
+    }
+  }
+  return out;
+}
+
+/** Terminalin "URUN-<gönderen>-<alan>" listesi: kabulUygula'nın kullandığı sahte gönderim (satırlar ürün toplamı). */
+function havuzSevki(id) {
+  const m = HAVUZ.exec(String(id || ''));
+  if (!m) return null;
+  const h = havuzlar().get(id);
+  if (!h) return null;
+  return {
+    ind: null,
+    no: 'Toplu kabul',
+    kaynak: h.kaynak,
+    hedef: h.hedef,
+    satirlar: [...h.urunler.values()].map((u) => ({ productId: u.productId, sent: u.open, open: u.open })),
+    havuz: h,
+  };
+}
+
+/** Ürün bazlı listenin açık gönderimi kalmamış hâli (başka bir çalışan hepsini kabul etti): okutulanlar fazla olarak gider. */
+function havuzBos(id) {
+  const m = HAVUZ.exec(String(id || ''));
+  if (!m) return null;
+  return { ind: null, no: 'Toplu kabul', kaynak: Number(m[1]), hedef: Number(m[2]), satirlar: [], havuz: { sevkler: [], urunler: new Map() } };
+}
+
+/** Kabul edilen miktarı yönün açık gönderimlerinden düşer (Vega okuması beklenmeden); en eski gönderimden başlanır, çünkü eksik kalan havuz en eskileri kısar. */
+function havuzDus(h, gelen) {
+  for (const [pid, q] of gelen) {
+    let kalan = q;
+    for (const s of h.sevkler) {
+      if (kalan <= EPS) break;
+      const l = s.satirlar.find((x) => x.productId === pid);
+      if (!l) continue;
+      const al = Math.min(kalan, l.open);
+      l.open = yuvarla(l.open - al);
+      kalan = yuvarla(kalan - al);
+    }
+  }
+  for (const s of h.sevkler) s.satirlar = s.satirlar.filter((l) => l.open > EPS);
+  gorunum.sevkler = gorunum.sevkler.filter((s) => s.satirlar.length);
+}
+
 /** Terminale giden ana verideki `transfer` bölümü (head parçasında). Kapalıyken yalnız { on: false }. */
 function terminalGorunumu() {
   const cfg = config.load();
@@ -182,18 +253,26 @@ function terminalGorunumu() {
     // Terminal çıkış deposunu bu ikiliden sorar; varış diğeridir. (1.6.x terminaller de bunu varış listesi sayar.)
     depots: c ? c.map((id) => ({ id, name: ad(id) })) : [],
     pair: c || [],
-    incoming: gorunum.sevkler.map((s) => ({
-      id: String(s.ind),
-      no: s.no,
-      date: tarihStr(s.tarih),
-      from: s.kaynak,
-      fromName: ad(s.kaynak),
-      to: s.hedef,
-      toName: ad(s.hedef),
-      lines: s.satirlar.map((l) => ({ productId: l.productId, sent: l.sent, open: l.open })),
-      // Yönetici kabulü reddettiyse terminalde belgenin üstünde görünen not.
-      ...(notlar.has(s.ind) ? { note: notlar.get(s.ind) } : {}),
-    })),
+    // Yön başına tek liste, satır = ürün (gönderim belgesi değil). sent = open: kısmi kabulde "eksik" yorumu çıkmasın.
+    incoming: [...havuzlar().values()]
+      .sort((a, b) => a.kaynak - b.kaynak || a.hedef - b.hedef)
+      .map((h) => {
+        const notu = h.sevkler.map((s) => notlar.get(s.ind)).filter(Boolean);
+        return {
+          id: h.id,
+          no: 'Kabul bekleyen ürünler',
+          date: '',
+          from: h.kaynak,
+          fromName: ad(h.kaynak),
+          to: h.hedef,
+          toName: ad(h.hedef),
+          lines: [...h.urunler.values()]
+            .sort((a, b) => a.enEski - b.enEski || (a.productId < b.productId ? -1 : a.productId > b.productId ? 1 : 0))
+            .map((u) => ({ productId: u.productId, sent: u.open, open: u.open })),
+          // Yönetici kabulü reddettiyse terminalde listenin üstünde görünen not.
+          ...(notu.length ? { note: [...new Set(notu)].join(' · ') } : {}),
+        };
+      }),
   };
 }
 
@@ -307,7 +386,10 @@ function gonderUygula(op, p, h, { Ret, bilinen, yetkiDenetle = () => {}, rafIzin
 function kabulUygula(op, p, h, { Ret, bilinen, yetkiDenetle = () => {} }) {
   const cfg = config.load();
   const c = ac(cfg, Ret);
-  const sevk = gorunum.sevkler.find((s) => String(s.ind) === String(p.sevkId));
+  // Ürün bazlı liste (`URUN-<gönderen>-<alan>`): yönün bütün açık gönderimleri tek listedir; belge aranmaz.
+  // Birden çok çalışan aynı listeyi kullanır: liste boşalmış olsa da kabul reddedilmez (fiziken gelen mal fazla olarak yönetici onayına gider).
+  const havuz = HAVUZ.test(String(p.sevkId || ''));
+  const sevk = havuz ? havuzSevki(p.sevkId) || havuzBos(p.sevkId) : gorunum.sevkler.find((s) => String(s.ind) === String(p.sevkId));
   if (!sevk) {
     if (db.get('SELECT 1 FROM transfer_kapali WHERE sevk_ind=?', Number(p.sevkId))) throw new Ret('Bu gönderimin kabulü daha önce tamamlandı');
     throw new Ret('Gönderim açık görünmüyor (kabul edilmiş, iptal edilmiş ya da Vega henüz okunmamış olabilir)');
@@ -317,8 +399,9 @@ function kabulUygula(op, p, h, { Ret, bilinen, yetkiDenetle = () => {} }) {
   yetkiDenetle(null, sevk.hedef);
   // partial: kısmi kabul — okutulanlar alınır, gönderim açık kalır, eksik kaydı açılmaz. Eksik yalnız "Kabulü bitir" ile (partial değil) açılır;
   // önceden kısmi alınmış gönderimde bitirirken yeni satır olmayabilir (kalan hepsi eksik olur).
-  const kismi = p.partial === true || p.partial === 1 || p.partial === 'true';
-  const oncekiKismi = Boolean(db.get("SELECT 1 FROM transfer WHERE kind='RECEIVE' AND sevk_ind=? AND kismi=1", sevk.ind));
+  // Ürün bazlı listede her kabul kısmidir (okutulmayan yüzlerce ürün "eksik" olmasın); gelmeyen mal yönetici ekranından kapatılır.
+  const kismi = havuz || p.partial === true || p.partial === 1 || p.partial === 'true';
+  const oncekiKismi = havuz ? false : Boolean(db.get("SELECT 1 FROM transfer WHERE kind='RECEIVE' AND sevk_ind=? AND kismi=1", sevk.ind));
   // extra: belgeden fazla okutulan mal (terminal fişe yalnız gönderilen kadarını koyar, fazlasını ayrı yollar). Yönetici onayı
   // beklemek üzere transfer_fazla'ya yazılır; stok ve belge onaylanana kadar değişmez.
   const fazlalar = [];
@@ -329,15 +412,38 @@ function kabulUygula(op, p, h, { Ret, bilinen, yetkiDenetle = () => {} }) {
     bilinen(pid);
     fazlalar.push({ pid, qty: yuvarla(qty) });
   }
-  const satirlar = satirlariOku(p, Ret, bilinen, { bosOlur: (!kismi && oncekiKismi) || fazlalar.length > 0 });
+  let satirlar = satirlariOku(p, Ret, bilinen, { bosOlur: (!kismi && oncekiKismi) || fazlalar.length > 0 || havuz });
   for (const l of satirlar) if (l.shelf) yetkiDenetle(null, sevk.hedef, l.shelf);
-  db.run('DELETE FROM transfer_not WHERE sevk_ind=?', sevk.ind);
   const acik = new Map(sevk.satirlar.map((l) => [l.productId, l.open]));
+  if (havuz) {
+    // Ortak liste: terminal kendi (eski olabilen) görüntüsüne göre gönderir; başka bir çalışan araya girip kabul ettiyse sunucudaki
+    // açık miktardan fazlası reddedilmez (fiziken gelen mal kaybolmasın), fazla olarak yönetici onayına gider. Listede hiç olmayan ürün de öyle.
+    const kalan = new Map(acik);
+    const kirpik = [];
+    const tasan = new Map(fazlalar.map((f) => [f.pid, f.qty]));
+    for (const l of satirlar) {
+      const o = kalan.get(l.pid) || 0;
+      const al = yuvarla(Math.min(l.qty, o));
+      kalan.set(l.pid, yuvarla(o - al));
+      if (al > EPS) kirpik.push({ ...l, qty: al });
+      if (l.qty - al > EPS) tasan.set(l.pid, yuvarla((tasan.get(l.pid) || 0) + l.qty - al));
+    }
+    satirlar = kirpik;
+    fazlalar.length = 0;
+    for (const [pid, qty] of tasan) fazlalar.push({ pid, qty });
+    if (!satirlar.length && !fazlalar.length) throw new Ret('Transferde satır yok');
+  }
   const gelen = new Map();
   for (const l of satirlar) {
-    if (!acik.has(l.pid)) throw new Ret(`${depo().urun(l.pid)?.code || l.pid} bu gönderimde yok`);
+    if (!acik.has(l.pid)) throw new Ret(`${depo().urun(l.pid)?.code || l.pid} ${havuz ? 'kabul bekleyenler arasında yok' : 'bu gönderimde yok'}`);
     gelen.set(l.pid, yuvarla((gelen.get(l.pid) || 0) + l.qty));
   }
+  // Yöneticinin "yeniden girin" notu: gönderimin kabulü yeniden girilince kalkar. Ürün bazlı listede yalnız yeniden girilen ürünün gönderimlerinin notu kalkar.
+  if (havuz) {
+    for (const s of sevk.havuz.sevkler) {
+      if (s.satirlar.some((l) => gelen.has(l.productId) || fazlalar.some((f) => f.pid === l.productId))) db.run('DELETE FROM transfer_not WHERE sevk_ind=?', s.ind);
+    }
+  } else db.run('DELETE FROM transfer_not WHERE sevk_ind=?', sevk.ind);
   for (const [pid, q] of gelen) {
     if (q - acik.get(pid) > EPS) throw new Ret(`${depo().urun(pid)?.code || pid}: gönderilen ${acik.get(pid)}, alınan ${q}`);
   }
@@ -353,7 +459,7 @@ function kabulUygula(op, p, h, { Ret, bilinen, yetkiDenetle = () => {} }) {
   // Yazılacak satır yoksa (kısmi alınmışın ardından boş bitirme) Vega'ya yazılacak bir şey de yoktur.
   db.run(
     'INSERT INTO transfer(id, kind, from_depo, to_depo, sevk_ind, sevk_no, user, device, created_at, kismi, durum, yazildi_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
-    op.id, 'RECEIVE', from, to, sevk.ind, sevk.no, h.user, h.device, now(), kismi ? 1 : 0, satirlar.length ? 'BEKLIYOR' : 'YAZILDI', satirlar.length ? null : now(),
+    op.id, 'RECEIVE', from, to, havuz ? null : sevk.ind, sevk.no, h.user, h.device, now(), kismi ? 1 : 0, satirlar.length ? 'BEKLIYOR' : 'YAZILDI', satirlar.length ? null : now(),
   );
   for (const l of satirlar) {
     db.run(
@@ -372,10 +478,17 @@ function kabulUygula(op, p, h, { Ret, bilinen, yetkiDenetle = () => {} }) {
   fisOnbellek.surum = -1;
   const gonderilenToplam = new Map(sevk.satirlar.map((l) => [l.productId, l.sent]));
   for (const f of fazlalar) {
+    // Ürün bazlı listede fazla, o ürünü içeren en yeni gönderime (yoksa yönün en yeni gönderimine) yazılır: yönetici ekranında bir belge no gösterilsin.
+    // Liste boşsa bağlanacak gönderim yoktur: sevk_ind 0 ("Toplu kabul").
+    const bagli = havuz ? [...sevk.havuz.sevkler].reverse().find((s) => s.satirlar.some((l) => l.productId === f.pid)) || sevk.havuz.sevkler[sevk.havuz.sevkler.length - 1] || { ind: 0, no: sevk.no } : sevk;
     db.run(
       'INSERT INTO transfer_fazla(transfer_id, sevk_ind, sevk_no, from_depo, to_depo, product_id, sent, qty, user, device, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-      op.id, sevk.ind, sevk.no, from, to, f.pid, gonderilenToplam.get(f.pid) ?? 0, f.qty, h.user, h.device, now(),
+      op.id, bagli.ind, bagli.no, from, to, f.pid, gonderilenToplam.get(f.pid) ?? 0, f.qty, h.user, h.device, now(),
     );
+  }
+  if (havuz) {
+    havuzDus(sevk.havuz, gelen);
+    return;
   }
   if (kismi) {
     // Gönderim açık kalır; alınan kadarı terminallere gidecek açık miktardan düşer (Vega okuması beklenmeden).
@@ -568,6 +681,14 @@ function liste(limit = 200) {
     ind: s.ind, no: s.no, tarih: tarihStr(s.tarih), fromAd: ad(s.kaynak), toAd: ad(s.hedef),
     satirlar: s.satirlar.map((l) => ({ ...l, kod: depo().urun(l.productId)?.code || l.productId })),
   }));
+  // Kabul bekleyen ürünler (terminalin gördüğü liste): yön + ürün başına toplam.
+  const acikUrunler = [...havuzlar().values()].flatMap((h) =>
+    [...h.urunler.values()].map((u) => ({
+      kaynak: h.kaynak, hedef: h.hedef, fromAd: ad(h.kaynak), toAd: ad(h.hedef), productId: u.productId,
+      kod: depo().urun(u.productId)?.code || u.productId, ad: depo().urun(u.productId)?.name || '', birim: depo().urun(u.productId)?.unit || '',
+      sent: u.sent, open: u.open, alinan: yuvarla(u.sent - u.open), enEski: u.enEski, belgeSayisi: u.belgeSayisi,
+    })),
+  ).sort((a, b) => a.enEski - b.enEski || (a.kod < b.kod ? -1 : 1));
   const cfg = config.load();
   return {
     ayar: { aktif: Boolean(cfg.transfer?.aktif), yoldaDepo: cfg.transfer?.yoldaDepo ?? null, userno: cfg.transfer?.userno ?? null, onek: cfg.transfer?.onek || 'A', gun: cfg.transfer?.gun || 45, cift: cift(cfg) || [] },
@@ -583,6 +704,7 @@ function liste(limit = 200) {
     farklar,
     fazlalar,
     acik,
+    acikUrunler,
   };
 }
 
@@ -634,6 +756,32 @@ function acikKapat(ind, kim) {
     kapat(s, id);
   });
   gorunum.sevkler = gorunum.sevkler.filter((x) => x.ind !== s.ind);
+  depo().degisti();
+  return true;
+}
+
+/**
+ * Yönetici, kabul bekleyen bir ürünü kapatır (mal gelmedi ya da Vega'da başka yoldan kabul edildi): ürünün yöndeki açık miktarı,
+ * içinde bulunduğu gönderimlere "kayıp" eksik olarak yazılır; havuzdan düşer, terminal listesinden kalkar. Eksikler sekmesinde izlenir.
+ * Terminalde "Kabulü bitir" ürün bazlı listede eksik açmadığı için gelmeyen mal ancak böyle kapanır.
+ */
+function urunKapat(kaynak, hedef, productId, kim) {
+  const h = havuzlar().get(havuzId(Number(kaynak), Number(hedef)));
+  const pid = String(productId || '');
+  if (!h || !h.urunler.has(pid)) return false;
+  db.tx(() => {
+    const id = `ADMIN-U-${now()}`;
+    for (const s of h.sevkler) {
+      const l = s.satirlar.find((x) => x.productId === pid);
+      if (!l) continue;
+      db.run(
+        "INSERT INTO transfer_fark(transfer_id, sevk_ind, sevk_no, from_depo, to_depo, product_id, sent, received, eksik, user, device, created_at, durum, cozum, cozum_at, cozum_user) VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'KAYIP', 'Yönetici ürünü kapattı', ?, ?)",
+        id, s.ind, s.no, s.kaynak, s.hedef, pid, l.sent, yuvarla(l.sent - l.open), l.open, String(kim || 'yönetici'), 'PC', now(), now(), String(kim || 'yönetici'),
+      );
+    }
+  });
+  for (const s of h.sevkler) s.satirlar = s.satirlar.filter((l) => l.productId !== pid);
+  gorunum.sevkler = gorunum.sevkler.filter((s) => s.satirlar.length);
   depo().degisti();
   return true;
 }
@@ -701,6 +849,11 @@ const hataYap = (mesaj, status = 400) => Object.assign(new Error(mesaj), { statu
  * Dönen: { belgeNo, vegaSilindi, uyarilar }.
  */
 async function geriAl(id, kim = 'yönetici', not = '') {
+  // Vega fişi silinirken (await) aynı kayıt ikinci kez geri alınmasın: raf stoku iki kez dönerdi.
+  return tekSeferde(`transfer-geri:${id}`, () => geriAlAsil(id, kim, not), 'Bu transfer şu an geri alınıyor; birkaç saniye sonra durumuna bakın');
+}
+
+async function geriAlAsil(id, kim, not) {
   const t = db.get('SELECT * FROM transfer WHERE id=?', String(id));
   if (!t) throw hataYap('Transfer kaydı bulunamadı', 404);
   if (t.durum === 'GERI') throw hataYap('Bu transfer zaten geri alınmış');
@@ -780,6 +933,7 @@ async function geriAl(id, kim = 'yönetici', not = '') {
 module.exports = {
   programKabulFisleri,
   acikKapat,
+  urunKapat,
   geriAl,
   uygula, yaz, yaziciTetikle, yenile, terminalGorunumu, programKabulBelgeleri, liste, yenidenDene, farkCoz, farkAc, fazlaOnayla, fazlaReddet, tekrarIste,
   yoldaDepo, tumDepolar, cift,

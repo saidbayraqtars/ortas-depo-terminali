@@ -10,7 +10,7 @@ export function RafaGeriAl({ h, kapat, tamam }) {
     setMesgul(true);
     try {
       const r = await api(`/hareket/${h.id}/geri-al`, { method: 'POST', body: { not } });
-      toast(`Geri alındı: ${r.raf} rafından ${miktar(r.geriAlinan)} adet düşüldü${r.belgeSatiri ? '; belgede yeniden bekliyor' : ''}`);
+      toast(`Geri alındı: ${r.raf} rafından ${miktar(r.geriAlinan)} adet düşüldü${r.belgeSatiri ? '; belgede yeniden bekliyor' : '; Rafa bekleyen ürünlere döndü'}`);
       tamam();
     } catch (e) {
       toast(e.message, true);
@@ -30,7 +30,7 @@ export function RafaGeriAl({ h, kapat, tamam }) {
           <div className="muted">{h.depoAd} · <span className="mono">{h.shelf}</span> rafı · {miktar(h.delta)} adet · {tarihSaat(h.ts)} · {h.user || '—'}{h.device ? ` · ${h.device}` : ''}</div>
         </div>
         <p style={{ margin: 0 }}>
-          Ürün <b>{h.shelf}</b> rafından düşülür{h.ref ? `; ${h.ref} belgesinde bu miktar yeniden "rafa kaldırılacak" görünür, terminalden yeniden rafa kaldırılabilir` : ''}.
+          Ürün <b>{h.shelf}</b> rafından düşülür{h.ref ? `; ${h.ref} belgesinde bu miktar yeniden "rafa kaldırılacak" görünür, terminalden yeniden rafa kaldırılabilir` : '; bu miktar "Rafa bekleyen ürünler" listesine geri döner (aynı ürün için kabul edilen mal hâlâ varsa)'}.
           Raf boşalırsa terminalden verilmiş raf adresi de kalkar (raf adresi yazımı açıksa Vega kartı güncellenir). Vega'da fiş olmadığından Vega'ya başka bir şey yazılmaz.
         </p>
         <label className="field">

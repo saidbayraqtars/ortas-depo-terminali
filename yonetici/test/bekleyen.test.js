@@ -102,3 +102,29 @@ test.after(() => {
   db.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('Mal kabul belge listesi: ürün bazlı kaldırma en eski belgeden başlayarak belgelere dağıtılır', () => {
+  const b = Object.fromEntries(depo.belgelerDagitimli().map((x) => [x.id, x]));
+  // 102: 10 geldi, 15 kaldırıldı → FAT-1'in 102 satırı kapanır; 101: 30 geldi, 22 kaldırıldı (8 bekliyor)
+  assert.strictEqual(b['B-1'].lines.find((l) => l.productId === '102').shelved, 10);
+  const kalan = Object.values(b).reduce((t, x) => t + x.kalan, 0);
+  assert.strictEqual(kalan, depo.bekleyenListe().ozet.adet);
+  assert.strictEqual(b['B-2'].acik, false);
+  assert.strictEqual(b['B-1'].acik, true);
+});
+
+test('aynı anda iki terminal aynı ürünü rafa kaldırır: ikisi de kabul edilir (mal kaybolmaz), bekleyen eksiye düşmez, hiçbir işlem reddedilmez', () => {
+  assert.strictEqual(bekleyen('101'), 8);
+  const hepsi = depo.islemler('TRM-01', 'ali', [op('PUTAWAY', { receiptId: 'BEK-1', lineId: 'BEK-1-101', productId: '101', shelf: 'A-01-01', qty: 5, depot: 1 })])
+    .concat(depo.islemler('TRM-02', 'veli', [op('PUTAWAY', { receiptId: 'BEK-1', lineId: 'BEK-1-101', productId: '101', shelf: 'B-01-01', qty: 5, depot: 1 })]));
+  assert.ok(hepsi.every((x) => x.ok), JSON.stringify(hepsi));
+  assert.strictEqual(bekleyen('101'), 0, 'toplam 10 > bekleyen 8: eksiye düşmez');
+  assert.strictEqual(depo.miktar(1, '101', 'B-01-01'), 5);
+  // Aynı işlem yeniden gelirse (bağlantı koptu) ikinci kez rafa eklenmez.
+  const o = op('PUTAWAY', { receiptId: 'BEK-1', lineId: 'BEK-1-101', productId: '101', shelf: 'B-01-01', qty: 1, depot: 1 });
+  depo.islemler('TRM-02', 'veli', [o]);
+  depo.islemler('TRM-02', 'veli', [o]);
+  assert.strictEqual(depo.miktar(1, '101', 'B-01-01'), 6);
+  // Ürün listede kalmayınca (bekleyen 0) terminal yine de kaldırır: sunucu reddetmez.
+  assert.ok(depo.islemler('TRM-01', 'ali', [op('PUTAWAY', { productId: '101', shelf: 'A-01-01', qty: 2, depot: 1 })])[0].ok);
+});

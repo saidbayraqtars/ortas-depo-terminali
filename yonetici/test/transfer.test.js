@@ -187,7 +187,8 @@ test('ana veri: transfer bölümü hedef depoları (yoldaki hariç) ve açık g�
   assert.strictEqual(m.yolda, 3);
   assert.deepStrictEqual(m.depots.map((d) => d.id), [1, 108], 'yalnız ayardaki çift');
   assert.deepStrictEqual(m.pair, [1, 108]);
-  assert.deepStrictEqual(m.incoming[0], { id: '800', no: 'A0000800', date: '28.10.2026', from: 108, fromName: 'TOYBELEN', to: 1, toName: 'MERKEZ', lines: [{ productId: '101', sent: 2, open: 2 }] });
+  // Gönderim belgesi değil, yön başına tek ürün listesi (rafa bekleyen ürünlerle aynı mantık).
+  assert.deepStrictEqual(m.incoming, [{ id: 'URUN-108-1', no: 'Kabul bekleyen ürünler', date: '', from: 108, fromName: 'TOYBELEN', to: 1, toName: 'MERKEZ', lines: [{ productId: '101', sent: 2, open: 2 }] }]);
   config.update({ transfer: { aktif: false } });
   assert.deepStrictEqual(transfer.terminalGorunumu(), { on: false });
   config.update({ transfer: { aktif: true } });
@@ -320,8 +321,9 @@ test('kısmi kabul: okutulan alınır, gönderim açık kalır, fazlası reddedi
   assert.strictEqual(db.get('SELECT kismi FROM transfer WHERE id=?', o1.id).kismi, 1);
   assert.strictEqual(db.get('SELECT COUNT(*) AS n FROM transfer_kapali').n, kapaliOnce, 'gönderim kapanmadı');
   assert.strictEqual(db.get('SELECT COUNT(*) AS n FROM transfer_fark').n, farkOnce, 'eksik kaydı açılmadı');
-  let inc = transfer.terminalGorunumu().incoming.find((s) => s.id === '720');
-  assert.deepStrictEqual(inc.lines, [{ productId: '101', sent: 4, open: 3 }, { productId: '102', sent: 3, open: 3 }]);
+  // Eski (belge bazlı) kabul işlemleri de çalışır: terminalde kuyrukta bekleyen işlem numaralı gönderim kimliğiyle gelebilir.
+  const acikSatir = (ind) => transfer._gorunum().sevkler.find((s) => s.ind === ind)?.satirlar;
+  assert.deepStrictEqual(acikSatir(720).map((l) => [l.productId, l.sent, l.open]), [['101', 4, 3], ['102', 3, 3]]);
   assert.ok(depo.belgeler().some((b) => b.id === `TRF-${o1.id}` && b.depo === 108 && b.kalan === 1), 'alınan kısım rafa kaldırılacak belge');
 
   // Aynı gönderimden kalandan fazlası alınamaz.
@@ -337,8 +339,7 @@ test('kısmi kabul: okutulan alınır, gönderim açık kalır, fazlası reddedi
   const o2 = op('TRANSFER_RECEIVE', { sevkId: '720', partial: true, lines: [{ productId: '101', qty: 3 }, { productId: '102', qty: 1, shelf: 'T-01-02' }] });
   r = depo.islemler('TRM-02', 'veli', [o2]);
   assert.ok(r[0].ok, JSON.stringify(r));
-  inc = transfer.terminalGorunumu().incoming.find((s) => s.id === '720');
-  assert.deepStrictEqual(inc.lines, [{ productId: '102', sent: 3, open: 2 }], 'tamamen alınan satır listeden çıktı');
+  assert.deepStrictEqual(acikSatir(720).map((l) => [l.productId, l.sent, l.open]), [['102', 3, 2]], 'tamamen alınan satır listeden çıktı');
 
   // Kabulü bitir: kısmi alım olduğu için yeni satır olmasa da bitirilir; kalan miktar eksik olur, gönderim kapanır.
   const o3 = op('TRANSFER_RECEIVE', { sevkId: '720', lines: [] });
@@ -425,4 +426,94 @@ test('milattan (kabul başlangıcı) önceki terminal kabulü rafa bekleyen say�
   assert.ok(!depo.belgeler().some((b) => b.id === 'TRF-milat-eski'), 'milattan önceki kabul belge olarak çıkmaz');
   db.run("DELETE FROM transfer_line WHERE transfer_id='milat-eski'");
   db.run("DELETE FROM transfer WHERE id='milat-eski'");
+});
+
+test('ürün bazlı kabul: yönün gönderimleri tek ürün listesidir; kabul gönderime bakmadan en eski gönderimden düşer, eksik açmaz, gönderim kapanmaz', async () => {
+  await transfer.yaz();
+  const sevk = (ind, gun, satirlar) => ({ ind, no: `A${ind}`, tarih: new Date(`2026-10-${gun}T00:00:00`), kaynak: 1, hedef: 108, kalemler: [], satirlar });
+  hazir([
+    sevk(1001, '20', [{ productId: '101', sent: 3, open: 3 }]),
+    sevk(1002, '25', [{ productId: '101', sent: 2, open: 2 }, { productId: '102', sent: 4, open: 4 }]),
+  ]);
+  const inc = transfer.terminalGorunumu().incoming;
+  assert.strictEqual(inc.length, 1, 'iki gönderim tek listede');
+  assert.strictEqual(inc[0].id, 'URUN-1-108');
+  assert.deepStrictEqual(inc[0].lines, [{ productId: '101', sent: 5, open: 5 }, { productId: '102', sent: 4, open: 4 }]);
+  const l = transfer.liste();
+  assert.deepStrictEqual(l.acikUrunler.map((u) => [u.kod, u.sent, u.open]), [['YF-1042', 5, 5], ['HF-0310', 4, 4]]);
+
+  // Bir ürün başka gönderimden de gelmiş olabilir: 101'den 4 adet okutulur (iki gönderimin toplamı 5).
+  const kapaliOnce = db.get('SELECT COUNT(*) AS n FROM transfer_kapali').n;
+  const farkOnce = db.get('SELECT COUNT(*) AS n FROM transfer_fark').n;
+  const o1 = op('TRANSFER_RECEIVE', { sevkId: 'URUN-1-108', lines: [{ productId: '101', qty: 4 }] }); // partial verilmese de kısmidir
+  let r = depo.islemler('TRM-02', 'veli', [o1]);
+  assert.ok(r[0].ok, JSON.stringify(r));
+  const t = db.get('SELECT * FROM transfer WHERE id=?', o1.id);
+  assert.deepStrictEqual([t.kismi, t.sevk_ind, t.durum], [1, null, 'BEKLIYOR']);
+  assert.strictEqual(db.get('SELECT COUNT(*) AS n FROM transfer_kapali').n, kapaliOnce, 'gönderim kapanmadı');
+  assert.strictEqual(db.get('SELECT COUNT(*) AS n FROM transfer_fark').n, farkOnce, 'okutulmayan ürün eksik olmadı');
+  assert.deepStrictEqual(transfer.terminalGorunumu().incoming[0].lines, [{ productId: '101', sent: 1, open: 1 }, { productId: '102', sent: 4, open: 4 }]);
+  assert.deepStrictEqual(transfer._gorunum().sevkler.map((s) => [s.ind, s.satirlar.map((x) => [x.productId, x.open])]), [[1002, [['101', 1], ['102', 4]]]], 'en eski gönderimden düştü');
+  assert.ok(depo.belgeler().some((b) => b.id === `TRF-${o1.id}` && b.depo === 108), 'alınan mal rafa kaldırılacak');
+
+  // Aynı anda iki çalışan: B'nin görüntüsü eski (101'den 5 görüyor), sunucuda 1 kaldı. B 2 okutmuş: 1'i kabul, 1'i fazla; işlem reddedilmez.
+  const oB = op('TRANSFER_RECEIVE', { sevkId: 'URUN-1-108', lines: [{ productId: '101', qty: 2 }, { productId: '102', qty: 1 }] });
+  r = depo.islemler('TRM-03', 'ayşe', [oB]);
+  assert.ok(r[0].ok, JSON.stringify(r));
+  assert.deepStrictEqual(db.all('SELECT product_id, qty FROM transfer_line WHERE transfer_id=? ORDER BY product_id', oB.id).map((x) => [x.product_id, x.qty]), [['101', 1], ['102', 1]]);
+  assert.deepStrictEqual(db.all('SELECT product_id, qty, durum FROM transfer_fazla WHERE transfer_id=?', oB.id).map((x) => [x.product_id, x.qty, x.durum]), [['101', 1, 'BEKLIYOR']]);
+  // Listede hiç olmayan ürün (başkası hepsini almış / hiç beklemiyordu) reddedilmez, fazla olur; unutulmaz.
+  const oC = op('TRANSFER_RECEIVE', { sevkId: 'URUN-1-108', lines: [{ productId: '103', qty: 2 }] });
+  r = depo.islemler('TRM-03', 'ayşe', [oC]);
+  assert.ok(r[0].ok, JSON.stringify(r));
+  assert.deepStrictEqual(db.all('SELECT product_id, qty FROM transfer_fazla WHERE transfer_id=?', oC.id).map((x) => [x.product_id, x.qty]), [['103', 2]]);
+  assert.strictEqual(db.get('SELECT COUNT(*) AS n FROM transfer_line WHERE transfer_id=?', oC.id).n, 0, 'fişe yazılmadı');
+  assert.strictEqual(db.get('SELECT durum FROM transfer WHERE id=?', oC.id).durum, 'YAZILDI', "Vega'ya yazılacak satır yok");
+  // Çift dışı yön hâlâ reddedilir; boş işlem de.
+  r = depo.islemler('TRM-02', 'veli', [op('TRANSFER_RECEIVE', { sevkId: 'URUN-2-108', lines: [{ productId: '101', qty: 1 }] })]);
+  assert.match(r[0].error, /yalnız/);
+  r = depo.islemler('TRM-02', 'veli', [op('TRANSFER_RECEIVE', { sevkId: 'URUN-1-108', lines: [] })]);
+  assert.strictEqual(r[0].ok, false);
+  // Aynı işlem iki kez gelirse (bağlantı koptu, terminal yeniden yolladı) ikinci kez işlenmez.
+  const sayi = db.get('SELECT COUNT(*) AS n FROM transfer_fazla').n;
+  assert.ok(depo.islemler('TRM-03', 'ayşe', [oC])[0].ok);
+  assert.strictEqual(db.get('SELECT COUNT(*) AS n FROM transfer_fazla').n, sayi);
+
+  // Toplamdan fazla okutulan mal yönetici onayına gider, o ürünün en yeni gönderimine bağlanır.
+  const o2 = op('TRANSFER_RECEIVE', { sevkId: 'URUN-1-108', lines: [{ productId: '102', qty: 3 }], extra: [{ productId: '101', qty: 3 }] });
+  assert.ok(depo.islemler('TRM-02', 'veli', [o2])[0].ok);
+  const fz = db.get('SELECT sevk_ind, sevk_no, qty, durum FROM transfer_fazla WHERE transfer_id=?', o2.id);
+  assert.deepStrictEqual([fz.sevk_ind, fz.sevk_no, fz.qty, fz.durum], [1002, 'A1002', 3, 'BEKLIYOR']);
+  assert.strictEqual(db.get('SELECT COUNT(*) AS n FROM transfer_fark').n, farkOnce, 'kabulle eksik hiç açılmadı');
+  await transfer.yaz();
+  assert.strictEqual(yazilanlar.at(-1).tip, 129);
+  assert.deepStrictEqual(yazilanlar.at(-1).kalemler, [{ stokno: 102, miktar: 3 }]);
+});
+
+test('ürün bazlı kabul: gelmeyen ürün yönetici ekranından kapatılır (gönderimlere kayıp eksik yazılır), terminal listesinden kalkar', () => {
+  const sevk = (ind, gun, satirlar) => ({ ind, no: `A${ind}`, tarih: new Date(`2026-10-${gun}T00:00:00`), kaynak: 1, hedef: 108, kalemler: [], satirlar });
+  hazir([
+    sevk(1101, '20', [{ productId: '101', sent: 3, open: 2 }]),
+    sevk(1102, '25', [{ productId: '101', sent: 2, open: 2 }, { productId: '102', sent: 1, open: 1 }]),
+  ]);
+  assert.strictEqual(transfer.urunKapat(1, 108, '999', 'yönetici'), false);
+  assert.ok(transfer.urunKapat(1, 108, '101', 'yönetici'));
+  const f = db.all("SELECT sevk_ind, product_id, sent, received, eksik, durum FROM transfer_fark WHERE transfer_id LIKE 'ADMIN-U-%' ORDER BY sevk_ind");
+  assert.deepStrictEqual(f.map((x) => [x.sevk_ind, x.product_id, x.sent, x.received, x.eksik, x.durum]), [[1101, '101', 3, 1, 2, 'KAYIP'], [1102, '101', 2, 0, 2, 'KAYIP']]);
+  assert.deepStrictEqual(transfer.terminalGorunumu().incoming[0].lines, [{ productId: '102', sent: 1, open: 1 }]);
+  db.run("DELETE FROM transfer_fark WHERE transfer_id LIKE 'ADMIN-U-%'");
+});
+
+test('ortak ürün listeleri (BEK-, URUN-) belge kilidi almaz: ikinci çalışan da listeyi açabilir', () => {
+  const kilit = require('../server/kilit');
+  for (const id of ['BEK-1', 'SEVK-URUN-1-108']) {
+    const a = kilit.al({ belgeId: id, tur: 'KABUL', user: 'ali', device: 'TRM-01' });
+    const b = kilit.al({ belgeId: id, tur: 'KABUL', user: 'veli', device: 'TRM-02' });
+    assert.ok(a.ok && b.ok, `${id} ikinci terminale açık`);
+    assert.ok(kilit.nabiz({ belgeId: id, token: b.token }).ok);
+    assert.strictEqual(kilit.liste().some((k) => k.id === id), false, 'kilit kaydı tutulmaz');
+  }
+  // Gerçek belge kilidi eskisi gibi çalışır.
+  assert.ok(kilit.al({ belgeId: 'D129-1-1', tur: 'KABUL', user: 'ali', device: 'TRM-01' }).ok);
+  assert.strictEqual(kilit.al({ belgeId: 'D129-1-1', tur: 'KABUL', user: 'veli', device: 'TRM-02' }).ok, false);
 });

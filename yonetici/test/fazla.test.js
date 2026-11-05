@@ -119,7 +119,7 @@ test('reddet: kabul geri alınır, raf girişi düşer, not kaydedilir; terminal
 
   // Gönderim Vega'dan yeniden okununca (burada elle) terminal notu görür.
   transfer._gorunum({ sevkler: [sevk] });
-  assert.strictEqual(transfer.terminalGorunumu().incoming.find((x) => x.id === '802').note, 'Bu ürün kaç olmalıydı?');
+  assert.strictEqual(transfer.terminalGorunumu().incoming.find((x) => x.id === 'URUN-1-108').note, 'Bu ürün kaç olmalıydı?');
   assert.strictEqual(await transfer.tekrarIste('fazla', 99999), null);
 
   // Yeniden doğru girilince not kalkar.

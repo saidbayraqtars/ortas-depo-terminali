@@ -17,6 +17,13 @@ const TURLER = ['KABUL', 'TRANSFER'];
 
 const guncel = (r) => r.durum === 'ACIK' && now() - r.nabiz_at < SURE;
 
+/**
+ * Ürün bazlı ortak listeler (rafa bekleyen ürünler `BEK-<depo>`, kabul bekleyen ürünler `URUN-…`; terminal transfer belgesinin
+ * kilit kimliğine `SEVK-` ekler) tek belge gibi görünür ama
+ * bütün çalışanların ortak listesidir: kilitlenirse ikinci çalışan listeyi açamaz. Çakışmayı miktar sınırları çözer; kilit alınmaz.
+ */
+const ortakListe = (id) => /^(BEK-|URUN-|SEVK-URUN-)/.test(String(id || ''));
+
 function tutan(r) {
   return { user: r.user || '', device: r.device || '', since: r.alindi_at, mesaj: `${r.user || 'Başka kullanıcı'} (${r.device || '?'}) kullanıyor` };
 }
@@ -30,6 +37,7 @@ function al({ belgeId, tur = 'KABUL', belgeNo = '', user = '', device = '' }) {
   const id = String(belgeId || '').slice(0, 120);
   if (!id) throw Object.assign(new Error('Belge kimliği gerekli'), { status: 400 });
   const t = TURLER.includes(tur) ? tur : 'KABUL';
+  if (ortakListe(id)) return { ok: true, token: 'ortak', sureSn: SURE / 1000 };
   return db.tx(() => {
     const r = db.get('SELECT * FROM belge_kilit WHERE belge_id=?', id);
     // Aynı cihaz yeniden girerse (uygulama yeniden açıldı) kendi kilidini devralır.
@@ -50,6 +58,7 @@ function al({ belgeId, tur = 'KABUL', belgeNo = '', user = '', device = '' }) {
  * Süresi dolmuş ama kimsenin almadığı kendi kilidi sessizce sürer.
  */
 function nabiz({ belgeId, token }) {
+  if (ortakListe(belgeId)) return { ok: true };
   const r = db.get('SELECT * FROM belge_kilit WHERE belge_id=?', String(belgeId || ''));
   if (!r) return { ok: false, neden: 'yok' };
   if (r.token !== String(token || '')) return { ok: false, neden: 'baska', holder: tutan(r) };

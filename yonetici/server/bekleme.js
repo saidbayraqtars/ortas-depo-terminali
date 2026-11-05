@@ -399,7 +399,8 @@ function rapor() {
 
   // Muhasebe geçirmiş (bekleme deposunda stok kalmamış) ama belgede hâlâ rafa kaldırılacak görünen mal: satılabilir, yeri belli değil.
   const acik = new Map();
-  for (const r of d.belgeler()) {
+  // Ürün bazlı rafa kaldırmalar belge satırlarına yazılmaz; dağıtımlı liste olmadan her şey "rafa kaldırılmamış" görünürdü.
+  for (const r of d.belgelerDagitimli()) {
     if (r.vegaDepo === undefined || !r.acik) continue;
     for (const l of r.lines) {
       const k = l.accepted - l.shelved;

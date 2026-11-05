@@ -146,7 +146,7 @@ export default function Kabul() {
             </div>
           </Durum>
           <div className="muted small" style={{ padding: '10px 4px 0' }}>
-            Belgeler kayıt içindir; hangi belgenin kapandığına bakılmaz. Rafa bekleyen mal "Bekleyen ürünler" sekmesinde ürün bazlı hesaplanır.
+            Terminal malı belgeye bakmadan rafa kaldırır; kaldırılan miktar ürün bazında en eski belgeden başlayarak belgelere yazılır. Asıl bekleyen mal "Bekleyen ürünler" sekmesinde ürün bazlı hesaplanır.
           </div>
         </div>
       )}

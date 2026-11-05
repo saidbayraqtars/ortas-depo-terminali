@@ -121,7 +121,8 @@ fun HomeScreen(vm: AppVm, online: Boolean, version: Int) {
                 add { m -> Tile("Ürün Sorgu", "Hangi rafta, kaç adet", Ic.Search, 0, m) { vm.go(Route.ProductQuery()) } }
                 add { m -> Tile("Raf Sorgu", "Rafta neler var", Ic.Pin, 0, m) { vm.go(Route.ShelfQuery()) } }
                 if (transfer.on) {
-                    val waiting = transfer.incoming.count { it.to == db.depot && vm.canDepot(it.to) }
+                    // Ürün bazlı kabul listesinde sayaç bekleyen ürün sayısıdır (tek liste), belge bazlıda gönderim sayısı.
+                    val waiting = transfer.incoming.filter { it.to == db.depot && vm.canDepot(it.to) }.sumOf { if (it.id.startsWith("URUN-")) it.lines.size else 1 }
                     if (vm.can(Perm.DEPOT_SEND)) add { m -> Tile("Depoya Gönder", if (halfSend > 0) "Yarım gönderim" else "Başka depoya mal", Ic.Truck, halfSend, m, warn = halfSend > 0) { vm.go(Route.SendDepot) } }
                     if (vm.can(Perm.DEPOT_RECEIVE)) add { m -> Tile("Gönderim Kabul", if (halfIncoming > 0) "$halfIncoming yarım belge" else "Gelen mal", Ic.Inbox, waiting, m, warn = halfIncoming > 0) { vm.go(Route.ReceiveList) } }
                 }

@@ -423,3 +423,43 @@ test.after(() => {
   db.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('iki yönetici aynı sayımı aynı anda onaylarsa: Vega fişi bir kez yazılır, ikinci onay reddedilir, fiş numaraları kaybolmaz', async () => {
+  const vega = require('../server/vega');
+  db.run("INSERT INTO count_session(id, no, title, blind, kind, status, source, note, created_at, depo) VALUES('S9','S-9','x',0,'RAF','CLOSED','ADMIN','',?,1)", Date.now());
+  depo.islemler('TRM-01', 'ali', [op('COUNT_SUBMIT', { sessionId: 'S9', shelves: ['A-01'], lines: [{ shelf: 'A-01', productId: '101', counted: 100, system: 100 }] })]);
+  const eski = vega.sayimYaz;
+  let yazma = 0;
+  vega.sayimYaz = async () => {
+    yazma++;
+    await new Promise((r) => setTimeout(r, 30));
+    // Gerçek Vega ikinci çağrıda fark bulmaz ve boş cevap verir; program ilkinin fiş numarasını ezmemeli.
+    return yazma === 1 ? { docs: [{ belgeNo: 'T0000001', giris: true, kalem: 1 }], lines: [] } : { docs: [], lines: [] };
+  };
+  try {
+    const s = await Promise.allSettled([depo.sayimOnayla('S9', { vegaYaz: true }), depo.sayimOnayla('S9', { vegaYaz: true })]);
+    assert.strictEqual(s.filter((x) => x.status === 'fulfilled').length, 1);
+    assert.match(s.find((x) => x.status === 'rejected').reason.message, /şu an onaylanıyor|zaten onaylandı/);
+  } finally {
+    vega.sayimYaz = eski;
+  }
+  assert.strictEqual(yazma, 1, 'Vega\'ya bir kez yazıldı');
+  const kayit = JSON.parse(db.get("SELECT vega_docs FROM count_session WHERE id='S9'").vega_docs);
+  assert.deepStrictEqual(kayit.docs.map((d) => d.belgeNo), ['T0000001']);
+  // Onaylanmamış sayımın "onayı geri al"ı durumu bozmaz.
+  db.run("INSERT INTO count_session(id, no, title, blind, kind, status, source, note, created_at, depo) VALUES('S10','S-10','x',0,'RAF','CANCELLED','ADMIN','',?,1)", Date.now());
+  await assert.rejects(() => depo.sayimGeriAl('S10'), /onaylanmış|onaylı değil/);
+  assert.strictEqual(db.get("SELECT status FROM count_session WHERE id='S10'").status, 'CANCELLED');
+});
+
+test('sayım gönderilirken rafta terminalin görmediği hareket varsa satır çakışma işaretlenir (sayım yine mutlak yazar)', () => {
+  depo.rafEkle(1, 'C-01');
+  depo.miktarAyarla(1, '101', 'C-01', 10, { ts: 1, kind: 'PUTAWAY' });
+  db.run("INSERT INTO count_session(id, no, title, blind, kind, status, source, note, created_at, depo) VALUES('S11','S-11','x',0,'RAF','OPEN','ADMIN','',?,1)", Date.now());
+  // Terminal rafta 10 görüyordu; sayarken başka terminal +5 kaldırdı (sunucuda 15); sayım 10 gönderdi.
+  depo.miktarEkle(1, '101', 'C-01', 5, { ts: 2, kind: 'PUTAWAY' });
+  depo.islemler('TRM-01', 'ali', [op('COUNT_SUBMIT', { sessionId: 'S11', shelves: ['C-01'], lines: [{ shelf: 'C-01', productId: '101', counted: 10, system: 10 }] })]);
+  const l = depo.sayimOzet('S11').satirlar.find((x) => x.shelf === 'C-01');
+  assert.deepStrictEqual([l.server_before, l.terminal_system, l.counted, l.catisma], [15, 10, 10, 5]);
+  assert.strictEqual(depo.miktar(1, '101', 'C-01'), 10, 'sayım mutlak yazar');
+});
