@@ -19,6 +19,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -112,6 +113,8 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
         val counted = lines.map { it.product.id }.toSet()
         contents.filter { it.product.id !in counted }
     }
+    // Canlı sayım: rafın açıldığı andaki içerik; sonradan konan ürün "beklenen" listesinde ayrıca belirtilir.
+    val snap = remember(version, shelf) { if (arrange) null else shelf?.let { db.shelfSnapshot(sessionId, it) } }
     // Raf Düzenle: satırın altında rafta daha önce kaç adet olduğu yazar (okutulan, üstüne eklenir).
     val onShelf = remember(contents) { contents.filter { it.qty > 0 }.associate { it.product.id to it.qty } }
     val shelves = remember(version) { db.countedShelves(sessionId) }
@@ -121,6 +124,8 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
     fun scopeError(s: String) = vm.error("$s bu sayımda değil; yalnız ${session!!.scope.joinToString(", ")} rafları sayılır")
     val scans = remember(version) { db.countLines(sessionId).sumOf { it.qty } }
     DisposableEffect(sessionId) { onDispose { vm.repo.discardEmptyLocal(sessionId) } }
+    // Canlı sayım: rafın açıldığı an kaydedilir (sunucu sayarken rafa yapılan hareketi buna göre korur).
+    LaunchedEffect(shelf) { if (!arrange) shelf?.let { vm.repo.openShelf(sessionId, it) } }
 
     if (session == null) {
         Screen(if (arrange) "Raf Düzenle" else "Sayım", online = online, onBack = { vm.back() }) { Hint(if (arrange) "Düzenleme bulunamadı." else "Sayım bulunamadı.") }
@@ -261,6 +266,8 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
                             Column(Modifier.weight(1f)) {
                                 Text(w.product.name, color = C.Text2, maxLines = 1)
                                 MonoText(w.product.code + if (w.qty <= 0) " · zimmetli" else "", size = 12, weight = FontWeight.Medium, color = C.Muted)
+                                val sonra = snap?.let { w.qty - (it[w.product.id] ?: 0.0) } ?: 0.0
+                                if (sonra > 0) Text("Sayım başladıktan sonra kondu (+${fmt(sonra)}); okutmasanız da yerinde kalır", fontSize = 12.sp, color = C.Info)
                             }
                             // Kör sayımda sistem miktarı gösterilmez; yalnız ürünün beklendiği.
                             if (!session.blind && w.qty > 0) MonoText(fmt(w.qty), size = 14, color = C.Muted)
@@ -313,6 +320,11 @@ fun CountDiffScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String)
                     Column(Modifier.weight(1f)) {
                         Text(d.product.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
                         MonoText("${d.product.code} · ${d.shelf}", size = 12, weight = FontWeight.Medium, color = C.Muted)
+                        // Canlı sayım: raf açıldıktan sonra başka terminalin hareketi; fark değildir, rafa eklenir.
+                        if (d.after != 0.0) Text(
+                            (if (d.after > 0) "Sayarken +${fmt(d.after)} kondu" else "Sayarken −${fmt(-d.after)} alındı") + " · rafta ${fmt((d.counted + d.after).coerceAtLeast(0.0))} kalır",
+                            fontSize = 12.sp, color = C.Info,
+                        )
                     }
                     MonoText(fmt(d.system), modifier = Modifier.width(52.dp), weight = FontWeight.Medium)
                     MonoText(fmt(d.counted), modifier = Modifier.width(60.dp), weight = FontWeight.Medium)

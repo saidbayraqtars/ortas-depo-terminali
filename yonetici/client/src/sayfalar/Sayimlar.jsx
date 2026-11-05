@@ -237,12 +237,34 @@ function KapsamKarti({ k }) {
   );
 }
 
+// Canlı sayım (2.2.0): ürünün Vega farkı sayım anında dondurulur. Notu: elle bakılacak / Vega bekleniyor / sonradan düşülen hareket.
+const isaret = (x) => (x > 0 ? '+' : x < 0 ? '−' : '') + miktar(Math.abs(x));
+function CanliNot({ u }) {
+  if (u.kontrol) {
+    const neden = u.belirsiz === null
+      ? (u.donmaDetay?.neden || 'Sayım saatine ait Vega okuması yok')
+      : `Ürünün rafları farklı saatlerde sayıldı; arada Vega'da raf kaydına işlemeyen ${isaret(u.belirsiz)} hareket (satış vb.) var, hangi raftan olduğu bilinmiyor. Ürünü yeniden saydırın ya da farkı bilerek yazın.`;
+    return <span title={neden}><Rozet tur="b-warn">Elle bak</Rozet>{u.belirsiz !== null && <span className="small muted"> arada {isaret(u.belirsiz)}</span>}</span>;
+  }
+  if (u.dondurma === 'BEKLIYOR') return <span title="Sayım gönderildikten sonraki ilk Vega okumasında sayım anındaki fark sabitlenir. O zamana kadar fark şu anki Vega stokuna göre gösterilir."><Rozet tur="b-mute">Vega bekleniyor</Rozet></span>;
+  const notlar = [];
+  if (u.donmus && Math.abs(u.duzeltme) > 1e-9) notlar.push(`sayımdan sonra ${isaret(u.duzeltme)} Vega hareketi düşüldü`);
+  if (Math.abs(u.hareketSonra || 0) > 1e-9) notlar.push(`sayıldıktan sonra rafta ${isaret(u.hareketSonra)} (sayılana eklendi)`);
+  if (u.zamansiz) notlar.push('eski terminal: sayım saati yok');
+  return notlar.length ? <span className="small muted" title={u.donmus ? `Onay anındaki Vega stokuyla fark ${isaret(u.farkSimdi)} olurdu` : ''}>{notlar.join(' · ')}</span> : null;
+}
+
+/** Onayda varsayılan seçim: elle bakılacaklar ve Vega'sı beklenenler dışındaki farklı ürünler. */
+const temiz = (u) => !u.kontrol && u.dondurma !== 'BEKLIYOR';
+
 function OnayPenceresi({ ozet, dahil, kapat, tamam }) {
   const { toast, durum } = useApp();
   const genel = ozet.oturum.kind === 'GENEL';
   const [vegaYaz, setVegaYaz] = useState(genel);
   const farkli = ozet.urunler.filter((u) => u.vegadaVar && Math.abs(u.fark) > 1e-9);
-  const [secili, setSecili] = useState(() => new Set(farkli.map((u) => u.productId)));
+  const [secili, setSecili] = useState(() => new Set(farkli.filter(temiz).map((u) => u.productId)));
+  const disarida = farkli.filter((u) => !temiz(u)).length;
+  const donmus = ozet.urunler.some((u) => u.donmus);
   const [mesgul, setMesgul] = useState(false);
   const giris = farkli.filter((u) => secili.has(u.productId) && u.fark > 0).length;
   const cikis = farkli.filter((u) => secili.has(u.productId) && u.fark < 0).length;
@@ -264,7 +286,9 @@ function OnayPenceresi({ ozet, dahil, kapat, tamam }) {
       <p style={{ margin: 0 }}>Raf miktarları sayım gönderilirken zaten güncellendi. Onay sayımı kapatır{vegaYaz ? ' ve Vega stokunu düzeltir' : ''}.</p>
       <label className="check">
         <input type="checkbox" checked={vegaYaz} onChange={(e) => setVegaYaz(e.target.checked)} />
-        <span><b>Vega'ya sayım fişi yaz</b><br /><span className="muted small">Fark, fiş kesilirken Vega'daki o anki stoka göre yeniden hesaplanır. Artı fark sayım giriş (93), eksi fark sayım çıkış (94) fişine gider.</span></span>
+        <span><b>Vega'ya sayım fişi yaz</b><br /><span className="muted small">{donmus
+          ? 'Fark, sayımın yapıldığı andaki Vega stokuna göredir: sayımdan sonra kesilen satış ya da giriş fişe karışmaz. Farkı dondurulamayan ürünlerde fiş kesilirken Vega\'daki o anki stok kullanılır.'
+          : 'Fark, fiş kesilirken Vega\'daki o anki stoka göre yeniden hesaplanır.'} Artı fark sayım giriş (93), eksi fark sayım çıkış (94) fişine gider.</span></span>
       </label>
       {vegaYaz && !durum?.vega.ok && <div className="notice err"><Icon name="wifiOff" /><p>Vega'ya şu an ulaşılamıyor.</p></div>}
       {vegaYaz && !genel && <div className="notice warn"><Icon name="warning" /><p>Bu bir raf sayımı. Ürünün sayılmayan yerlerde (rafsız, başka bölümde) malı varsa Vega stoku eksik düşer. Emin değilseniz yalnız gerçekten tamamı sayılan ürünleri seçin.</p></div>}
@@ -274,12 +298,14 @@ function OnayPenceresi({ ozet, dahil, kapat, tamam }) {
             <b>{secili.size} ürün seçili</b>
             <span className="muted">· {giris} giriş · {cikis} çıkış</span>
             <div style={{ flex: 1 }} />
+            {disarida > 0 && <Btn size="sm" onClick={() => setSecili(new Set(farkli.filter(temiz).map((u) => u.productId)))} title="Elle bakılacak ve Vega'sı beklenen ürünler hariç">Temizler</Btn>}
             <Btn size="sm" onClick={() => setSecili(new Set(farkli.map((u) => u.productId)))}>Hepsi</Btn>
             <Btn size="sm" onClick={() => setSecili(new Set())}>Hiçbiri</Btn>
           </div>
+          {disarida > 0 && <div className="notice warn"><Icon name="warning" /><p>{disarida} ürün varsayılan olarak seçilmedi: sayım sırasında Vega'da raf kaydına işlemeyen hareket var ya da sayım anındaki Vega farkı henüz sabitlenmedi. Satırdaki nota bakın; gerekirse ürünü yeniden saydırın.</p></div>}
           <div className="tbl-scroll" style={{ maxHeight: 320, border: '1px solid var(--line)', borderRadius: 8 }}>
             <table className="tbl">
-              <thead><tr><th /><th>Ürün</th><th className="num">Olması gereken</th><th className="num">Vega</th><th className="num">Fark</th></tr></thead>
+              <thead><tr><th /><th>Ürün</th><th className="num">Olması gereken</th><th className="num">Vega</th><th className="num">Fark</th><th>Not</th></tr></thead>
               <tbody>
                 {farkli.map((u) => (
                   <tr key={u.productId}>
@@ -288,9 +314,10 @@ function OnayPenceresi({ ozet, dahil, kapat, tamam }) {
                     <td className="num">{miktar(u.hedef)}</td>
                     <td className="num">{miktar(u.vegaStock)}</td>
                     <td className={`num ${u.fark > 0 ? 'pos' : 'neg'}`}>{miktar(u.fark, true)}</td>
+                    <td><CanliNot u={u} /></td>
                   </tr>
                 ))}
-                {farkli.length === 0 && <tr><td colSpan={5} className="empty">Vega ile fark yok.</td></tr>}
+                {farkli.length === 0 && <tr><td colSpan={6} className="empty">Vega ile fark yok.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -308,6 +335,7 @@ export function SayimDetay({ id }) {
   const [onay, setOnay] = useState(false);
   const [sor, onayPenceresi] = useOnay();
   const [sadeceFark, setSadeceFark] = useState(false);
+  const [sadeceKontrol, setSadeceKontrol] = useState(false);
 
   const durumDegis = async (ne, soru) => {
     if (soru && !(await sor(...soru))) return;
@@ -320,7 +348,7 @@ export function SayimDetay({ id }) {
     }
   };
 
-  const urunler = useMemo(() => (o ? o.urunler.filter((u) => !sadeceFark || Math.abs(u.fark) > 1e-9) : []), [o, sadeceFark]);
+  const urunler = useMemo(() => (o ? o.urunler.filter((u) => (!sadeceFark || Math.abs(u.fark) > 1e-9) && (!sadeceKontrol || u.kontrol)) : []), [o, sadeceFark, sadeceKontrol]);
   const satirlar = useMemo(() => (o ? o.satirlar.filter((l) => !sadeceFark || Math.abs(l.fark) > 1e-9) : []), [o, sadeceFark]);
 
   return (
@@ -348,19 +376,26 @@ export function SayimDetay({ id }) {
               </div>
             )}
 
+            {o.toplam.canli && s.status !== 'APPROVED' && (
+              <div className="notice info" style={{ marginBottom: 14 }}>
+                <Icon name="info" />
+                <p>Canlı sayım: sayarken rafa kaldırılan ya da raftan alınan mal sayılana eklendi (silinmedi). Vega farkı ürün sayıldığı anda sabitlenir; onay ile sayım arasındaki satış fişe karışmaz.{o.toplam.donmayi > 0 && <> {o.toplam.donmayi} ürünün farkı sonraki Vega okumasında sabitlenecek.</>}</p>
+              </div>
+            )}
             {o.kapsam && <KapsamKarti k={o.kapsam} />}
 
             <div className="grid g4" style={{ marginBottom: 14 }}>
               <div className="card stat"><span className="k">Sayılan raf</span><span className="v">{o.raflar.length}</span>{o.kapsam && <span className="s">kapsamda {o.kapsam.sayilan} / {o.kapsam.raf}</span>}</div>
               <div className="card stat"><span className="k">Raf kalemi</span><span className="v">{o.toplam.kalem}</span><span className="s">{o.toplam.rafFarkli} kalemde rafta fark</span></div>
               <div className="card stat"><span className="k">Ürün</span><span className="v">{o.toplam.urun}</span></div>
-              <div className={`card stat ${o.toplam.vegaFarkli ? 'warn' : ''}`}><span className="k">Vega ile farklı</span><span className="v">{o.toplam.vegaFarkli}</span></div>
+              <div className={`card stat ${o.toplam.vegaFarkli ? 'warn' : ''}`}><span className="k">Vega ile farklı</span><span className="v">{o.toplam.vegaFarkli}</span>{o.toplam.kontrol > 0 && <span className="s">{o.toplam.kontrol} ürüne elle bakılmalı</span>}</div>
             </div>
 
             <div className="card">
               <div className="toolbar">
                 <Secim deger={gorunum} degis={setGorunum} secenekler={[['urun', 'Ürün bazında (Vega)'], ['raf', 'Raf bazında']]} />
                 <label className="check"><input type="checkbox" checked={sadeceFark} onChange={(e) => setSadeceFark(e.target.checked)} /><span>Yalnız farklılar</span></label>
+                {gorunum === 'urun' && o.toplam.kontrol > 0 && <label className="check" title="Sayım sırasında Vega'da raf kaydına işlemeyen hareket (satış vb.) gören ürünler"><input type="checkbox" checked={sadeceKontrol} onChange={(e) => setSadeceKontrol(e.target.checked)} /><span>Yalnız elle bakılacaklar ({o.toplam.kontrol})</span></label>}
                 {gorunum === 'urun' && s.status !== 'APPROVED' && (
                   <label className="check" title="Genel sayımda: hiç okutulmayan ama Vega'da stoğu olan ürünler de listeye girer (olması gereken = raflardaki + bekleyen)">
                     <input type="checkbox" checked={dahil} onChange={(e) => setDahil(e.target.checked)} /><span>Sayılmayan stoklu ürünleri ekle</span>
@@ -371,7 +406,7 @@ export function SayimDetay({ id }) {
                 urunler.length === 0 ? <div className="empty">Henüz sayım gelmedi.</div> : (
                   <div className="tbl-wrap tbl-scroll" style={{ maxHeight: 'calc(100vh - 330px)' }}>
                     <table className="tbl">
-                      <thead><tr><th>Ürün</th><th>Sayılan raflar</th><th className="num">Sayılan</th><th className="num">Diğer raflar</th><th className="num">Rafa kaldırılacak</th><th className="num">Olması gereken</th><th className="num">Vega</th><th className="num">Fark</th></tr></thead>
+                      <thead><tr><th>Ürün</th><th>Sayılan raflar</th><th className="num">Sayılan</th><th className="num">Diğer raflar</th><th className="num">Rafa kaldırılacak</th><th className="num">Olması gereken</th><th className="num">Vega</th><th className="num">Fark</th><th>Not</th></tr></thead>
                       <tbody>
                         {urunler.map((u) => (
                           <tr key={u.productId} className="click" onClick={() => (window.location.hash = `/urun/${u.productId}`)}>
@@ -382,7 +417,8 @@ export function SayimDetay({ id }) {
                             <td className="num">{u.bekleyen ? miktar(u.bekleyen) : ''}</td>
                             <td className="num">{miktar(u.hedef)}</td>
                             <td className="num">{miktar(u.vegaStock)}</td>
-                            <td className={`num ${u.fark > 0 ? 'pos' : u.fark < 0 ? 'neg' : 'muted'}`}>{miktar(u.fark, true)}</td>
+                            <td className={`num ${u.fark > 0 ? 'pos' : u.fark < 0 ? 'neg' : 'muted'}`} title={u.donmus ? `Sayım anındaki fark. Şu anki Vega stokuyla: ${isaret(u.farkSimdi)}` : ''}>{miktar(u.fark, true)}</td>
+                            <td><CanliNot u={u} /></td>
                           </tr>
                         ))}
                       </tbody>
@@ -399,7 +435,8 @@ export function SayimDetay({ id }) {
                           <td className="mono"><a href={`#/raf/${o.oturum.depo}/${encodeURIComponent(l.shelf)}`}>{l.shelf}</a></td>
                           <td><div className="name">{l.urunAd}</div><div className="code">{l.urunKod}</div></td>
                           <td className="num">
-                            {miktar(l.server_before)}
+                            {miktar(l.sistemAnda ?? l.server_before)}
+                            {Math.abs(l.hareket_sonra || 0) > 0.0001 && <div className="small muted" title="Ürün sayıldıktan sonra bu rafa kaldırılan ya da raftan alınan miktar; sayılana eklendi, raf stokunda duruyor">sayıldıktan sonra {isaret(l.hareket_sonra)}</div>}
                             {Math.abs(l.catisma) > 0.0001 && <div className="small" style={{ color: 'var(--warn)' }} title="Sayım gönderilirken sunucudaki miktar terminalin gördüğünden farklıydı: sayarken başka bir terminal bu rafa kaldırma/alma yapmış olabilir. Sayım mutlak yazar; o hareketi kontrol edin.">terminal {miktar(l.terminal_system)} görüyordu · {miktar(l.catisma, true)}</div>}
                           </td>
                           <td className="num">{miktar(l.counted)}</td>

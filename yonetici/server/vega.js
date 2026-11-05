@@ -192,9 +192,13 @@ async function goruntu(cfg) {
     OUTER APPLY (SELECT TOP 1 BIRIMADI FROM [${F}TBLBIRIMLEREX] X WHERE X.STOKNO=S.IND ORDER BY X.VARSAYILAN DESC, X.ANABIRIM DESC, X.IND) B
     WHERE ${sart.join(' AND ')}`));
 
-  const stok = await olc('stok', () => p.request().query(`
+  // Filigran: depo envanterinin şu anki en büyük IND'i. Stok tam bu kayda kadar okunur; canlı sayım "sayıldıktan sonra Vega'da ne
+  // oldu" sorusunu IND aralığıyla sorar (envanter TARIH'inde saat yok). Kimlik sütunu sıralı artar.
+  const filigran = Number((await olc('filigran', () => p.request().query(`SELECT ISNULL(MAX(IND),0) AS M FROM [${FD}TBLDEPOENVANTER]`))).recordset[0].M) || 0;
+  const filigranAt = Date.now();
+  const stok = await olc('stok', () => p.request().input('f', sql.Int, filigran).query(`
     SELECT DEPO, STOKNO, SUM(ENVANTER) AS KALAN FROM [${FD}TBLDEPOENVANTER]
-    WHERE DEPO IN (${depoIn}) AND ISNULL(BELGETIPI,0)<>67 GROUP BY DEPO, STOKNO HAVING ABS(SUM(ENVANTER)) > 0.00001`));
+    WHERE DEPO IN (${depoIn}) AND ISNULL(BELGETIPI,0)<>67 AND IND <= @f GROUP BY DEPO, STOKNO HAVING ABS(SUM(ENVANTER)) > 0.00001`));
 
   const gun = Math.max(1, Number(cfg.urun.gun) || 365);
   const hareket = await olc('hareket', () => p.request().input('gun', sql.Int, gun).query(`
@@ -328,6 +332,8 @@ async function goruntu(cfg) {
   return {
     surum: 2,
     at: Date.now(),
+    filigran,
+    filigranAt,
     sureler,
     firma: v.firma,
     donem,
@@ -492,6 +498,26 @@ async function anlikStok(cfg, stoknolar, depo, req) {
   return out;
 }
 
+/**
+ * Canlı sayım: verilen kartların `altInd` < IND <= `ustInd` aralığındaki depo envanteri kayıtları (sayım sırasında ve sonrasında
+ * Vega'da olan satış, giriş, fiş). `depo` tek depo ya da liste. Dönen: [{ stokno, ind, tip, miktar }].
+ */
+async function sayimHareketleri(cfg, { depo, stoknolar, altInd, ustInd }) {
+  const { p, FD } = await baglam(cfg.vega);
+  const depoIn = [].concat(depo).map(Number).filter(Number.isInteger).join(',');
+  const out = [];
+  if (!depoIn || !(ustInd > altInd)) return out;
+  for (let i = 0; i < stoknolar.length; i += 500) {
+    const parca = stoknolar.slice(i, i + 500).map(Number).filter(Number.isInteger);
+    if (!parca.length) continue;
+    const r = await p.request().input('a', sql.Int, altInd).input('u', sql.Int, ustInd).query(`
+      SELECT STOKNO, IND, ISNULL(BELGETIPI,0) AS TIP, ENVANTER FROM [${FD}TBLDEPOENVANTER]
+      WHERE DEPO IN (${depoIn}) AND ISNULL(BELGETIPI,0)<>67 AND IND > @a AND IND <= @u AND STOKNO IN (${parca.join(',')})`);
+    for (const x of r.recordset) out.push({ stokno: String(x.STOKNO), ind: Number(x.IND), tip: Number(x.TIP), miktar: Number(x.ENVANTER) || 0 });
+  }
+  return out;
+}
+
 // ---- Sayım fişi yazma ---------------------------------------------------------------------
 
 function gk() {
@@ -567,9 +593,10 @@ async function sonrakiNo(t, tablo, onek) {
 }
 
 /**
- * Sayım fişlerini yazar. `kalemler`: [{stokno, hedef}] — hedef, sayımdan çıkan olması gereken depo stoku.
- * Fark fişin kesildiği anda Vega'daki stoğa göre hesaplanır (Kılavuz §23.7 uygulama kuralı):
- * artı fark giriş (93), eksi fark çıkış (94) fişine. Hepsi tek SQL işleminde; hata olursa hiçbiri yazılmaz.
+ * Sayım fişlerini yazar. `kalemler`: [{stokno, hedef}] ya da [{stokno, fark}]. `hedef` sayımdan çıkan olması gereken depo stoku;
+ * fark fişin kesildiği anda Vega'daki stoğa göre hesaplanır (Kılavuz §23.7 uygulama kuralı). `fark` verilirse (canlı sayım: sayım
+ * anında dondurulmuş fark) fiş doğrudan o kadar kesilir; sayımdan sonraki satış/giriş fişe karışmaz.
+ * Artı fark giriş (93), eksi fark çıkış (94) fişine. Hepsi tek SQL işleminde; hata olursa hiçbiri yazılmaz.
  * `stokDepolari`: hedefin karşılaştırılacağı depolar (sanal bekleme deposu varsa grup toplamı); fiş yine `depo`ya yazılır.
  */
 async function sayimYaz(cfg, kalemler, { aciklama = 'Sayım', depo: depoNo, stokDepolari = null } = {}) {
@@ -615,10 +642,11 @@ async function sayimYaz(cfg, kalemler, { aciklama = 'Sayım', depo: depoNo, stok
       const c = kart.get(s);
       if (!c) continue;
       const once = simdi.get(s) || 0;
-      const fark = Math.round((Number(k.hedef) - once) * 10000) / 10000;
+      const donmus = k.fark !== undefined && k.fark !== null && Number.isFinite(Number(k.fark));
+      const fark = Math.round((donmus ? Number(k.fark) : Number(k.hedef) - once) * 10000) / 10000;
       // Yuvarlama artığı fark sayılmaz (Kılavuz §23.7).
       if (Math.abs(fark) < 0.0001) continue;
-      satirlar.push({ stokno: s, kart: c, once, hedef: Number(k.hedef), fark });
+      satirlar.push({ stokno: s, kart: c, once, hedef: Math.round((once + fark) * 10000) / 10000, fark, donmus });
     }
 
     const docs = [];
@@ -696,7 +724,7 @@ async function sayimYaz(cfg, kalemler, { aciklama = 'Sayım', depo: depoNo, stok
     await t.commit();
     return {
       docs,
-      lines: satirlar.map((x) => ({ stokno: x.stokno, once: x.once, hedef: x.hedef, fark: x.fark })),
+      lines: satirlar.map((x) => ({ stokno: x.stokno, once: x.once, hedef: x.hedef, fark: x.fark, ...(x.donmus ? { donmus: true } : {}) })),
     };
   } catch (e) {
     await t.rollback().catch(() => {});
@@ -1008,4 +1036,4 @@ async function transferOku(cfg, { bas, alanlar, kaynaklar }) {
   return { sevkler: [...belgeler.values()], havuz: [...havuz.values()] };
 }
 
-module.exports = { transferYaz, transferGeriAl, transferOku, kullanilanDepolar, dene, firmalar, donemler, depolar, donemCoz, hazirMi, goruntu, stokTani, BELGE_TURU, anlikStok, sayimYaz, sayimGeriAl, fisVarsayilanlari, PASIF_AD, kartAlanUzunluk, kartAlanYaz, kapat, oleTarih };
+module.exports = { sayimHareketleri, transferYaz, transferGeriAl, transferOku, kullanilanDepolar, dene, firmalar, donemler, depolar, donemCoz, hazirMi, goruntu, stokTani, BELGE_TURU, anlikStok, sayimYaz, sayimGeriAl, fisVarsayilanlari, PASIF_AD, kartAlanUzunluk, kartAlanYaz, kapat, oleTarih };

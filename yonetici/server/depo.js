@@ -126,7 +126,8 @@ async function vegaYenile(tetik = 'elle') {
     const { sureler, ...g } = await vega.goruntu(cfg);
     // Takılmış eski okuma sonradan dönerse yenisinin durumunu ezmesin.
     if (tur !== vegaTurNo) return vegaDurum;
-    const ozet0 = ozet(JSON.stringify({ ...g, at: 0 }));
+    // Filigran her okumada değişebilir (başka depoda satış); içerik özetine girmez, yoksa terminaller boş yere uyarılırdı.
+    const ozet0 = ozet(JSON.stringify({ ...g, at: 0, filigran: 0, filigranAt: 0 }));
     const ayni = Boolean(goruntu) && ozet0 === sonGoruntuOzet;
     if (!ayni) {
       // Önbelleğe ham görüntü yazılır; yorumlanmış hali her açılışta o anki ayarla yeniden kurulur.
@@ -138,7 +139,12 @@ async function vegaYenile(tetik = 'elle') {
         g.at,
       );
       sonGoruntuOzet = ozet0;
+    } else {
+      // İçerik aynı: stok bu filigranda da aynıdır.
+      goruntu.filigran = g.filigran;
+      goruntu.filigranAt = g.filigranAt;
     }
+    filigranKaydet(g);
     // Güncellemeyle gelen B2B raf listesi (varsa, bir kez): ürünlerin asıl rafları. Hata Vega okumasını bozmaz.
     try {
       require('./iceaktar').otomatik();
@@ -160,6 +166,8 @@ async function vegaYenile(tetik = 'elle') {
     if (!ayni || zimmetDegisti) degisti();
     // Açık gönderimler ayrı okunur (transfer.js); hata Vega okumasını bozmaz.
     require('./transfer').yenile().catch(() => {});
+    // Canlı sayım: bu okumadan önce gönderilmiş sayımların Vega farkı dondurulur.
+    sayimDondur().catch((e) => log.hata('Sayım farkı dondurulamadı', e));
   } catch (e) {
     if (tur !== vegaTurNo) return vegaDurum;
     vegaDurum.ardisikHata++;
@@ -307,8 +315,9 @@ function miktarAyarla(depo, productId, shelf, yeni, hareket) {
   const delta = yuvarla(sonra - once);
   if (Math.abs(delta) > EPS || hareket.kind === 'COUNT') {
     db.run(
-      'INSERT INTO movement(ts, depo, product_id, shelf, delta, after, kind, ref, user, device, op_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+      'INSERT INTO movement(ts, fiili_ts, depo, product_id, shelf, delta, after, kind, ref, user, device, op_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
       hareket.ts || now(),
+      hareket.fiili || hareket.ts || now(),
       depo,
       pid,
       shelf,
@@ -703,12 +712,24 @@ function yetkiBaglam(kullanici) {
   return yetki.baglam(db.get('SELECT username, perms, depots, shelves FROM app_user WHERE username=?', ad), depoAdi);
 }
 
-function islemUygula(op, cihaz, kullanici) {
+/**
+ * Terminal saatindeki bir anı sunucu saatine çevirir. `saatFarki` = sunucu saati − terminal saati (gönderimdeki `sentAt`'ten);
+ * bilinmiyorsa (eski terminal) null döner. Gelecekteki an sunucunun şimdisine kırpılır.
+ */
+function terminalAni(t, saatFarki) {
+  const x = Number(t);
+  if (saatFarki === null || saatFarki === undefined || !Number.isFinite(x) || x <= 0) return null;
+  return Math.min(now(), Math.round(x + saatFarki));
+}
+
+function islemUygula(op, cihaz, kullanici, { saatFarki = null } = {}) {
   const p = op.payload || {};
   const user = String(p.user || kullanici || '');
   const device = String(p.device || cihaz || '');
   const ts = Number(op.createdAt) || now();
-  const h = { ts: now(), user, device, opId: op.id };
+  // `fiili`: işin terminalde yapıldığı an (sunucu saatiyle). Terminal çevrimdışı kaldıysa iş sunucuya geç gelir; canlı sayım
+  // "sayıldıktan sonra rafa ne oldu" sorusunu bu ana göre sorar. Saat farkı bilinmiyorsa işlendiği an.
+  const h = { ts: now(), fiili: terminalAni(op.createdAt, saatFarki) ?? now(), user, device, opId: op.id, saatFarki };
   // Terminal ürünleri ana veriden alır; tanınmayan kimlik (demo verisi, başka kurulum) raf stokuna girmesin.
   const bilinen = (pid) => {
     if (goruntu && !urun(pid)) throw new Ret(`Ürün Vega'da bulunamadı (${pid})`);
@@ -866,6 +887,11 @@ function sayimKaydet(op, p, h, olusturma, yetkiDenetle = () => {}) {
   const { raflar, satirlar } = rafGonderimi(p);
   // Kullanıcının raf sınırı dışındaki raf gönderimde varsa hiçbiri uygulanmaz (işlem tek SQLite işleminde geri alınır).
   for (const raf of raflar) yetkiDenetle(null, depo, raf);
+  // Canlı sayım (2.2.0+ terminal): rafın açıldığı ve ürünün son okutulduğu an. Yoksa (eski terminal) raf okutulana eşitlenir.
+  const zaman = sayimZamanlari(p, satirlar, h.saatFarki);
+  const gonderim = now();
+  // Ürün başına sayımın fiziksel zaman aralığı: ilk = ürünün sayıldığı rafın en erken açılışı, son = en geç okutulduğu an.
+  const urunAraligi = new Map();
   for (const raf of raflar) {
     if (!rafVarMi(depo, raf)) rafEkle(depo, raf, { source: 'TERMINAL', note: 'Sayımdan geldi' });
     db.run(
@@ -875,15 +901,18 @@ function sayimKaydet(op, p, h, olusturma, yetkiDenetle = () => {}) {
       raf,
       h.user,
       h.device,
-      now(),
+      gonderim,
     );
-    rafiOkutulanaCek(depo, raf, satirlar, olusturma, { ...h, kind: 'COUNT', ref }, (pid, x, once) => {
+    const rz = zaman && zaman.raf.get(raf);
+    const canli = rz ? { acilis: rz.start, satirAni: zaman.satir, opId: h.opId } : null;
+    rafiOkutulanaCek(depo, raf, satirlar, olusturma, { ...h, kind: 'COUNT', ref }, (pid, x, once, k1) => {
       db.run(
-        `INSERT INTO count_line(session_id, shelf, product_id, terminal_system, server_before, counted, user, device, submitted_at)
-         VALUES(?,?,?,?,?,?,?,?,?)
+        `INSERT INTO count_line(session_id, shelf, product_id, terminal_system, server_before, counted, user, device, submitted_at,
+           ref_ts, hareket_sonra, hareket_arada)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(session_id, shelf, product_id) DO UPDATE SET terminal_system=excluded.terminal_system,
            server_before=excluded.server_before, counted=excluded.counted, user=excluded.user, device=excluded.device,
-           submitted_at=excluded.submitted_at`,
+           submitted_at=excluded.submitted_at, ref_ts=excluded.ref_ts, hareket_sonra=excluded.hareket_sonra, hareket_arada=excluded.hareket_arada`,
         sid,
         raf,
         pid,
@@ -892,10 +921,86 @@ function sayimKaydet(op, p, h, olusturma, yetkiDenetle = () => {}) {
         x.counted,
         h.user,
         h.device,
-        now(),
+        gonderim,
+        k1 ? k1.ref : null,
+        k1 ? k1.sonra : 0,
+        k1 ? k1.arada : 0,
       );
-    });
+      const a = urunAraligi.get(pid) || { ilk: Infinity, son: -Infinity, zamanli: true };
+      if (k1) {
+        a.ilk = Math.min(a.ilk, canli.acilis);
+        a.son = Math.max(a.son, k1.ref);
+      } else {
+        a.zamanli = false;
+        a.ilk = Math.min(a.ilk, gonderim);
+        a.son = Math.max(a.son, gonderim);
+      }
+      urunAraligi.set(pid, a);
+    }, { canli });
   }
+  // Vega farkı sonraki Vega okumasında dondurulur (sayimDondur); ürün aynı sayımda yeniden gönderilirse aralık genişler.
+  for (const [pid, a] of urunAraligi) {
+    db.run(
+      `INSERT INTO count_urun(session_id, product_id, ilk_ts, son_ts, gonderim_at, zamanli, durum) VALUES(?,?,?,?,?,?,'BEKLIYOR')
+       ON CONFLICT(session_id, product_id) DO UPDATE SET ilk_ts=MIN(ilk_ts, excluded.ilk_ts), son_ts=MAX(son_ts, excluded.son_ts),
+         gonderim_at=excluded.gonderim_at, zamanli=MIN(zamanli, excluded.zamanli), durum='BEKLIYOR'`,
+      sid,
+      pid,
+      a.ilk,
+      a.son,
+      gonderim,
+      a.zamanli ? 1 : 0,
+    );
+  }
+  if (urunAraligi.size) sayimDondurmaIste();
+}
+
+/**
+ * Terminalin gönderdiği sayım zamanları sunucu saatiyle: `raf` raf → { start, end } (rafın ilk açıldığı / son okutulduğu an),
+ * `satir` "raf|ürün" → ürünün o rafta son okutulduğu an. Saat farkı ya da zaman bilgisi yoksa null (eski terminal).
+ */
+function sayimZamanlari(p, satirlar, saatFarki) {
+  if (saatFarki === null || saatFarki === undefined || !Array.isArray(p.shelfTimes)) return null;
+  const raf = new Map();
+  for (const t of p.shelfTimes) {
+    const kod = rafKodu(t && t.shelf);
+    const start = terminalAni(t && t.start, saatFarki);
+    if (!kod || start === null) continue;
+    raf.set(kod, { start, end: terminalAni(t.end, saatFarki) ?? start });
+  }
+  const satir = new Map();
+  for (const l of satirlar) {
+    const at = terminalAni(l.at, saatFarki);
+    if (at !== null) satir.set(`${rafKodu(l.shelf)}|${String(l.productId)}`, at);
+  }
+  // Satırı zamanlı olup açılışı gelmeyen raf: açılış en erken okutma; okutma açılıştan önce görünüyorsa açılış ona çekilir.
+  for (const [k, at] of satir) {
+    const r = k.slice(0, k.lastIndexOf('|'));
+    const x = raf.get(r);
+    if (!x) raf.set(r, { start: at, end: at });
+    else if (at < x.start) x.start = at;
+  }
+  return raf.size ? { raf, satir } : null;
+}
+
+/**
+ * Rafta `alt` anından sonra (ve verilirse `ust`e kadar) yapılan net hareket; sayım hareketleri ve bu işlemin kendi hareketi
+ * hariç. Anlar fiili (terminalde yapıldığı) zamandır.
+ */
+function rafNetHareket(depo, raf, pid, alt, ust = null, opId = null) {
+  const r = db.get(
+    `SELECT SUM(delta) AS q FROM movement WHERE depo=? AND shelf=? AND product_id=? AND fiili_ts > ? AND (? IS NULL OR fiili_ts <= ?)
+       AND kind <> 'COUNT' AND (? IS NULL OR op_id IS NULL OR op_id <> ?)`,
+    depo,
+    raf,
+    String(pid),
+    alt,
+    ust,
+    ust,
+    opId,
+    opId,
+  );
+  return yuvarla(r?.q || 0);
 }
 
 /**
@@ -916,7 +1021,7 @@ function rafGonderimi(p) {
  * Rafın içeriğini terminalde okutulan değere çeker (sayım ve raf düzenleme ortak). `kaydet(pid, {counted, system}, once)`
  * her ürün için çağrılır (sayım satır kaydını burada tutar).
  */
-function rafiOkutulanaCek(depo, raf, satirlar, olusturma, hareket, kaydet = null, { okutulmayaniDokunma = false, farkEkle = false } = {}) {
+function rafiOkutulanaCek(depo, raf, satirlar, olusturma, hareket, kaydet = null, { okutulmayaniDokunma = false, farkEkle = false, canli = null } = {}) {
   const sayilan = new Map();
   const rafSatirlari = satirlar.filter((x) => rafKodu(x.shelf) === raf);
   for (const l of rafSatirlari) {
@@ -926,7 +1031,12 @@ function rafiOkutulanaCek(depo, raf, satirlar, olusturma, hareket, kaydet = null
   // Rafta sunucuya göre olup terminalin bilmediği ürün: gönderimden önce yerleştiyse okutulmadı = 0 demektir;
   // sonra yerleştiyse (başka terminal) dokunulmaz. Raf düzenlemenin "okutulmayana dokunma" modunda okutulmayan ürün raftan
   // çıkmaz; yalnız rafı hiç ürün okutmadan "boş" bildirilmişse (satırı yok) bütün içerik çıkar.
-  if (!okutulmayaniDokunma || !rafSatirlari.length) {
+  if (canli) {
+    // Canlı sayım: rafta sunucuya göre olup okutulmayan her ürün 0 sayılmıştır; raf açıldıktan sonra rafa konan kısmı aşağıda geri eklenir.
+    for (const loc of db.all('SELECT product_id FROM location WHERE depo=? AND shelf=?', depo, raf)) {
+      if (!sayilan.has(loc.product_id)) sayilan.set(loc.product_id, { counted: 0, system: 0 });
+    }
+  } else if (!okutulmayaniDokunma || !rafSatirlari.length) {
     for (const loc of db.all('SELECT product_id, qty, updated_at FROM location WHERE depo=? AND shelf=?', depo, raf)) {
       if (!sayilan.has(loc.product_id) && loc.updated_at <= olusturma) sayilan.set(loc.product_id, { counted: 0, system: 0 });
     }
@@ -936,13 +1046,23 @@ function rafiOkutulanaCek(depo, raf, satirlar, olusturma, hareket, kaydet = null
     // `farkEkle` (Raf Düzenle, relative): terminal raftaki miktarı kendi görüntüsüne (`system`) göre yazdı; aynı raf aynı anda başka
     // bir terminalce düzenlenmiş ya da rafa kaldırılmış olabilir. Mutlak yazılırsa o değişiklik ezilir (12'yi gören iki terminal
     // +2 ve +3 eklerse 17 yerine 15 kalırdı): terminalin eklediği fark sunucudaki güncel miktara eklenir. 0 "rafta yok" demektir, mutlak kalır.
-    const hedef = farkEkle && x.counted > EPS ? Math.max(0, once + x.counted - x.system) : x.counted;
+    let hedef = farkEkle && x.counted > EPS ? Math.max(0, once + x.counted - x.system) : x.counted;
+    // Canlı sayım: ürün rafta son okutulduktan (okutulmadıysa raf açıldıktan) sonra rafa konan/alınan mal sayılana eklenir; sayarken
+    // yapılan rafa kaldırma ya da raftan alma sayımca silinmez. Açılışla son okutma arasındaki hareket sayılanın içindedir (bilgi).
+    let k1 = null;
+    if (canli) {
+      const ref = canli.satirAni.get(`${raf}|${pid}`) ?? canli.acilis;
+      const sonra = rafNetHareket(depo, raf, pid, ref, null, canli.opId);
+      const arada = ref > canli.acilis ? rafNetHareket(depo, raf, pid, canli.acilis, ref, canli.opId) : 0;
+      hedef = Math.max(0, x.counted + sonra);
+      k1 = { ref, sonra, arada };
+    }
     miktarAyarla(depo, pid, raf, hedef, hareket);
     // Rafta bulunan ve hiçbir adresi olmayan ürünün adresi o raf olur; rafta olmadığı bildirilen ürünün terminal adresi kalkar.
-    if (x.counted > EPS) {
+    if ((canli ? hedef : x.counted) > EPS) {
       if (!zimmetler(depo, pid).length) terminalZimmet(depo, pid, raf);
     } else terminalZimmetBosalt(depo, pid, raf);
-    if (kaydet) kaydet(pid, x, once);
+    if (kaydet) kaydet(pid, x, once, k1);
   }
 }
 
@@ -971,7 +1091,14 @@ function rafDuzenle(p, h, olusturma, yetkiDenetle) {
 }
 
 /** Terminalden gelen işlemler. Aynı kimlik ikinci kez gelirse yeniden işlenmez (bkz. docs/API.md). */
-function islemler(cihaz, kullanici, ops) {
+/**
+ * Terminalden gelen işlemler. `sentAt`: terminalin gönderdiği andaki saati (2.2.0+); saat farkı buradan bulunur. Ağ gecikmesi
+ * (en çok birkaç saniye) farka girer; çok sapmış değer (saat ayarsız terminal değil, bozuk değer) yok sayılır.
+ */
+function islemler(cihaz, kullanici, ops, { sentAt = null } = {}) {
+  const gonderim = Number(sentAt);
+  const fark = Number.isFinite(gonderim) && gonderim > 0 ? now() - gonderim : null;
+  const saatFarki = fark !== null && Math.abs(fark) < 400 * 86400000 ? fark : null;
   const sonuc = [];
   let degisiklik = false;
   let transferVar = false;
@@ -999,7 +1126,7 @@ function islemler(cihaz, kullanici, ops) {
       );
     try {
       db.tx(() => {
-        islemUygula(op, cihaz, kullanici);
+        islemUygula(op, cihaz, kullanici, { saatFarki });
         kayit(true, null);
       });
       sonuc.push({ id, ok: true });
@@ -1586,6 +1713,186 @@ function urunAdi(id) {
 
 // ---- Sayım -------------------------------------------------------------------------------------
 
+// ---- Canlı sayım: Vega farkının dondurulması ----------------------------------------------------
+// Ortaş sayımı satış durmadan yapıyor. Onay anındaki Vega stoğuyla hesaplanan fark, sayım ile onay arasındaki satışı da
+// içerirdi (satılan 3 adet raf kaydında kalır → +3 sayım giriş fişi). Bu yüzden ürün başına fark sayım gönderildikten sonraki
+// ilk Vega okumasında hesaplanıp saklanır ve onayda o yazılır.
+//
+//   q = raf toplamı + rafa bekleyen − Vega stoku (o okumadaki tutarlı durum)
+// Rafa kaldırma (bekleyen↔raf) ve mal kabul (Vega↔bekleyen) q'yu değiştirmez. Değiştiren: raf kaydına işlemeyen Vega hareketi
+// (raftan alınmadan kesilen satış) ve Vega'ya işlemeyen raf hareketi. Ürünün son sayıldığı andan sonraki bu hareketler q'dan
+// geri alınır (düzeltme): fark = q + (sonraki Vega hareketi − sonraki raf hareketi). Vega'da saat yok; an → envanter IND'i
+// eşlemesi her Vega okumasında kaydedilen filigranla yapılır (vega_filigran).
+// Ürün birden çok rafta farklı saatlerde sayıldıysa arada olan böyle bir hareketin hangi raftan olduğu bilinemez: "belirsiz",
+// yönetici bakar (yeniden saydırır ya da bilerek yazar).
+
+const FILIGRAN_ESKI_MS = 10 * 60 * 1000;
+const NOTR_RAF = new Set(['PUTAWAY', 'PUTAWAY_GERI', 'COUNT']);
+
+function filigranKaydet(g) {
+  if (!g || !Number(g.filigran) || !Number(g.filigranAt)) return;
+  db.run('INSERT OR REPLACE INTO vega_filigran(at, ind) VALUES(?,?)', Number(g.filigranAt), Number(g.filigran));
+  if (Math.random() < 0.01) db.run('DELETE FROM vega_filigran WHERE at < ?', now() - 120 * 86400000);
+}
+
+/** `t` anında Vega envanterinde hangi kayda kadar vardı: o andan önceki son okumanın filigranı (çok eskiyse null). */
+function filigranAni(t) {
+  const r = db.get('SELECT at, ind FROM vega_filigran WHERE at <= ? ORDER BY at DESC LIMIT 1', t);
+  if (!r || t - r.at > FILIGRAN_ESKI_MS) return null;
+  return r;
+}
+
+/** Mal kabul olarak rafa bekleyene giren Vega belge türleri (artı satırları q'yu değiştirmez). */
+function notrVegaTurleri() {
+  const t = new Set();
+  for (const x of config.load().kabul?.izahat || ['20', '26']) {
+    const k = String(x);
+    if (/^\d+$/.test(k)) t.add(Number(k));
+    else if (k === 'D37') t.add(37);
+  }
+  return t;
+}
+
+function rafHareketToplam(depo, pid, alt, ust) {
+  const r = db.get(
+    `SELECT SUM(delta) AS q FROM movement WHERE depo=? AND product_id=? AND fiili_ts > ? AND fiili_ts <= ?
+       AND kind NOT IN (${[...NOTR_RAF].map((k) => `'${k}'`).join(',')})`,
+    depo,
+    String(pid),
+    alt,
+    ust,
+  );
+  return yuvarla(r?.q || 0);
+}
+
+let dondurmaZaman = null;
+/** Sayım gönderildi: Vega kısa süre sonra okunsun, fark dondurulsun (zamanlayıcıyı beklemeden). */
+function sayimDondurmaIste() {
+  if (dondurmaZaman) return;
+  dondurmaZaman = setTimeout(() => {
+    dondurmaZaman = null;
+    vegaYenile('sayım').catch(() => {});
+  }, 1500);
+  dondurmaZaman.unref?.();
+}
+
+let donduruluyor = null;
+/**
+ * Bekleyen (BEKLIYOR) sayım ürünlerinin farkını dondurur. Yalnız gönderimden sonra okunmuş Vega görüntüsüyle çalışır.
+ * Vega hareketleri okunamazsa satırlar beklemede kalır, sonraki okumada yeniden denenir.
+ */
+async function sayimDondur() {
+  if (donduruluyor) return donduruluyor;
+  donduruluyor = sayimDondurAsil().finally(() => {
+    donduruluyor = null;
+  });
+  return donduruluyor;
+}
+
+async function sayimDondurAsil() {
+  if (!goruntu || !Number(goruntu.filigran) || !Number(goruntu.filigranAt)) return 0;
+  const ust = Number(goruntu.filigran);
+  const ustAt = Number(goruntu.filigranAt);
+  const satirlar = db.all("SELECT * FROM count_urun WHERE durum='BEKLIYOR' AND gonderim_at <= ?", ustAt);
+  if (!satirlar.length) {
+    // Okuma gönderimden önce başlamıştı: bir okuma daha.
+    if (db.get("SELECT 1 FROM count_urun WHERE durum='BEKLIYOR' LIMIT 1")) sayimDondurmaIste();
+    return 0;
+  }
+  const oturumlar = new Map();
+  for (const r of satirlar) {
+    if (!oturumlar.has(r.session_id)) oturumlar.set(r.session_id, []);
+    oturumlar.get(r.session_id).push(r);
+  }
+  const notr = notrVegaTurleri();
+  let n = 0;
+  for (const [sid, liste] of oturumlar) {
+    const s = db.get('SELECT * FROM count_session WHERE id=?', sid);
+    if (!s || s.status === 'CANCELLED' || s.status === 'APPROVED') {
+      db.run("UPDATE count_urun SET durum='ATLANDI' WHERE session_id=? AND durum='BEKLIYOR'", sid);
+      continue;
+    }
+    const depo = s.depo;
+    // q, Vega okumasıyla aynı anda (await öncesi) hesaplanır: raf, bekleyen ve Vega aynı durumu göstersin.
+    const qAt = now();
+    const bek = bekleyenKabul(depo);
+    const hesap = [];
+    for (const r of liste) {
+      if (!urun(r.product_id) || !/^\d+$/.test(r.product_id)) {
+        db.run("UPDATE count_urun SET durum='YOK', dondu_at=? WHERE session_id=? AND product_id=?", qAt, sid, r.product_id);
+        continue;
+      }
+      const raf = Number(db.get('SELECT SUM(qty) AS q FROM location WHERE depo=? AND product_id=? AND qty>0', depo, r.product_id)?.q || 0);
+      const vs = vegaStok(r.product_id, depo);
+      const b = bek.get(r.product_id) || 0;
+      const zamanli = Boolean(r.zamanli);
+      const wSon = filigranAni(r.son_ts);
+      const wIlk = zamanli ? filigranAni(r.ilk_ts) : wSon;
+      hesap.push({ r, q: yuvarla(raf + b - vs), raf, vs, b, zamanli, wIlk, wSon, imza: `${r.ilk_ts}|${r.son_ts}|${r.gonderim_at}` });
+    }
+    const altlar = hesap.map((x) => (x.wIlk || x.wSon)?.ind).filter((x) => Number.isFinite(x));
+    let vegaSatir = [];
+    if (altlar.length) {
+      vegaSatir = await vega.sayimHareketleri(config.load(), {
+        depo: bekleme.grupDepolari(depo),
+        stoknolar: [...new Set(hesap.filter((x) => x.wSon).map((x) => x.r.product_id))],
+        altInd: Math.min(...altlar),
+        ustInd: ust,
+      });
+    }
+    const vegaUrun = new Map();
+    for (const v of vegaSatir) {
+      if (!vegaUrun.has(v.stokno)) vegaUrun.set(v.stokno, []);
+      vegaUrun.get(v.stokno).push(v);
+    }
+    db.tx(() => {
+      for (const x of hesap) {
+        // Await sırasında aynı ürün yeniden gönderildiyse bu hesap eskidir; satır beklemede kalır.
+        const guncel = db.get('SELECT ilk_ts, son_ts, gonderim_at, durum FROM count_urun WHERE session_id=? AND product_id=?', sid, x.r.product_id);
+        if (!guncel || guncel.durum !== 'BEKLIYOR' || `${guncel.ilk_ts}|${guncel.son_ts}|${guncel.gonderim_at}` !== x.imza) continue;
+        const pid = x.r.product_id;
+        const tur = { arada: {}, sonra: {} };
+        let vegaArada = 0;
+        let vegaSonra = 0;
+        for (const v of vegaUrun.get(pid) || []) {
+          if (v.miktar > 0 && notr.has(v.tip)) continue;
+          if (x.wSon && v.ind > x.wSon.ind) {
+            vegaSonra += v.miktar;
+            tur.sonra[v.tip] = yuvarla((tur.sonra[v.tip] || 0) + v.miktar);
+          } else if (x.wIlk && x.wSon && v.ind > x.wIlk.ind) {
+            vegaArada += v.miktar;
+            tur.arada[v.tip] = yuvarla((tur.arada[v.tip] || 0) + v.miktar);
+          }
+        }
+        const rafSonra = rafHareketToplam(depo, pid, x.r.son_ts, qAt);
+        const rafArada = x.zamanli && x.r.ilk_ts < x.r.son_ts ? rafHareketToplam(depo, pid, x.r.ilk_ts, x.r.son_ts) : 0;
+        // Sayım anına ait Vega kaydı yoksa (o saatte Vega okunamıyordu) düzeltme yapılamaz; yönetici bakar.
+        const duzeltme = x.wSon ? yuvarla(vegaSonra - rafSonra) : 0;
+        const belirsiz = !x.zamanli ? 0 : x.wIlk && x.wSon ? yuvarla(vegaArada - rafArada) : null;
+        const detay = {
+          raf: yuvarla(x.raf), bekleyen: yuvarla(x.b), vega: yuvarla(x.vs), qAt, filigran: ust,
+          vegaSonra: yuvarla(vegaSonra), rafSonra, vegaArada: yuvarla(vegaArada), rafArada, tur,
+          ...(x.wSon ? {} : { neden: 'Sayım saatine ait Vega okuması yok (Vega o sırada okunamıyordu)' }),
+        };
+        db.run(
+          "UPDATE count_urun SET durum='TAMAM', q=?, duzeltme=?, belirsiz=?, fark=?, detay=?, dondu_at=? WHERE session_id=? AND product_id=?",
+          x.q,
+          duzeltme,
+          belirsiz,
+          yuvarla(x.q + duzeltme),
+          JSON.stringify(detay),
+          now(),
+          sid,
+          pid,
+        );
+        n++;
+      }
+    });
+  }
+  if (n) degisti();
+  return n;
+}
+
 function sayimNo() {
   const son = Number(db.meta('sayimNo', 0)) + 1;
   db.set('sayimNo', son);
@@ -1603,12 +1910,16 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
   const satirlar = db.all('SELECT * FROM count_line WHERE session_id=? ORDER BY shelf, product_id', id);
   const raf = rafToplamlari(depo);
   const bek = bekleyenKabul(depo);
+  const donuk = new Map(db.all('SELECT * FROM count_urun WHERE session_id=?', id).map((r) => [r.product_id, r]));
   const urunler = new Map();
   for (const l of satirlar) {
-    if (!urunler.has(l.product_id)) urunler.set(l.product_id, { productId: l.product_id, sayilan: 0, onceki: 0, raflar: [] });
+    if (!urunler.has(l.product_id)) urunler.set(l.product_id, { productId: l.product_id, sayilan: 0, onceki: 0, raflar: [], hareketSonra: 0, hareketArada: 0 });
     const u = urunler.get(l.product_id);
     u.sayilan += l.counted;
-    u.onceki += l.server_before;
+    // Canlı sayımda "önceki" sayıldığı andaki raf kaydıdır (sonradan rafa konan/alınan, sayılana eklendi; bkz. rafiOkutulanaCek).
+    u.onceki += l.server_before - (l.hareket_sonra || 0);
+    u.hareketSonra += l.hareket_sonra || 0;
+    u.hareketArada += l.hareket_arada || 0;
     u.raflar.push(l.shelf);
   }
   if (dahilSayilmayan && goruntu) {
@@ -1623,10 +1934,31 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
     const b = bek.get(u.productId) || 0;
     const vs = vegaStok(u.productId, depo);
     const hedef = yuvarla(rafToplam + b);
+    const farkSimdi = yuvarla(hedef - vs);
+    // Dondurulmuş fark (canlı sayım): sayım anındaki Vega farkı. Yoksa (Vega henüz okunmadı, eski sayım) onay anındaki fark.
+    const d = donuk.get(u.productId);
+    const donmus = Boolean(d && d.durum === 'TAMAM' && d.fark !== null);
+    let detay = null;
+    try {
+      detay = d && d.detay ? JSON.parse(d.detay) : null;
+    } catch {}
+    const belirsiz = donmus ? (d.belirsiz === null ? null : yuvarla(d.belirsiz)) : null;
     return {
       ...u,
       sayilan: yuvarla(u.sayilan),
       onceki: yuvarla(u.onceki),
+      hareketSonra: yuvarla(u.hareketSonra),
+      hareketArada: yuvarla(u.hareketArada),
+      donmus,
+      dondurma: d ? d.durum : null,
+      farkSimdi,
+      duzeltme: donmus ? yuvarla(d.duzeltme || 0) : null,
+      belirsiz,
+      zamansiz: Boolean(d && !d.zamanli),
+      // Elle bakılmalı: farklı saatlerde sayılan raflar arasında raf kaydına işlemeyen Vega hareketi var (hangi raftan bilinmiyor)
+      // ya da sayım anına ait Vega kaydı yok.
+      kontrol: donmus && (belirsiz === null || Math.abs(belirsiz) > EPS),
+      donmaDetay: detay,
       code: p ? p.code : '?',
       name: p ? p.name : "Vega'da bulunamayan kart",
       unit: p ? p.unit : '',
@@ -1635,13 +1967,25 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
       bekleyen: yuvarla(b),
       hedef,
       vegaStock: vs,
-      fark: yuvarla(hedef - vs),
+      fark: donmus ? yuvarla(d.fark) : farkSimdi,
     };
   });
   liste.sort((a, b) => Math.abs(b.fark) - Math.abs(a.fark) || a.name.localeCompare(b.name, 'tr'));
   // `catisma`: sayım gönderilirken sunucudaki raf miktarı terminalin gördüğünden farklıydı (terminal henüz eşitlenmemişken başka bir
   // terminal rafa kaldırdı/aldı/düzenledi). Sayım mutlak yazar; o hareket ezilmiş olabilir, yönetici bakıp onaylasın.
-  const satirDetay = satirlar.map((l) => ({ ...l, ...urunAdi(l.product_id), fark: yuvarla(l.counted - l.server_before), catisma: yuvarla(l.server_before - l.terminal_system) }));
+  // Canlı sayımda (ref_ts dolu) sayarken rafa yapılan hareket sayılana eklendi: fark sayıldığı andaki raf kaydına göredir, çatışma yoktur.
+  const satirDetay = satirlar.map((l) => {
+    const canli = l.ref_ts !== null && l.ref_ts !== undefined;
+    const sistem = yuvarla(l.server_before - (l.hareket_sonra || 0));
+    return {
+      ...l,
+      ...urunAdi(l.product_id),
+      canli,
+      sistemAnda: sistem,
+      fark: yuvarla(l.counted - sistem),
+      catisma: canli ? 0 : yuvarla(l.server_before - l.terminal_system),
+    };
+  });
   const onekler = s.scope ? s.scope.split(',') : [];
   let kapsamOzet = null;
   if (onekler.length) {
@@ -1667,6 +2011,9 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
       rafFarkli: satirDetay.filter((l) => Math.abs(l.fark) > EPS).length,
       urun: liste.length,
       vegaFarkli: liste.filter((u) => Math.abs(u.fark) > EPS && u.vegadaVar).length,
+      kontrol: liste.filter((u) => u.kontrol).length,
+      donmayi: liste.filter((u) => u.dondurma === 'BEKLIYOR').length,
+      canli: satirlar.some((l) => l.ref_ts !== null && l.ref_ts !== undefined),
     },
   };
 }
@@ -1753,6 +2100,8 @@ async function sayimOnayla(id, secenekler = {}) {
 }
 
 async function sayimOnaylaAsil(id, { vegaYaz = false, stoknolar = null, dahilSayilmayan = false, kullanici = 'yönetici' } = {}) {
+  // Vega'ya yazmadan önce bekleyen dondurma varsa (son okuma gönderimden sonra) tamamlansın; olmazsa onay anındaki farkla yazılır.
+  if (vegaYaz) await sayimDondur().catch((e) => log.uyari(`Sayım farkı dondurulamadı: ${e.message}`));
   const ozet = sayimOzet(id, { dahilSayilmayan });
   if (!ozet) throw new Error('Sayım bulunamadı');
   const s = ozet.oturum;
@@ -1763,7 +2112,8 @@ async function sayimOnaylaAsil(id, { vegaYaz = false, stoknolar = null, dahilSay
     const secili = stoknolar ? new Set(stoknolar.map(String)) : null;
     const kalemler = ozet.urunler
       .filter((u) => u.vegadaVar && /^\d+$/.test(u.productId) && (!secili || secili.has(u.productId)))
-      .map((u) => ({ stokno: Number(u.productId), hedef: u.hedef }));
+      // Dondurulmuş fark doğrudan yazılır (sayımdan sonraki satış fişe karışmaz); dondurulmamışsa olması gereken stok (hedef).
+      .map((u) => (u.donmus ? { stokno: Number(u.productId), fark: u.fark } : { stokno: Number(u.productId), hedef: u.hedef }));
     if (kalemler.length) {
       // Sanal bekleme deposu varsa hedef grup toplamıyla karşılaştırılır (raftaki mal 109'da da olabilir); fiş yine sayımın deposuna.
       sonuc = await vega.sayimYaz(config.load(), kalemler, { aciklama: `Sayım ${s.no}`, depo: s.depo, stokDepolari: bekleme.grupDepolari(s.depo) });
@@ -1858,6 +2208,7 @@ module.exports = {
   urunRaflari,
   rafGruplari,
   sayimOzet,
+  sayimDondur,
   sayimOnayla,
   sayimGeriAl,
   rafaKaldirmaGeriAl,

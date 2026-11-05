@@ -379,7 +379,7 @@ test('eski tek depolu veritabanı göçü: raflar ve stok varsayılan depoya ba�
   db.open(f, { varsayilanDepo: 7 });
   assert.strictEqual(db.get("SELECT depo FROM shelf WHERE code='X-1'").depo, 7);
   assert.strictEqual(db.get("SELECT depo, qty FROM location WHERE product_id='9'").depo, 7);
-  assert.strictEqual(db.meta('surum'), '14');
+  assert.strictEqual(db.meta('surum'), '15');
   // Yetki göçü: eski kullanıcı tam yetkili ve her depoda, her rafta çalışabilir kalır.
   const u = db.get("SELECT role, perms, depots, shelves FROM app_user WHERE username='ismail'");
   assert.deepStrictEqual({ ...u }, { role: 'tam', perms: '*', depots: '*', shelves: '*' });

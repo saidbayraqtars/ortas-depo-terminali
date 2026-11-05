@@ -328,7 +328,7 @@ function terminalApi() {
     sar((req) => {
       const b = req.body || {};
       if (b.user) db.run('UPDATE device SET last_user=? WHERE id=?', String(b.user), req.cihaz.id);
-      return { results: depo.islemler(String(b.device || req.cihaz.name), String(b.user || ''), b.ops) };
+      return { results: depo.islemler(String(b.device || req.cihaz.name), String(b.user || ''), b.ops, { sentAt: b.sentAt }) };
     }),
   );
   // Terminalden etiket: { type: "PRODUCT"|"SHELF", productId | shelf, copies } → sunucu bilgisayarındaki etiket yazıcısı.

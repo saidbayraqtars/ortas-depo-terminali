@@ -23,6 +23,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import tr.arcteknik.depo.App
 import tr.arcteknik.depo.data.OpStatus
+import tr.arcteknik.depo.data.OpType
 import tr.arcteknik.depo.data.Repo
 import tr.arcteknik.depo.diag.Diag
 import java.io.IOException
@@ -203,6 +204,8 @@ class Sync(private val context: Context, private val repo: Repo) {
                         for (op in chunk) {
                             val r = results[op.id] ?: continue
                             if (r.ok) {
+                                // Sayım / Raf Düzenle: sunucunun sonucu cihazın yazdığından farklı olabilir (bkz. refreshPartsFor).
+                                if (op.type == OpType.COUNT_SUBMIT || op.type == OpType.SHELF_ARRANGE) db.refreshPartsFor(op)
                                 db.deleteOp(op.id)
                             } else if (r.code == "YETKI") {
                                 // Yetkisiz işlem (yönetici izni değiştirdi ya da cihazın yetki bilgisi eskiydi). Cihazdaki etkisi

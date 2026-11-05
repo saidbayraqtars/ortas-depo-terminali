@@ -19,7 +19,7 @@ import java.io.Reader
  * Çok depo: raf, raf stoku, Vega stoku ve asıl raf depoya bağlıdır. [depot] terminalin çalıştığı depodur
  * (transfer, sayım, sorgu); mal kabul belgesi kendi deposunu taşır ve rafa kaldırma orada olur.
  */
-class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 10) {
+class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
 
     init {
         // Eşitleme ana veriyi yazarken ekranlar (ana iş parçacığı) beklemeden son kaydedilmiş hali okusun.
@@ -33,8 +33,9 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 10) {
     override fun onCreate(db: SQLiteDatabase) {
         createMaster(db)
         db.execSQL("CREATE TABLE count_session(id TEXT PRIMARY KEY, no TEXT NOT NULL, title TEXT NOT NULL, blind INTEGER NOT NULL, status TEXT NOT NULL, depot INTEGER NOT NULL DEFAULT 0, scope TEXT NOT NULL DEFAULT '')")
-        db.execSQL("CREATE TABLE count_line(session_id TEXT NOT NULL, shelf TEXT NOT NULL, product_id TEXT NOT NULL, qty REAL NOT NULL, PRIMARY KEY(session_id, shelf, product_id))")
+        db.execSQL("CREATE TABLE count_line(session_id TEXT NOT NULL, shelf TEXT NOT NULL, product_id TEXT NOT NULL, qty REAL NOT NULL, first_at INTEGER, last_at INTEGER, PRIMARY KEY(session_id, shelf, product_id))")
         createCountShelf(db)
+        createShelfOpen(db)
         db.execSQL("CREATE TABLE op(id TEXT PRIMARY KEY, type TEXT NOT NULL, payload TEXT NOT NULL, summary TEXT NOT NULL, created_at INTEGER NOT NULL, status TEXT NOT NULL, error TEXT)")
         db.execSQL("CREATE TABLE movement(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, product_id TEXT NOT NULL, text TEXT NOT NULL, qty REAL NOT NULL)")
         db.execSQL("CREATE INDEX ix_movement_product ON movement(product_id, ts)")
@@ -52,6 +53,22 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 10) {
     /** Boş olarak sayılan raflar: count_line'da satırları yoktur ama sayılmıştır. */
     private fun createCountShelf(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE IF NOT EXISTS count_shelf(session_id TEXT NOT NULL, shelf TEXT NOT NULL, PRIMARY KEY(session_id, shelf))")
+    }
+
+    /**
+     * Canlı sayım (2.2.0): rafın bu sayımda ilk açıldığı an. Sunucu o andan sonra rafa yapılan hareketi (başka terminalin rafa
+     * kaldırması, raftan alması) sayılana ekler; sayarken yapılan iş sayımca silinmez.
+     */
+    private fun createShelfOpen(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS count_shelf_open(session_id TEXT NOT NULL, shelf TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(session_id, shelf))")
+        // Rafın açıldığı andaki içeriği: sonuç ekranı farkı buna göre gösterir; sonradan başka terminalin koyduğu/aldığı fark sayılmaz.
+        db.execSQL("CREATE TABLE IF NOT EXISTS count_shelf_snap(session_id TEXT NOT NULL, shelf TEXT NOT NULL, product_id TEXT NOT NULL, qty REAL NOT NULL, PRIMARY KEY(session_id, shelf, product_id))")
+    }
+
+    /** Rafın bu sayımda açıldığı andaki içeriği (ürün → miktar); raf açılış kaydı yoksa (yükseltmeden önce sayılmış) null. */
+    fun shelfSnapshot(sessionId: String, shelf: String): Map<String, Double>? {
+        if (scalar("SELECT 1 FROM count_shelf_open WHERE session_id=? AND shelf=?", sessionId, shelf) == null) return null
+        return query("SELECT product_id, qty FROM count_shelf_snap WHERE session_id=? AND shelf=?", sessionId, shelf) { it.getString(0) to it.getDouble(1) }.toMap()
     }
 
     /** Sunucudan alınmış ana veri parçalarının özeti (bkz. [applyParts]). */
@@ -142,6 +159,13 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 10) {
         }
         // 10: yarım bırakılan belgelerin taslağı (okutulanlar uygulama kapansa da kaybolmaz).
         if (oldVersion < 10) createDraft(db)
+        // 11: canlı sayım: satırın ilk/son okutulduğu an ve rafın açıldığı an. Yükseltmeden önce okutulmuş satırın anı yoktur
+        // (sunucu o rafı eskisi gibi okutulana eşitler).
+        if (oldVersion < 11) {
+            addColumn(db, "count_line", "first_at", "INTEGER")
+            addColumn(db, "count_line", "last_at", "INTEGER")
+            createShelfOpen(db)
+        }
     }
 
     // ---- Ana veri ------------------------------------------------------------------------
@@ -244,6 +268,23 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 10) {
         if (op.type == OpType.COUNT_SUBMIT || op.type == OpType.SHELF_ARRANGE || (ids.isEmpty() && op.type != OpType.SHELF_ADD)) return clearMasterParts()
         val w = writableDatabase
         w.delete("master_part", "key IN ('head', 'shelves')", null)
+        for (b in ids.map { Buckets.of(it) }.toSet()) w.delete("master_part", "key=? OR key=?", arrayOf("b$b", "q$b"))
+    }
+
+    /**
+     * Sunucu işlemi kabul etti ama sonucu cihazın kendi yazdığından farklı olabilir: canlı sayım (2.2.0+ yönetici) sayıldıktan
+     * sonra rafa konanı/alınanı sayılana ekler, Raf Düzenle (relative) farkı sunucudaki güncel miktara ekler. Sunucudaki raf
+     * işlemden önceki haline dönmüşse o kovanın özeti değişmez ve cihaz kendi yazdığı yanlış miktarda kalırdı. İşlemdeki ürünlerin
+     * kovaları (ve raflar) sonraki eşitlemede yeniden istenir; bütün ana veri inmez.
+     */
+    fun refreshPartsFor(op: Op) {
+        val ids = mutableSetOf<String>()
+        runCatching {
+            val lines = JSONObject(op.payload).optJSONArray("lines")
+            for (i in 0 until (lines?.length() ?: 0)) lines!!.getJSONObject(i).optString("productId").takeIf { it.isNotBlank() }?.let { ids += it }
+        }
+        val w = writableDatabase
+        w.delete("master_part", "key='shelves'", null)
         for (b in ids.map { Buckets.of(it) }.toSet()) w.delete("master_part", "key=? OR key=?", arrayOf("b$b", "q$b"))
     }
 
@@ -440,7 +481,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 10) {
         query("SELECT id, status FROM count_session") { it.getString(0) to it.getString(1) }
             .filter { (id, status) -> id !in serverIds && (!id.startsWith("LOCAL-") || status == "SUBMITTED") }
             .forEach { (id, _) ->
-                for (t in listOf("count_line", "count_shelf")) db.delete(t, "session_id=?", arrayOf(id))
+                for (t in listOf("count_line", "count_shelf", "count_shelf_open", "count_shelf_snap")) db.delete(t, "session_id=?", arrayOf(id))
                 db.delete("count_session", "id=?", arrayOf(id))
             }
         val users = head.optJSONArray("users")
@@ -745,6 +786,33 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 10) {
         }
     }
 
+    /** Satırın ("raf|ürün") son okutulduğu an; anı olmayan (yükseltmeden önce okutulmuş) satır yoktur. */
+    fun countLineTimes(sessionId: String): Map<String, Long> =
+        query("SELECT shelf, product_id, last_at FROM count_line WHERE session_id=? AND last_at IS NOT NULL", sessionId) {
+            (it.getString(0) + "|" + it.getString(1)) to it.getLong(2)
+        }.toMap()
+
+    /**
+     * Rafların sayım zamanı: başlangıç = raf açılışı (yoksa en erken okutma), bitiş = en geç okutma. Anı hiç olmayan raf listede
+     * yoktur (sunucu o rafı eskisi gibi okutulana eşitler).
+     */
+    fun countShelfTimes(sessionId: String): List<Triple<String, Long, Long>> {
+        val opened = query("SELECT shelf, at FROM count_shelf_open WHERE session_id=?", sessionId) { it.getString(0) to it.getLong(1) }.toMap()
+        val lines = query("SELECT shelf, MIN(first_at), MAX(last_at) FROM count_line WHERE session_id=? AND last_at IS NOT NULL GROUP BY shelf", sessionId) {
+            Triple(it.getString(0), it.getLong(1), it.getLong(2))
+        }.associateBy { it.first }
+        return countedShelves(sessionId).mapNotNull { s ->
+            val o = opened[s]
+            val l = lines[s]
+            when {
+                o != null && l != null -> Triple(s, minOf(o, l.second), maxOf(o, l.third))
+                o != null -> Triple(s, o, o)
+                l != null -> l
+                else -> null
+            }
+        }
+    }
+
     fun countedShelves(sessionId: String): List<String> =
         query("SELECT shelf FROM count_line WHERE session_id=? UNION SELECT shelf FROM count_shelf WHERE session_id=? ORDER BY 1", sessionId, sessionId) { it.getString(0) }
 
@@ -827,7 +895,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 10) {
 
     fun clearAll() {
         val db = writableDatabase
-        for (t in listOf("product", "product_stock", "barcode", "depot", "shelf", "location", "home", "receipt", "receipt_line", "count_session", "count_line", "count_shelf", "op", "movement", "app_user", "master_part", "doc_draft")) {
+        for (t in listOf("product", "product_stock", "barcode", "depot", "shelf", "location", "home", "receipt", "receipt_line", "count_session", "count_line", "count_shelf", "count_shelf_open", "count_shelf_snap", "op", "movement", "app_user", "master_part", "doc_draft")) {
             db.delete(t, null, null)
         }
     }

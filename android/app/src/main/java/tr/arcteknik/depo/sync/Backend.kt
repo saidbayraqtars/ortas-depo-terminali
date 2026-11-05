@@ -170,7 +170,8 @@ class HttpBackend(private val baseUrl: String, private val deviceKey: String, pr
         ops.forEach {
             arr.put(JSONObject().put("id", it.id).put("type", it.type).put("createdAt", it.createdAt).put("payload", JSONObject(it.payload)))
         }
-        val body = JSONObject().put("device", deviceName).put("user", user).put("ops", arr).toString()
+        // sentAt: terminalin şu anki saati; sunucu saat farkını buradan bulur, işlerin terminalde yapıldığı anı kendi saatine çevirir (canlı sayım).
+        val body = JSONObject().put("device", deviceName).put("user", user).put("sentAt", System.currentTimeMillis()).put("ops", arr).toString()
             .toRequestBody("application/json; charset=utf-8".toMediaType())
         client.newCall(request("/api/ops").post(body).build()).execute().use { r ->
             if (!r.isSuccessful) throw IOException(errorText(r.code, r.body?.string()))

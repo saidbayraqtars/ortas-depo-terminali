@@ -405,6 +405,53 @@ function migrate() {
     `);
     set('surum', '14');
   }
+  if (Number(get("SELECT value FROM meta WHERE key='surum'")?.value) < 15) {
+    // 15: canlı sayım (satış ve rafa kaldırma sürerken sayım).
+    // movement.fiili_ts: hareketin terminalde yapıldığı an, sunucu saatiyle (terminal saat farkı düzeltilmiş). ts sunucuya
+    //   işlendiği an; çevrimdışı kalan terminalin işi geç gelir. Sayım "sayıldıktan sonra rafa ne oldu" sorusunu buna göre sorar.
+    // count_line.ref_ts: ürünün o rafta son okutulduğu an (okutulmayan ürün için rafın açıldığı an); hareket_sonra o andan
+    //   sonra rafa yapılan net hareket (sayılana eklendi), hareket_arada raf açılışı ile o an arasındaki (bilgi).
+    // count_urun: ürün başına sayım sırasındaki Vega farkının dondurulmuş hali (onayda bu yazılır; onay anındaki Vega'ya bakılmaz).
+    // vega_filigran: her Vega okumasında depo envanterinin en büyük IND'i; "şu saatte Vega'da şu kayda kadar vardı".
+    const tabloVar = (t) => Boolean(get("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", t));
+    if (tabloVar('movement')) {
+      db.exec(`
+        ALTER TABLE movement ADD COLUMN fiili_ts INTEGER;
+        UPDATE movement SET fiili_ts = ts;
+        CREATE INDEX ix_movement_fiili ON movement(depo, product_id, fiili_ts);
+      `);
+    }
+    if (tabloVar('count_line')) {
+      db.exec(`
+        ALTER TABLE count_line ADD COLUMN ref_ts INTEGER;
+        ALTER TABLE count_line ADD COLUMN hareket_sonra REAL NOT NULL DEFAULT 0;
+        ALTER TABLE count_line ADD COLUMN hareket_arada REAL NOT NULL DEFAULT 0;
+      `);
+    }
+    db.exec(`
+      CREATE TABLE count_urun(
+        session_id TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        ilk_ts INTEGER NOT NULL,
+        son_ts INTEGER NOT NULL,
+        gonderim_at INTEGER NOT NULL,
+        zamanli INTEGER NOT NULL DEFAULT 1,
+        durum TEXT NOT NULL DEFAULT 'BEKLIYOR',
+        fark REAL,
+        q REAL,
+        duzeltme REAL,
+        belirsiz REAL,
+        detay TEXT,
+        dondu_at INTEGER,
+        PRIMARY KEY(session_id, product_id)
+      );
+      CREATE TABLE vega_filigran(
+        at INTEGER PRIMARY KEY,
+        ind INTEGER NOT NULL
+      );
+    `);
+    set('surum', '15');
+  }
 }
 
 function get(sql, ...args) {

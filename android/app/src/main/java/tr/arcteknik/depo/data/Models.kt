@@ -68,8 +68,11 @@ data class CountLine(val shelf: String, val product: Product, val qty: Double)
 data class CountDiff(
     val shelf: String,
     val product: Product,
+    /** Sistemdeki miktar: canlı sayımda rafın açıldığı andaki, değilse şu anki. */
     val system: Double,
     val counted: Double,
+    /** Canlı sayım: raf açıldıktan sonra rafa konan (+) / alınan (−); sunucu sayılana ekler, fark sayılmaz. */
+    val after: Double = 0.0,
 ) {
     val diff: Double get() = counted - system
 }

@@ -408,14 +408,41 @@ class Repo(val db: Db, val prefs: Prefs) {
         val st = db.scalar("SELECT status FROM count_session WHERE id=?", sessionId)
         if (n == 0 && st == "OPEN") {
             w.execSQL("DELETE FROM count_session WHERE id=?", arrayOf<Any>(sessionId))
+            w.execSQL("DELETE FROM count_shelf_open WHERE session_id=?", arrayOf<Any>(sessionId))
+            w.execSQL("DELETE FROM count_shelf_snap WHERE session_id=?", arrayOf<Any>(sessionId))
             changed()
         }
     }
 
     /** Rafta hiçbir şey yok: raf sayılmış olur, sistemde rafta görünen ürünler gönderilince 0'a çekilir. */
     fun markShelfEmpty(sessionId: String, shelf: String) {
+        openShelf(sessionId, shelf)
         db.writableDatabase.execSQL("INSERT OR IGNORE INTO count_shelf(session_id, shelf) VALUES(?,?)", arrayOf<Any>(sessionId, shelf.uppercase()))
         changed()
+    }
+
+    /**
+     * Canlı sayım: rafın bu sayımda ilk açıldığı an (raf okutulunca). Rafa sonradan dönülürse ilk an kalır. Ekran yenilenmez
+     * (yalnız gönderimde kullanılır).
+     */
+    fun openShelf(sessionId: String, shelf: String) {
+        val s = shelf.uppercase()
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            if (db.scalar("SELECT 1 FROM count_shelf_open WHERE session_id=? AND shelf=?", sessionId, s) == null) {
+                w.execSQL("INSERT INTO count_shelf_open(session_id, shelf, at) VALUES(?,?,?)", arrayOf<Any>(sessionId, s, System.currentTimeMillis()))
+                // O anda rafta görünenler: sonuç ekranında fark buna göre, sonradan konan/alınan ayrı gösterilir.
+                val d = db.countSession(sessionId)?.depot ?: db.depot
+                w.execSQL(
+                    "INSERT OR REPLACE INTO count_shelf_snap(session_id, shelf, product_id, qty) SELECT ?, shelf, product_id, qty FROM location WHERE depot=? AND shelf=? AND qty>0",
+                    arrayOf<Any>(sessionId, d, s),
+                )
+            }
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
     }
 
     /**
@@ -443,10 +470,12 @@ class Repo(val db: Db, val prefs: Prefs) {
 
     private fun putCount(sessionId: String, shelf: String, product: Product, qty: Double, exists: Boolean) {
         val w = db.writableDatabase
+        // Canlı sayım: ürünün rafta son okutulduğu (ya da miktarının yazıldığı) an. Sunucu bu andan sonra rafa yapılan hareketi sayılana ekler.
+        val t = System.currentTimeMillis()
         if (exists) {
-            w.execSQL("UPDATE count_line SET qty=? WHERE session_id=? AND shelf=? AND product_id=?", arrayOf<Any>(qty, sessionId, shelf, product.id))
+            w.execSQL("UPDATE count_line SET qty=?, last_at=?, first_at=COALESCE(first_at, ?) WHERE session_id=? AND shelf=? AND product_id=?", arrayOf<Any>(qty, t, t, sessionId, shelf, product.id))
         } else {
-            w.execSQL("INSERT INTO count_line(session_id, shelf, product_id, qty) VALUES(?,?,?,?)", arrayOf<Any>(sessionId, shelf, product.id, qty))
+            w.execSQL("INSERT INTO count_line(session_id, shelf, product_id, qty, first_at, last_at) VALUES(?,?,?,?,?,?)", arrayOf<Any>(sessionId, shelf, product.id, qty, t, t))
         }
         changed()
     }
@@ -465,6 +494,17 @@ class Repo(val db: Db, val prefs: Prefs) {
             val counted = db.countLines(sessionId, shelf).associateBy { it.product.id }
             // Zimmetli ama rafta hiç olmayan (0) ve okutulmayan ürün fark değildir; listeye girmez.
             val system = db.shelfContents(shelf, dep).filter { it.qty > 0 }.associateBy { it.product.id }
+            // Canlı sayım: fark rafın açıldığı andaki içeriğe göre; sonra başka terminalin koyduğu/aldığı ayrı (after) gösterilir,
+            // sunucu da onu sayılana ekler (2.2.0+ yönetici).
+            val snap = if (session?.arrange == true) null else db.shelfSnapshot(sessionId, shelf)
+            if (snap != null) {
+                for (pid in counted.keys + snap.keys + system.keys) {
+                    val product = counted[pid]?.product ?: system[pid]?.product ?: db.productById(pid, dep) ?: continue
+                    val start = snap[pid] ?: 0.0
+                    out += CountDiff(shelf, product, start, counted[pid]?.qty ?: 0.0, (system[pid]?.qty ?: 0.0) - start)
+                }
+                continue
+            }
             for (pid in if (keepOthers && counted.isNotEmpty()) counted.keys else counted.keys + system.keys) {
                 val product = counted[pid]?.product ?: system[pid]!!.product
                 out += CountDiff(shelf, product, system[pid]?.qty ?: 0.0, counted[pid]?.qty ?: 0.0)
@@ -481,21 +521,30 @@ class Repo(val db: Db, val prefs: Prefs) {
     fun submitCount(session: CountSession, user: String) {
         val arrange = session.arrange
         val diffs = countDiffs(session.id)
+        // Canlı sayım (2.2.0+ yönetici): satırın son okutulduğu an ve rafların açılış/bitiş anı. Sunucu sayarken rafa yapılan
+        // hareketi sayılana ekler ve Vega farkını sayım anına göre sabitler. Eski yönetici alanları yok sayar.
+        val times = if (arrange) emptyMap() else db.countLineTimes(session.id)
         val lines = JSONArray()
         diffs.forEach {
-            lines.put(JSONObject().put("shelf", it.shelf).put("productId", it.product.id).put("system", it.system).put("counted", it.counted))
+            val o = JSONObject().put("shelf", it.shelf).put("productId", it.product.id).put("system", it.system).put("counted", it.counted)
+            times[it.shelf + "|" + it.product.id]?.let { at -> o.put("at", at) }
+            lines.put(o)
         }
+        val shelfTimes = JSONArray()
+        if (!arrange) db.countShelfTimes(session.id).forEach { (s, start, end) -> shelfTimes.put(JSONObject().put("shelf", s).put("start", start).put("end", end)) }
         val w = db.writableDatabase
         w.beginTransaction()
         try {
             diffs.forEach { d ->
-                db.setQty(w, session.depot, d.product.id, d.shelf, d.counted)
+                // Sunucu sonradan konanı/alınanı sayılana ekler; cihaz da aynısını yazar (eşitleme kesin hali getirir).
+                db.setQty(w, session.depot, d.product.id, d.shelf, (d.counted + d.after).coerceAtLeast(0.0))
                 if (d.diff != 0.0) db.addMovement(w, d.product.id, (if (arrange) "Raf düzenleme" else "Sayım farkı") + " ${d.shelf} (${session.no})", d.diff)
             }
             w.execSQL("UPDATE count_session SET status='SUBMITTED' WHERE id=?", arrayOf<Any>(session.id))
             val changedCount = diffs.count { it.diff != 0.0 }
             val payload = JSONObject().put("sessionId", session.id).put("no", session.no).put("title", session.title).put("depot", session.depot)
                 .put("shelves", JSONArray(db.countedShelves(session.id))).put("lines", lines).put("user", user)
+            if (shelfTimes.length() > 0) payload.put("shelfTimes", shelfTimes)
             // 1.12.0+ yönetici: okutulmayan ürüne dokunulmaz. Eski yönetici alanı yok sayar ve rafı okutulana eşitler.
             if (arrange && prefs.arrangeKeepOthers) payload.put("keepOthers", true)
             // 2.1.3+ yönetici: satırdaki "system" terminalin gördüğü miktardır; aynı raf aynı anda başkasınca değiştiyse fark eklenir
