@@ -479,7 +479,10 @@ fun ProductPutAwayScreen(vm: AppVm, online: Boolean, version: Int, productId: St
     var shelf by remember { mutableStateOf<String?>(null) }
     var conflict by remember { mutableStateOf<Pair<String, String>?>(null) }
     var typed by remember { mutableStateOf("") }
-    val suggested = remember(version) { suggestedShelf(vm, productId, d) }
+    // Bu ekranda adresi silinen raflar bir daha önerilmez: sildikten hemen sonra başka raf okutulunca silinen raf yine "önerilen"
+    // çıkıyordu (rafta stok kaldıysa, adres silme stoğa dokunmaz; ya da eşitleme eski adresi bir an geri getirdiyse).
+    var removed by remember { mutableStateOf(setOf<String>()) }
+    val suggested = remember(version, removed) { suggestedShelf(vm, productId, d, removed) }
 
     fun onShelf(code: String) {
         val s = code.uppercase()
@@ -559,9 +562,9 @@ fun ProductPutAwayScreen(vm: AppVm, online: Boolean, version: Int, productId: St
         } else {
             QtyDoneRow(qty, product.unit) { qtyDone = false; shelf = null }
             if (shelf == null) {
-                ScanField("Raf okutun", (suggested?.let { "Önerilen raf: $it" } ?: "Ürün henüz hiçbir rafta yok") + " · ürünü tekrar okutunca +1", true, vm.repo.prefs.cameraButton, ::onShelf, onTextChange = { typed = it })
+                ScanField("Raf okutun", (suggested?.let { "Önerilen raf: $it" } ?: if (removed.isEmpty()) "Ürün henüz hiçbir rafta yok" else "Raf adresi silindi, öneri yok") + " · ürünü tekrar okutunca +1", true, vm.repo.prefs.cameraButton, { onShelf(it) }, onTextChange = { typed = it })
                 MessageBar(vm.message?.first, vm.message?.second == true)
-                ShelfChoices(vm, productId, d, typed, ::onShelf)
+                ShelfChoices(vm, productId, d, typed, { onShelf(it) }) { removed = removed + it }
             } else {
                 ChosenShelf(shelf!!, shelf == suggested, db.qtyAt(productId, shelf!!, d) > 0) { shelf = null }
             }
@@ -578,7 +581,7 @@ fun ProductPutAwayScreen(vm: AppVm, online: Boolean, version: Int, productId: St
  * yazıldıysa o metne uyan raflar. Dokunuş, rafı okutmakla aynı kontrollerden geçer.
  */
 @Composable
-private fun ShelfChoices(vm: AppVm, productId: String, d: Int, typed: String, onPick: (String) -> Unit) {
+private fun ShelfChoices(vm: AppVm, productId: String, d: Int, typed: String, onPick: (String) -> Unit, onRemoved: (String) -> Unit) {
     val db = vm.repo.db
     var refresh by remember { mutableStateOf(0) }
     var removing by remember { mutableStateOf<String?>(null) }
@@ -615,6 +618,7 @@ private fun ShelfChoices(vm: AppVm, productId: String, d: Int, typed: String, on
                 confirmButton = {
                     TextButton({
                         vm.repo.removeHome(p, h, vm.userName, d)
+                        onRemoved(h.uppercase())
                         removing = null
                         refresh++
                         vm.saved("${p.code}: $h adresi silindi")
@@ -643,9 +647,12 @@ private fun ShelfChoiceRow(shelf: String, note: String, onPick: (String) -> Unit
     }
 }
 
-/** Ürünün durduğu raf, yoksa zimmetli (asıl) rafı. */
-private fun suggestedShelf(vm: AppVm, productId: String, d: Int): String? =
-    vm.repo.db.locationsOf(productId, d).firstOrNull()?.shelf ?: vm.repo.db.homeShelf(productId, d)
+/** Ürünün durduğu raf, yoksa zimmetli (asıl) rafı. [skip]: kullanıcının bu ekranda adresini sildiği raflar, önerilmez. */
+private fun suggestedShelf(vm: AppVm, productId: String, d: Int, skip: Set<String> = emptySet()): String? {
+    val db = vm.repo.db
+    return db.locationsOf(productId, d).firstOrNull { it.shelf !in skip }?.shelf
+        ?: db.homeShelves(productId, d).firstOrNull { it !in skip }
+}
 
 @Composable
 fun QtyRow(qty: Double, onChange: (Double) -> Unit, unit: String, max: Double) {
