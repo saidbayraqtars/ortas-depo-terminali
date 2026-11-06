@@ -1083,7 +1083,7 @@ function rafGonderimi(p) {
  * Rafın içeriğini terminalde okutulan değere çeker (sayım ve raf düzenleme ortak). `kaydet(pid, {counted, system}, once)`
  * her ürün için çağrılır (sayım satır kaydını burada tutar).
  */
-function rafiOkutulanaCek(depo, raf, satirlar, olusturma, hareket, kaydet = null, { okutulmayaniDokunma = false, farkEkle = false, canli = null } = {}) {
+function rafiOkutulanaCek(depo, raf, satirlar, olusturma, hareket, kaydet = null, { okutulmayaniDokunma = false, farkEkle = false, canli = null, adresHep = false } = {}) {
   const sayilan = new Map();
   const rafSatirlari = satirlar.filter((x) => rafKodu(x.shelf) === raf);
   for (const l of rafSatirlari) {
@@ -1121,8 +1121,9 @@ function rafiOkutulanaCek(depo, raf, satirlar, olusturma, hareket, kaydet = null
     }
     miktarAyarla(depo, pid, raf, hedef, hareket);
     // Rafta bulunan ve hiçbir adresi olmayan ürünün adresi o raf olur; rafta olmadığı bildirilen ürünün terminal adresi kalkar.
+    // `adresHep` (Raf Düzenle): rafı tanımlanan ürünün adresi, başka adresi olsa da o raf olur (rafa kaldırma gibi) ve Vega kartına yazılır.
     if ((canli ? hedef : x.counted) > EPS) {
-      if (!zimmetler(depo, pid).length) terminalZimmet(depo, pid, raf);
+      if (adresHep || !zimmetler(depo, pid).length) terminalZimmet(depo, pid, raf);
     } else terminalZimmetBosalt(depo, pid, raf);
     if (kaydet) kaydet(pid, x, once, k1);
   }
@@ -1148,8 +1149,48 @@ function rafDuzenle(p, h, olusturma, yetkiDenetle) {
   const goreli = p.relative === true || p.relative === 1 || p.relative === 'true';
   for (const raf of raflar) {
     if (!rafVarMi(depo, raf)) rafEkle(depo, raf, { source: 'TERMINAL', note: 'Raf düzenlemeden geldi' });
-    rafiOkutulanaCek(depo, raf, satirlar, olusturma, { ...h, kind: 'ARRANGE', ref }, null, { okutulmayaniDokunma: dokunma, farkEkle: dokunma && goreli });
+    rafiOkutulanaCek(depo, raf, satirlar, olusturma, { ...h, kind: 'ARRANGE', ref }, null, { okutulmayaniDokunma: dokunma, farkEkle: dokunma && goreli, adresHep: true });
   }
+}
+
+/**
+ * Bir kez (2.2.2 ilk açılışı): Raf Düzenle eskiden ürünün başka adresi varsa rafı adres yapmıyordu (Toybelen'de B2B liste kopyası
+ * her ürüne adres verdiği için hiç yapmıyordu) ve Vega kartının raf alanına yazılmıyordu. Düzenlenip hâlâ rafta duran ve adresi
+ * olmayan ürünler adreslenir. Aynı ürün-rafta terminalden adres silinmişse (HOME_REMOVE) bilinçli karar sayılır, dokunulmaz.
+ */
+function rafDuzenleAdresleri() {
+  if (db.meta('rafDuzenleAdres')) return 0;
+  let n = 0;
+  db.tx(() => {
+    const silinen = new Set();
+    for (const o of db.all("SELECT payload FROM op WHERE type='HOME_REMOVE' AND ok=1")) {
+      try {
+        const p = JSON.parse(o.payload);
+        const s = rafKodu(p.shelf);
+        if (p.productId && s) silinen.add(`${String(p.productId)}|${s}`);
+      } catch {
+        // bozuk kayıt: yok say
+      }
+    }
+    const adaylar = db.all(
+      `SELECT DISTINCT m.depo, m.product_id, m.shelf FROM movement m
+       JOIN location l ON l.depo=m.depo AND l.product_id=m.product_id AND l.shelf=m.shelf AND l.qty > ?
+       WHERE m.kind='ARRANGE'
+         AND NOT EXISTS (SELECT 1 FROM product_home h WHERE h.depo=m.depo AND h.product_id=m.product_id AND h.shelf=m.shelf)`,
+      EPS,
+    );
+    for (const a of adaylar) {
+      if (silinen.has(`${a.product_id}|${a.shelf}`)) continue;
+      terminalZimmet(a.depo, a.product_id, a.shelf);
+      n++;
+    }
+    db.set('rafDuzenleAdres', String(now()));
+  });
+  if (n) {
+    log.bilgi(`Raf Düzenle ile rafa konan ürünlere raf adresi verildi: ${n} adres`);
+    degisti();
+  }
+  return n;
 }
 
 /** Terminalden gelen işlemler. Aynı kimlik ikinci kez gelirse yeniden işlenmez (bkz. docs/API.md). */
@@ -2242,6 +2283,7 @@ module.exports = {
   zimmetSil,
   adresSil,
   silinenAdresKopyalari,
+  rafDuzenleAdresleri,
   adresleriAyir,
   vegaZimmetEsitle,
   vegaRafYaz,

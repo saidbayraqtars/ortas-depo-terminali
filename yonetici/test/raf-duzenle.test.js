@@ -83,14 +83,62 @@ test('rafta olup okutulmayan ürün raftan çıkar, çıkınca terminal adresi d
   assert.ok(!depo.zimmetler(1, '101').some((z) => z.shelf === 'A-01-01'));
 });
 
-test('ürünün başka adresi varsa o korunur; Excel/yönetici adresi raf boşalınca silinmez', () => {
+test('ürünün başka adresi varsa o da korunur, düzenlenen raf ek adres olur (Vega kartına yazılan adres); Excel/yönetici adresi raf boşalınca silinmez', () => {
   db.run('DELETE FROM product_home');
   depo.zimmetEkle(1, '103', 'B-01-01', 'IMPORT');
   depo.islemler('TRM-01', 'ali', [duzenle('ali', { shelves: ['A-01-02'], lines: [satir('A-01-02', '103', 3)] }, Date.now() + 3000)]);
   assert.strictEqual(depo.miktar(1, '103', 'A-01-02'), 3);
-  assert.deepStrictEqual(depo.zimmetler(1, '103').map((z) => z.shelf), ['B-01-01'], 'adresi olan ürüne yeni adres eklenmez');
+  assert.deepStrictEqual(
+    depo.zimmetler(1, '103').map((z) => [z.shelf, z.source]),
+    [['A-01-02', 'TERMINAL'], ['B-01-01', 'IMPORT']],
+    'adresi olan ürüne de düzenlenen raf adres olur (Toybelen: B2B liste kopyası her ürüne adres vermişti, Vega\'ya yazılmıyordu)',
+  );
   depo.islemler('TRM-01', 'ali', [duzenle('ali', { shelves: ['B-01-01'], lines: [] }, Date.now() + 4000)]);
-  assert.deepStrictEqual(depo.zimmetler(1, '103').map((z) => z.shelf), ['B-01-01'], 'IMPORT adresi raf boş sayılınca silinmez');
+  assert.deepStrictEqual(depo.zimmetler(1, '103').map((z) => z.shelf), ['A-01-02', 'B-01-01'], 'IMPORT adresi raf boş sayılınca silinmez');
+  // Düzenlenen raf sonradan boşaltılırsa yalnız terminalden gelen adres kalkar.
+  depo.islemler('TRM-01', 'ali', [duzenle('ali', { shelves: ['A-01-02'], lines: [] }, Date.now() + 4500)]);
+  assert.deepStrictEqual(depo.zimmetler(1, '103').map((z) => z.shelf), ['B-01-01']);
+});
+
+test('Toybelen: B2B liste kopyası adres verse de Raf Düzenle ile konan raf Vega kartına yazılacak adrese (product_home) girer', () => {
+  db.run('DELETE FROM product_home');
+  depo.zimmetEkle(108, '101', 'A-LISTE-1', 'IMPORT');
+  depo.zimmetEkle(1, '101', 'A-LISTE-1', 'IMPORT');
+  const r = depo.islemler('TRM-01', 'ali', [
+    op('SHELF_ARRANGE', 'ali', { no: 'RD-T9', depot: 108, shelves: ['T-01-01'], lines: [satir('T-01-01', '101', 4)] }, Date.now() + 5200),
+  ]);
+  assert.ok(r[0].ok, JSON.stringify(r));
+  assert.strictEqual(depo.miktar(108, '101', 'T-01-01'), 4);
+  // rafYazCalistir tüm depoların product_home kayıtlarını birleştirir: T-01-01 listeye girmiş olmalı.
+  const yazilacak = db.all('SELECT DISTINCT shelf FROM product_home WHERE product_id=? ORDER BY shelf', '101').map((z) => z.shelf);
+  assert.deepStrictEqual(yazilacak, ['A-LISTE-1', 'T-01-01']);
+});
+
+test('açılışta bir kez: eskiden adres almamış Raf Düzenle rafları adreslenir; silinmiş adrese, boşalmış rafa dokunulmaz', () => {
+  // Önceki testlerin raf stoku ve hareketleri karışmasın.
+  db.run('DELETE FROM product_home');
+  db.run('DELETE FROM location');
+  db.run('DELETE FROM movement');
+  // Eski davranışı kur: ürünün Merkez'de başka adresi var; düzenleme rafı adres yapmamış.
+  depo.zimmetEkle(1, '102', 'B-01-01', 'IMPORT');
+  depo.zimmetEkle(1, '103', 'B-01-01', 'IMPORT');
+  depo.zimmetEkle(1, '101', 'B-01-01', 'IMPORT');
+  db.tx(() => {
+    depo.miktarAyarla(1, '102', 'A-01-01', 6, { kind: 'ARRANGE', ref: 'RD-ESKI' });
+    depo.miktarAyarla(1, '103', 'A-01-01', 2, { kind: 'ARRANGE', ref: 'RD-ESKI' });
+    depo.miktarAyarla(1, '101', 'A-01-01', 5, { kind: 'ARRANGE', ref: 'RD-ESKI' });
+    depo.miktarAyarla(1, '101', 'A-01-01', 0, { kind: 'ARRANGE', ref: 'RD-ESKI' }); // sonradan boşaltılmış
+  });
+  // 103: terminalden bu adres bilinçli silinmiş.
+  db.run("INSERT INTO op(id, type, payload, device, user, created_at, received_at, ok) VALUES('rd-sil','HOME_REMOVE',?, 'TRM-01','ali',1,1,1)", JSON.stringify({ productId: '103', shelf: 'A-01-01', depot: 1 }));
+  db.run("DELETE FROM meta WHERE key='rafDuzenleAdres'");
+  assert.strictEqual(depo.rafDuzenleAdresleri(), 1);
+  assert.deepStrictEqual(depo.zimmetler(1, '102').map((z) => [z.shelf, z.source]), [['A-01-01', 'TERMINAL'], ['B-01-01', 'IMPORT']]);
+  assert.deepStrictEqual(depo.zimmetler(1, '103').map((z) => z.shelf), ['B-01-01'], 'silinmiş adres geri gelmez');
+  assert.deepStrictEqual(depo.zimmetler(1, '101').map((z) => z.shelf), ['B-01-01'], 'boşalmış rafa adres verilmez');
+  // İkinci kez çalışmaz.
+  db.run("DELETE FROM product_home WHERE shelf='A-01-01'");
+  assert.strictEqual(depo.rafDuzenleAdresleri(), 0);
 });
 
 test('tanımsız raf açılır, birden çok raf bir gönderimde düzenlenir, bilinmeyen ürün satırı atlanır', () => {

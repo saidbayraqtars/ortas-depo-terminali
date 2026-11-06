@@ -1235,6 +1235,11 @@ async function baslat({ veriKlasoru, apkKlasoru, arayuz, host = '0.0.0.0', port 
   } catch (e) {
     log.hata('Silinmiş adreslerin liste kopyaları temizlenemedi', e);
   }
+  try {
+    depo.rafDuzenleAdresleri();
+  } catch (e) {
+    log.hata('Raf Düzenle adresleri verilemedi', e);
+  }
   depo.vegaYenile('açılış').catch(() => {});
   depo.vegaZamanla();
   // Önceki oturumdan Vega'ya yazılmamış transferler varsa Vega okumasından sonra yazılır.
