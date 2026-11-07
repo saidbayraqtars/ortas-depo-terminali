@@ -629,12 +629,23 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
 
     fun shelfAllowed(code: String): Boolean = shelfScope.isEmpty() || Kapsam.icinde(code.trim().uppercase(), shelfScope)
 
+    /**
+     * Özel raflar (sunucunun `specialShelves`'i; Ortaş: "SIPARIS SATIS"): fiziksel raf değil, yalnız Rafa Kaldır'da okutulur.
+     * Rafta stok tutulmaz, ürüne adres verilmez, raf sınırı (shelfScope) uygulanmaz.
+     */
+    @Volatile var specialShelves: Set<String> = emptySet()
+
+    fun isSpecialShelf(code: String): Boolean = specialShelves.isNotEmpty() && code.trim().uppercase() in specialShelves
+
     fun shelfExists(code: String, d: Int = depot): Boolean =
         shelfAllowed(code) && scalar("SELECT 1 FROM shelf WHERE depot=? AND code=?", d.toString(), code.trim().uppercase()) != null
 
-    /** Kod herhangi bir depoda tanımlı bir raf mı (raf sınırı içinde)? Ürün beklenen yerde raf okutulunca uyarmak için. */
+    /** Rafa Kaldır için raf geçerli mi: tanımlı raf ya da özel raf. Öteki ekranlar (transfer, sayım) özel rafı bilmez, [shelfExists] kullanır. */
+    fun putAwayShelfExists(code: String, d: Int = depot): Boolean = isSpecialShelf(code) || shelfExists(code, d)
+
+    /** Kod herhangi bir depoda tanımlı bir raf mı (raf sınırı içinde)? Ürün beklenen yerde raf okutulunca uyarmak için. Özel raf da raf barkodudur. */
     fun shelfKnown(code: String): Boolean =
-        shelfAllowed(code) && scalar("SELECT 1 FROM shelf WHERE code=? LIMIT 1", code.trim().uppercase()) != null
+        isSpecialShelf(code) || (shelfAllowed(code) && scalar("SELECT 1 FROM shelf WHERE code=? LIMIT 1", code.trim().uppercase()) != null)
 
     fun locationsOf(productId: String, d: Int = depot): List<Location> {
         val p = productById(productId, d) ?: return emptyList()
@@ -665,13 +676,16 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
     }
 
     /** Yazılan metne uyan, bu depoda tanımlı raflar; önce önek, sonra içinde geçenler. */
-    fun searchShelves(text: String, d: Int = depot, limit: Int = 8): List<String> {
+    fun searchShelves(text: String, d: Int = depot, limit: Int = 8, includeSpecial: Boolean = false): List<String> {
         val q = text.trim().uppercase().replace("%", "").replace("_", "")
         if (q.isEmpty()) return emptyList()
-        return query(
+        val found = query(
             "SELECT code FROM shelf WHERE depot=? AND code LIKE ? ORDER BY (code LIKE ?) DESC, code LIMIT ?",
             d.toString(), "%$q%", "$q%", (if (shelfScope.isEmpty()) limit else 500).toString(),
         ) { it.getString(0) }.filter { shelfAllowed(it) }.take(limit)
+        // Özel raflar yalnız isteyen ekranda (Rafa Kaldır) listelenir; yazılan metne uyuyorsa başa gelir.
+        if (!includeSpecial) return found
+        return (specialShelves.filter { q in it }.sorted() + found).distinct().take(limit)
     }
 
     /** Raftakiler + rafa zimmetli olup rafta olmayanlar (qty 0, sayılmayı bekliyor). */
@@ -858,6 +872,8 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
     }
 
     fun ensureShelf(db: SQLiteDatabase, d: Int, shelf: String) {
+        // Özel raf fiziksel raf değildir; yerel raf tablosuna girmez (sayım/transfer listelerinde görünmesin).
+        if (isSpecialShelf(shelf)) return
         db.insertWithOnConflict("shelf", null, ContentValues().apply {
             put("depot", d); put("code", shelf); put("zone", shelf.substringBefore('-'))
         }, SQLiteDatabase.CONFLICT_IGNORE)

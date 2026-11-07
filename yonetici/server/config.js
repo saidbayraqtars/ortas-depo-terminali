@@ -49,6 +49,9 @@ const DEFAULTS = {
   // Açıkken bu depoların belgesi ve raf kaydı hedef depoda çalışır, grup içi 37 iş üretmez (bekleme.js). Yalnız Bekleme
   // depoları sayfasından açılır, çünkü açılırken raf kayıtları da hedefe taşınır. gecis: son açılışın özeti.
   bekleme: { aktif: false, depolar: [], hedef: null, gecis: null },
+  // Özel raflar (Ortaş: "SIPARIS SATIS"): fiziksel raf değildir. Mal kabulden doğrudan sipariş hazırlığına giden mal bu barkodla
+  // "rafa kaldırıldı" sayılır (rafa bekleyen düşer); rafta stok tutulmaz, ürüne raf adresi verilmez, Vega'ya bir şey yazılmaz.
+  ozelRaflar: ['SIPARIS SATIS'],
   // Terminale giden ürün listesi: 'aktif' = stoklu, son N günde hareketli ya da rafta olan kartlar.
   urun: { kapsam: 'aktif', gun: 365 },
   sayim: {

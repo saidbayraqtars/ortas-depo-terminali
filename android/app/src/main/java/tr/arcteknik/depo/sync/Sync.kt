@@ -85,7 +85,7 @@ class Sync(private val context: Context, private val repo: Repo) {
             if (!supported) return false
             val r = result ?: return true
             r.head?.let {
-                repo.prefs.applyMaster(it)
+                repo.applyMaster(it)
                 repo.ensureDepot(it.optInt("defaultDepot", 0))
             }
             done += r.parts
@@ -237,7 +237,7 @@ class Sync(private val context: Context, private val repo: Repo) {
                             Diag.crumb("eşitleme: ana veri iniyor")
                             val head = db.replaceMaster(reader)
                             Diag.crumb("eşitleme: ana veri yazıldı ${System.currentTimeMillis() - t0} ms")
-                            repo.prefs.applyMaster(head)
+                            repo.applyMaster(head)
                             repo.ensureDepot(head.optInt("defaultDepot", 0))
                             repo.prefs.masterEtag = newEtag ?: ""
                         }

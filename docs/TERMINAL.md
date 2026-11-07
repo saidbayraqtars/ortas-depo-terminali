@@ -63,6 +63,14 @@ Taslak **Vega'ya ve sunucuya hiçbir şey yazmaz**; okutulanlar ancak **Rafa kal
   değiştirilecekse yeni raf okutulur (3. kat, 2. kat, zemin gibi bölerek). Raf okutulmadıysa ürünün durduğu ya da asıl rafı kullanılır;
   kayıtlı rafı yoksa önce raf istenir. Belgede kalandan fazlası da rafa kalkar (uyarıyla). Ayrılırken okutulanlar için "rafa kaldırılsın mı"
   sorulur. **Kalan** sekmesi belgede henüz okutulmamış kalemleri gösterir.
+- **Özel raf: SIPARIS SATIS** (2.3.0+): mal kabulden raf yerine doğrudan sipariş hazırlığına giden mal için. Raf yerine **SIPARIS SATIS**
+  barkodu okutulur (ya da belge içinde **SIPARIS SATIS · doğrudan siparişe** düğmesine dokunulur, okutmakla aynıdır; ürün okutarak
+  rafa kaldırmada "Ürünün rafları" listesinden seçilir), ürünler her zamanki gibi okutulur; **Rafa kaldır**dan sonra seçim kalkar, sonraki
+  mal için düğmeye yeniden dokunulur (yanlışlıkla siparişe yazılmasın); böylece 50 adetlik girişin 5'i
+  SIPARIS SATIS'e, 45'i rafa kaldırılırsa belgede/Rafa bekleyen'de eksik kalmaz. Bu rafta **stok tutulmaz** (rafta görünmez, sayıma girmez),
+  ürüne **raf adresi verilmez** (Vega KOD10'a yazılmaz), raf sınırı uygulanmaz, "önerilen raf / farklı raf" uyarısı çıkmaz. Yalnız Rafa Kaldır'da
+  okutulur; Raftan Al, Raf Transferi, Sayım ve Raf Düzenle'de reddedilir. Kayıt Hareketler'de rafa kaldırma olarak durur, yönetici geri alabilir.
+  Özel raf listesi sunucuda (`config.json` › `ozelRaflar`, varsayılan `["SIPARIS SATIS"]`) tutulur ve ana veriyle terminallere gider.
 - **Raftan Al** (1.8.2+): ürünler peş peşe okutulur (+1), **Raftan al** hepsini işler. Raf okutulursa ürünler o raftan alınır (**Otomatik**
   ile bırakılır); okutulmazsa her ürün için raf kendiliğinden seçilir (önce sepetteki raf, sonra asıl raf / en çok stoklu). Raf stoku
   azalır; raftaki miktar aşılırsa raf sıfırda kesilir. Vega'daki çıkış (fatura, sevk) ayrıca Vega'da yapılır. Ürünün raf adresini silmek

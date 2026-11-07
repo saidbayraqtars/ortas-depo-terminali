@@ -1236,6 +1236,11 @@ async function baslat({ veriKlasoru, apkKlasoru, arayuz, host = '0.0.0.0', port 
     log.hata('Silinmiş adreslerin liste kopyaları temizlenemedi', e);
   }
   try {
+    depo.ozelRafTemizle();
+  } catch (e) {
+    log.hata('Özel raf temizliği yapılamadı', e);
+  }
+  try {
     depo.rafDuzenleAdresleri();
   } catch (e) {
     log.hata('Raf Düzenle adresleri verilemedi', e);

@@ -254,6 +254,73 @@ function rafVarMi(depo, code) {
   return Boolean(db.get('SELECT 1 FROM shelf WHERE depo=? AND code=?', depo, rafKodu(code)));
 }
 
+// ---- Özel raflar (config.ozelRaflar; Ortaş: SIPARIS SATIS) -----------------------------------
+// Fiziksel raf değil: mal kabulden doğrudan sipariş hazırlığına giden mal "rafa kaldırıldı" sayılsın diye okutulan barkod.
+// Rafa kaldırma hareketi yazılır (rafa bekleyen düşer, kim ne zaman kaldırdı görünür) ama rafta stok satırı oluşmaz, ürüne
+// raf adresi (zimmet) verilmez, dolayısıyla Vega kartının raf alanına bir şey yazılmaz. Raf sınırı da bu rafa uygulanmaz.
+
+function ozelRaflar() {
+  const l = config.load().ozelRaflar;
+  return Array.isArray(l) ? [...new Set(l.map(rafKodu).filter(Boolean))] : [];
+}
+
+function ozelRafMi(code) {
+  const c = rafKodu(code);
+  return Boolean(c) && ozelRaflar().includes(c);
+}
+
+/** Özel raf yalnız rafa kaldırmada kullanılır; raftan alma, transfer, sayım, raf düzenleme gibi stok gerektiren işlemde reddedilir. */
+function ozelRafReddet(...kodlar) {
+  const k = kodlar.map(rafKodu).find((c) => ozelRafMi(c));
+  if (k) throw new Ret(`${k} özel raftır (stok tutulmaz); yalnız rafa kaldırmada kullanılır`);
+}
+
+/** Özel rafa hareket: stok satırına dokunmadan yalnız hareket kaydı (rafa bekleyen hesabı hareketlerden okunur). */
+function ozelHareket(depo, productId, shelf, delta, hareket) {
+  const d = yuvarla(delta);
+  if (Math.abs(d) <= EPS) return 0;
+  db.run(
+    'INSERT INTO movement(ts, fiili_ts, depo, product_id, shelf, delta, after, kind, ref, user, device, op_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+    hareket.ts || now(),
+    hareket.fiili || hareket.ts || now(),
+    depo,
+    String(productId),
+    shelf,
+    d,
+    0,
+    hareket.kind,
+    hareket.ref || null,
+    hareket.user || null,
+    hareket.device || null,
+    hareket.opId || null,
+  );
+  return d;
+}
+
+/**
+ * Bir kez (özel raf başına): özel raf olmadan önce o koda yazılmış stok ve terminal/Excel/yönetici adresleri silinir. Özel rafta stok
+ * tutulmaz; eski adres kalırsa Vega kartının raf alanında "SIPARIS SATIS" görünmeye devam eder (adres yazımı açıksa bu çağrı karttan da kaldırır).
+ */
+function ozelRafTemizle() {
+  let stok = 0;
+  let adres = 0;
+  db.tx(() => {
+    for (const kod of ozelRaflar()) {
+      const anahtar = `ozelRafTemizlik:${kod}`;
+      if (db.meta(anahtar)) continue;
+      stok += db.run('DELETE FROM location WHERE shelf=?', kod).changes;
+      adres += db.run('DELETE FROM product_home WHERE shelf=?', kod).changes;
+      db.set(anahtar, String(now()));
+    }
+  });
+  if (stok || adres) {
+    log.bilgi(`Özel raf temizliği: ${stok} stok satırı, ${adres} raf adresi silindi`);
+    rafYazTetikle(0);
+    degisti();
+  }
+  return { stok, adres };
+}
+
 /**
  * Yönetici ekranından toplu raf. `secim` depo numarası ya da "hepsi" (kullanılan her depo; terminal rafı yalnız
  * tanımlı olduğu depoda kabul eder). Bir kod uygun değilse hiçbiri açılmaz.
@@ -489,6 +556,8 @@ function vegaZimmetEsitle(cfg = config.load()) {
           if (gecersiz.length < 50) gecersiz.push({ code: p.code, adres: c });
           continue;
         }
+        // Özel raf (SIPARIS SATIS) ürünün adresi olamaz; kartta kalmışsa zimmet olmaz, yazımda karttan kalkar.
+        if (ozelRafMi(c)) continue;
         if (!yeniRafAc && !rafVarMi(d, c)) {
           tanimsiz.set(c, (tanimsiz.get(c) || 0) + 1);
           continue;
@@ -746,18 +815,22 @@ function rafaKaldirmaGeriAl(hareketId, kim = 'yönetici', not = '') {
   if (!kayit && m.ref) throw new Ret('Bu eski kayıt geri alınamaz (işlem kaydı yok); Raflar sayfasından düzeltin');
   // Sanal bekleme deposunda yapılmış eski kayıt: raf kaydı artık malın durduğu depoda.
   const d = depoCoz(m.depo);
-  const mevcut = miktar(d, m.product_id, m.shelf);
+  // Özel rafta (SIPARIS SATIS) stok tutulmaz: geri almada düşülecek raf stoku yoktur, yalnız hareket ve belge satırı geri alınır.
+  const ozel = ozelRafMi(m.shelf);
+  const mevcut = ozel ? q : miktar(d, m.product_id, m.shelf);
   if (q - mevcut > EPS) {
     throw new Ret(`${m.shelf} rafında şu an ${yuvarla(mevcut)} var; ${q} geri alınamaz (sonradan raftan alınmış, taşınmış ya da sayılmış). Önce Raflar sayfasından düzeltin`);
   }
   const notu = String(not || '').trim().slice(0, 300) || null;
   db.tx(() => {
-    miktarEkle(d, m.product_id, m.shelf, -q, { ts: now(), user: kim, device: 'PC', kind: 'PUTAWAY_GERI', ref: m.ref || null });
+    const geri = { ts: now(), user: kim, device: 'PC', kind: 'PUTAWAY_GERI', ref: m.ref || null };
+    if (ozel) ozelHareket(d, m.product_id, m.shelf, -q, geri);
+    else miktarEkle(d, m.product_id, m.shelf, -q, geri);
     if (satirId) {
       db.run('UPDATE receipt_shelved SET shelved = MAX(shelved - ?, 0), updated_at=? WHERE line_id=?', q, now(), satirId);
       bekleme.mahsupGeri(satirId, q);
     }
-    if (miktar(d, m.product_id, m.shelf) <= EPS) terminalZimmetBosalt(d, m.product_id, m.shelf);
+    if (!ozel && miktar(d, m.product_id, m.shelf) <= EPS) terminalZimmetBosalt(d, m.product_id, m.shelf);
     db.run('UPDATE movement SET geri_at=?, geri_user=?, geri_not=? WHERE id=?', now(), kim, notu, m.id);
   });
   log.bilgi(`Rafa kaldırma geri alındı: ${m.shelf} · ürün ${m.product_id} · ${q} (${depoAdi(d)}) · ${kim}${notu ? ` · ${notu}` : ''}`);
@@ -822,11 +895,18 @@ function islemUygula(op, cihaz, kullanici, { saatFarki = null } = {}) {
       // Terminal eşitlemeden önce gizlenmiş grup içi belge (bekleme.js): mal yine rafa kondu, miktar açık fatura satırına yazılır.
       const gizli = p.receiptId && !belge && !bekSatir && goruntu ? goruntu.receipts.find((r) => r.id === String(p.receiptId)) : null;
       const depo = belge ? belge.depo : depoCoz(p.depot);
-      yetkiDenetle(null, depo, shelf);
-      // Mal fiziken rafa kondu; raf tanımı sonradan silinmiş olsa bile kayıt kaybolmasın.
-      if (!rafVarMi(depo, shelf)) rafEkle(depo, shelf, { source: 'TERMINAL', note: 'Terminalden geldi' });
-      miktarEkle(depo, pid, shelf, qty, { ...h, kind: 'PUTAWAY', ref: belge ? belge.docNo : gizli ? gizli.docNo : bekSatir ? null : p.receiptId || null });
-      terminalZimmet(depo, pid, shelf);
+      const ref = belge ? belge.docNo : gizli ? gizli.docNo : bekSatir ? null : p.receiptId || null;
+      if (ozelRafMi(shelf)) {
+        // Özel raf (SIPARIS SATIS): rafa bekleyen düşer; rafta stok yok, ürüne adres verilmez, Vega'ya bir şey yazılmaz. Raf sınırı uygulanmaz.
+        yetkiDenetle(null, depo);
+        ozelHareket(depo, pid, shelf, qty, { ...h, kind: 'PUTAWAY', ref });
+      } else {
+        yetkiDenetle(null, depo, shelf);
+        // Mal fiziken rafa kondu; raf tanımı sonradan silinmiş olsa bile kayıt kaybolmasın.
+        if (!rafVarMi(depo, shelf)) rafEkle(depo, shelf, { source: 'TERMINAL', note: 'Terminalden geldi' });
+        miktarEkle(depo, pid, shelf, qty, { ...h, kind: 'PUTAWAY', ref });
+        terminalZimmet(depo, pid, shelf);
+      }
       if (p.lineId && !bekSatir) {
         db.run(
           `INSERT INTO receipt_shelved(line_id, receipt_id, product_id, shelved, updated_at) VALUES(?,?,?,?,?)
@@ -848,6 +928,7 @@ function islemUygula(op, cihaz, kullanici, { saatFarki = null } = {}) {
       const from = rafKodu(p.from);
       const to = rafKodu(p.to);
       if (!pid || !from || !to) throw new Ret('Eksik bilgi');
+      ozelRafReddet(from, to);
       bilinen(pid);
       const depo = depoCoz(p.depot);
       yetkiDenetle(null, depo, from);
@@ -868,6 +949,7 @@ function islemUygula(op, cihaz, kullanici, { saatFarki = null } = {}) {
       const pid = String(p.productId || '');
       const shelf = rafKodu(p.shelf);
       if (!pid || !shelf) throw new Ret('Eksik bilgi');
+      ozelRafReddet(shelf);
       bilinen(pid);
       const depo = depoCoz(p.depot);
       yetkiDenetle(null, depo, shelf);
@@ -900,6 +982,8 @@ function islemUygula(op, cihaz, kullanici, { saatFarki = null } = {}) {
       // Terminalde okutulan tanımsız raf etiketi orada raf olarak eklenir.
       const kod = rafKodu(p.code);
       if (!rafKoduGecerli(kod)) throw new Ret(`Geçersiz raf kodu: ${kod}`);
+      // Özel raf zaten her terminalde tanımlıdır (ana veride specialShelves); raf kaydı açılmaz.
+      if (ozelRafMi(kod)) return;
       const d = depoCoz(p.depot);
       yetkiDenetle(null, d, kod);
       if (!rafVarMi(d, kod)) {
@@ -1076,6 +1160,8 @@ function rafGonderimi(p) {
     const raf = rafKodu(l.shelf);
     if (raf && !raflar.includes(raf)) raflar.push(raf);
   }
+  // Özel rafta stok tutulmadığından sayılamaz ve düzenlenemez.
+  ozelRafReddet(...raflar);
   return { raflar, satirlar };
 }
 
@@ -1487,6 +1573,8 @@ function masterGovde() {
     depots: depoListe.map((d) => ({ id: d.ind, name: d.ad })),
     products,
     shelves: db.all('SELECT depo, code, zone FROM shelf ORDER BY depo, code').map((s) => ({ depot: s.depo, code: s.code, zone: s.zone })),
+    // Özel raflar (SIPARIS SATIS): terminal bunları her depoda tanımlı sayar; stok tutulmaz, öneri/uyarı/raf sınırı uygulanmaz.
+    specialShelves: ozelRaflar(),
     locations: locations.map((l) => ({ depot: l.depo, productId: l.product_id, shelf: l.shelf, qty: l.qty })),
     // Ürünün zimmetli rafları (Excel, Vega kartı, yönetici): rafa kaldırmada önerilir, sayımda rafta beklenir.
     homes: db
@@ -1788,7 +1876,7 @@ function raflar(depo = null) {
   return rows.map((s) => {
     const o = ozet.get(`${s.depo}|${s.code}`);
     const z = zim.get(`${s.depo}|${s.code}`);
-    return { ...s, depoAd: depoAdi(s.depo), cesit: o ? o.n : 0, miktar: o ? yuvarla(o.q) : 0, sonHareket: o ? o.u : null, zimmet: z ? z.n : 0, bekleyen: z ? z.bos : 0 };
+    return { ...s, ozel: ozelRafMi(s.code), depoAd: depoAdi(s.depo), cesit: o ? o.n : 0, miktar: o ? yuvarla(o.q) : 0, sonHareket: o ? o.u : null, zimmet: z ? z.n : 0, bekleyen: z ? z.bos : 0 };
   });
 }
 
@@ -2126,7 +2214,7 @@ function kapsamRaflari(depo, onekler) {
   return db
     .all('SELECT code FROM shelf WHERE depo=?', depo)
     .map((r) => r.code)
-    .filter((c) => kapsam.kapsamda(c, onekler))
+    .filter((c) => !ozelRafMi(c) && kapsam.kapsamda(c, onekler))
     .sort((a, b) => a.localeCompare(b, 'tr', { numeric: true }));
 }
 
@@ -2166,6 +2254,7 @@ function urunRaflari(depoNo, metin) {
 function rafGruplari(depo) {
   const bolgeler = new Map();
   for (const { code } of db.all('SELECT code FROM shelf WHERE depo=?', depo)) {
+    if (ozelRafMi(code)) continue;
     const [b, g] = code.split('-');
     if (!bolgeler.has(b)) bolgeler.set(b, { onek: b, adet: 0, gruplar: new Map() });
     const x = bolgeler.get(b);
@@ -2278,6 +2367,9 @@ module.exports = {
   raflarAc,
   rafKodu,
   rafKoduGecerli,
+  ozelRaflar,
+  ozelRafMi,
+  ozelRafTemizle,
   zimmetler,
   zimmetEkle,
   zimmetSil,

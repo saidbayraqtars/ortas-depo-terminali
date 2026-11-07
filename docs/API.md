@@ -50,6 +50,9 @@ sunucudaki APK cihazdakinden yeniyse terminal "Yeni sürüm" gösterir, indirme 
 
 - `products`: Vega stok kartları. `vegaStock` Vega'daki toplam stok; kabul edilip rafa kaldırılmamış malı da içerir.
 - `shelves`: yönetici programında tanımlı raflar. Terminal tanımsız rafa işlem yaptırmaz.
+- `specialShelves` (2.3.0+, `head` parçasında): özel raf kodları (Ortaş: `["SIPARIS SATIS"]`). Fiziksel raf değildir: `PUTAWAY` ile
+  rafa kaldırılır (rafa bekleyen düşer) ama rafta stok (`locations`) oluşmaz, ürüne zimmet (`homes`) verilmez, Vega kartına adres yazılmaz,
+  kullanıcının raf sınırı uygulanmaz. `PICK`, `TRANSFER`, `SHELF_ARRANGE`, sayım bu kodu reddeder; `SHELF_ADD` sessizce geçer. Alan yoksa (eski sunucu) özel raf yok.
 - `locations`: ürünün raftaki miktarı (sunucunun kendi tablosu; Vega'da yok).
 - `receipts`: Vega'da mal kabulü yapılmış, rafa kaldırılması bitmemiş belgeler. `shelved` sunucuda tutulur.
 - `counts`: yönetici programında açılmış, terminalde sayılacak oturumlar. `scope` (1.4.0+): raf önekleri

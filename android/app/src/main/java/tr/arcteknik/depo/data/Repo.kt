@@ -15,6 +15,13 @@ class Repo(val db: Db, val prefs: Prefs) {
 
     init {
         db.depot = prefs.depot
+        db.specialShelves = prefs.specialShelves
+    }
+
+    /** Ana veri (head) geldi: tercihler ve özel raflar güncellenir. */
+    fun applyMaster(head: JSONObject) {
+        prefs.applyMaster(head)
+        db.specialShelves = prefs.specialShelves
     }
 
     /** Çalışılan depoyu değiştirir (transfer, sayım, sorgu bu depoda). */
@@ -98,8 +105,11 @@ class Repo(val db: Db, val prefs: Prefs) {
         val w = db.writableDatabase
         w.beginTransaction()
         try {
-            db.ensureShelf(w, d, s)
-            db.addQty(w, d, line.product.id, s, qty)
+            // Özel raf (SIPARIS SATIS): rafta stok tutulmaz; yalnız belge satırı ilerler ve sunucuya işlem gider.
+            if (!db.isSpecialShelf(s)) {
+                db.ensureShelf(w, d, s)
+                db.addQty(w, d, line.product.id, s, qty)
+            }
             w.execSQL("UPDATE receipt_line SET shelved=shelved+? WHERE id=?", arrayOf<Any>(qty, line.id))
             db.addMovement(w, line.product.id, "Rafa kaldırma → $s", qty)
             db.insertOp(w, op(
@@ -134,8 +144,10 @@ class Repo(val db: Db, val prefs: Prefs) {
         val w = db.writableDatabase
         w.beginTransaction()
         try {
-            db.ensureShelf(w, d, s)
-            db.addQty(w, d, product.id, s, qty)
+            if (!db.isSpecialShelf(s)) {
+                db.ensureShelf(w, d, s)
+                db.addQty(w, d, product.id, s, qty)
+            }
             var left = qty
             for (l in db.openLinesOf(product.id, d)) {
                 if (left <= 1e-9) break

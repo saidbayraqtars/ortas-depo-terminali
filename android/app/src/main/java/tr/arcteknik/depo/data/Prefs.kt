@@ -87,8 +87,18 @@ class Prefs(context: Context) {
         get() = sp.getStringSet("transferClosed", emptySet()) ?: emptySet()
         set(v) = sp.edit().putStringSet("transferClosed", v.toSet()).apply()
 
+    /**
+     * Özel raflar (Ortaş: "SIPARIS SATIS"): fiziksel raf değil. Doğrudan sipariş hazırlığına giden mal bu barkodla rafa kaldırılmış
+     * sayılır; rafta stok tutulmaz, ürüne adres verilmez, raf sınırı uygulanmaz. Ana veriyle gelir; sunucu eskiyse boş.
+     */
+    var specialShelves: Set<String>
+        get() = sp.getStringSet("specialShelves", emptySet())?.toSet() ?: emptySet()
+        set(v) = sp.edit().putStringSet("specialShelves", v.toSet()).apply()
+
     /** Ana veriyle gelen depo adı ve uygulama sürümü bilgisini saklar. */
     fun applyMaster(json: JSONObject) {
+        val special = json.optJSONArray("specialShelves")
+        specialShelves = (0 until (special?.length() ?: 0)).map { special!!.getString(it).trim().uppercase() }.filter { it.isNotEmpty() }.toSet()
         // Yalnız head parçasında gelir; sunucu bilmiyorsa (eski) alan hiç yoktur.
         val tr = json.optJSONObject("transfer")
         transferJson = tr?.toString() ?: ""

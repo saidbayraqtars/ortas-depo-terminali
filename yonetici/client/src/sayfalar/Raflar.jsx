@@ -368,7 +368,7 @@ export default function Raflar() {
                     <td className="num">{r.miktar ? miktar(r.miktar) : ''}</td>
                     <td className="num">{r.zimmet ? <>{r.zimmet}{r.bekleyen ? <span className="neg"> ({r.bekleyen})</span> : ''}</> : ''}</td>
                     <td className="muted">{r.sonHareket ? tarihSaat(r.sonHareket) : ''}</td>
-                    <td className="muted">{r.note}{r.source === 'TERMINAL' && <Rozet tur="b-info">terminalde açıldı</Rozet>}{r.source === 'IMPORT' && <Rozet tur="b-mute">Excel</Rozet>}{r.source === 'VEGA' && <Rozet tur="b-info">Vega kartı</Rozet>}</td>
+                    <td className="muted">{r.note}{r.ozel && <Rozet tur="b-warn">özel raf · stok tutulmaz, Vega'ya adres yazılmaz</Rozet>}{r.source === 'TERMINAL' && <Rozet tur="b-info">terminalde açıldı</Rozet>}{r.source === 'IMPORT' && <Rozet tur="b-mute">Excel</Rozet>}{r.source === 'VEGA' && <Rozet tur="b-info">Vega kartı</Rozet>}</td>
                   </tr>
                 ))}
               </tbody>

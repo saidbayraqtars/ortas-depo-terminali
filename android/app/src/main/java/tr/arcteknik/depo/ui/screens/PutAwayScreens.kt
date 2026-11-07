@@ -286,6 +286,8 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
             }
         }
         cart.clear()
+        // Özel raf (SIPARIS SATIS) seçimi kaldırılınca kalmaz: sonraki mal yanlışlıkla siparişe yazılmasın (rafta izi kalmaz), yeniden dokunulur.
+        shelf?.let { if (db.isSpecialShelf(it)) shelf = null }
         return db.receiptLines(receiptId).count { it.remaining > 0 }
     }
 
@@ -322,7 +324,8 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
         when {
             // Belgede kalandan fazlası da okutulur (mal fiziken rafa konur); uyarı verilir.
             total - remaining(p.id) > 1e-9 -> vm.error("${p.name}: belgede ${fmt(remaining(p.id))} kalmıştı, ${fmt(total)} okutuldu")
-            firstOnShelf && suggested != null && suggested != target && db.qtyAt(p.id, suggested, rd) > 0 ->
+            // Özel rafa (SIPARIS SATIS) giden mal başka raftaki stokla çakışmaz: uyarı verilmez.
+            firstOnShelf && !db.isSpecialShelf(target) && suggested != null && suggested != target && db.qtyAt(p.id, suggested, rd) > 0 ->
                 vm.error("${p.name} şu an $suggested rafında; $target rafına da ekleniyor")
             else -> vm.ok("${p.name} · $target · ${fmt(n)}")
         }
@@ -331,9 +334,9 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
     /** Raf barkodu raf olarak seçilir; raf gibi ama tanımsızsa eklenmesi sorulur; başka kod ürün hatasına düşer. */
     fun onShelf(code: String): Boolean {
         val s = code.trim().uppercase()
-        if (db.shelfExists(s, rd)) {
+        if (db.putAwayShelfExists(s, rd)) {
             shelf = s
-            vm.ok("Raf $s")
+            vm.ok(if (db.isSpecialShelf(s)) "Raf $s · doğrudan siparişe" else "Raf $s")
             return true
         }
         if (!Repo.validShelfCode(s)) return false
@@ -363,6 +366,11 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
                 if (shelf == null) "Önce raf okutun" else "Raf $shelf · ${fmt(cart.sumOf { it.qty })} adet",
                 ::onProduct, onOther = ::onShelf, showSearchLink = false,
             )
+            // Hızlı özel raf (SIPARIS SATIS): dokunmak barkodu okutmakla aynıdır; sonra ürünler okutulur, "Rafa kaldır" işler.
+            db.specialShelves.sorted().forEach { code ->
+                val active = shelf == code
+                SecondaryButton(if (active) "$code · seçili" else "$code · doğrudan siparişe", { if (!active) onShelf(code) }, dark = active)
+            }
             MessageBar(vm.message?.takeIf { it.second }?.first, true)
             val missing = lines.filter { it.remaining - cart.cartQty(it.product.id) > 1e-9 }
             val rows = if (tab == 0) {
@@ -495,8 +503,9 @@ fun ProductPutAwayScreen(vm: AppVm, online: Boolean, version: Int, productId: St
             qty += 1
             return vm.ok("${fmt(qty)} $unit")
         }
-        if (!db.shelfExists(s, d)) return vm.unknownShelf(s, d) { onShelf(it) }
-        if (suggested != null && suggested != s) {
+        if (!db.putAwayShelfExists(s, d)) return vm.unknownShelf(s, d) { onShelf(it) }
+        // Özel raf (SIPARIS SATIS) "farklı raf" uyarısı vermez: mal doğrudan siparişe gidiyor.
+        if (!db.isSpecialShelf(s) && suggested != null && suggested != s) {
             vm.feedback.error()
             conflict = suggested to s
         } else {
@@ -587,7 +596,8 @@ private fun ShelfChoices(vm: AppVm, productId: String, d: Int, typed: String, on
     var removing by remember { mutableStateOf<String?>(null) }
     val known = remember(productId, d, refresh) { db.shelfOptions(productId, d) }
     val homes = remember(productId, d, refresh) { db.homeShelves(productId, d).toSet() }
-    val found = remember(typed, d) { if (typed.isBlank()) emptyList() else db.searchShelves(typed, d) }
+    val found = remember(typed, d) { if (typed.isBlank()) emptyList() else db.searchShelves(typed, d, includeSpecial = true) }
+    val special = remember(db.specialShelves) { db.specialShelves.sorted() }
     Card(padding = androidx.compose.foundation.layout.PaddingValues(start = 14.dp, end = 14.dp, top = 10.dp)) {
         Caption(if (typed.isBlank()) "Ürünün rafları" else "Uyan raflar")
         Column {
@@ -602,6 +612,8 @@ private fun ShelfChoices(vm: AppVm, productId: String, d: Int, typed: String, on
                     }
                     ShelfChoiceRow(o.shelf, note, onPick, if (o.shelf in homes && vm.can(Perm.HOME_REMOVE)) ({ removing = o.shelf }) else null)
                 }
+                // Özel raf (SIPARIS SATIS): fiziksel raf değil, mal doğrudan siparişe gidiyorsa seçilir; adres verilmez.
+                special.forEach { ShelfChoiceRow(it, "doğrudan siparişe", onPick) }
             } else {
                 if (found.isEmpty()) Hint("\"$typed\" ile başlayan ya da içeren raf yok.", Modifier.padding(vertical = 10.dp))
                 found.forEach { ShelfChoiceRow(it, "", onPick) }

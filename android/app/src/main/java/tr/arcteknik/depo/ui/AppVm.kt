@@ -379,6 +379,8 @@ class AppVm(app: Application) : AndroidViewModel(app) {
     /** Tanımsız raf okutuldu: kod raf olabilecekse eklemeyi sor, değilse hata ver. */
     fun unknownShelf(code: String, depot: Int = repo.db.depot, onAdded: (String) -> Unit) {
         val s = code.trim().uppercase()
+        // Özel raf (SIPARIS SATIS) yalnız Rafa Kaldır'da okutulur; öteki ekranlarda raf olarak eklenmez.
+        if (repo.db.isSpecialShelf(s)) return error("$s özel raftır (stok tutulmaz); yalnız Rafa Kaldır ekranında okutulur")
         // Raf sınırı dışındaki raf "tanımsız" gibi davranır ama eklenmesi önerilmez: neden açıkça söylenir.
         if (!repo.db.shelfAllowed(s)) return error("$s rafı yetkinizin dışında (yetkili raflar: ${repo.db.shelfScope.joinToString(", ")})")
         val where = repo.db.depotName(depot).takeIf { it.isNotBlank() && repo.db.depots().size > 1 }?.let { "$it deposunda " } ?: ""
