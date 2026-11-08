@@ -376,6 +376,20 @@ class AppVm(app: Application) : AndroidViewModel(app) {
     var shelfAsk by mutableStateOf<ShelfAsk?>(null)
         private set
 
+    /**
+     * Tanımsız raf sorusundan ([unknownShelf]) önce sorulur: okutulan/yazılan metin aslında bir ürün adı mı?
+     * Raf kodunun desenine ("DAYCO", "DAYCO-4 PK") uyan her metin raf sayılırsa, ürün adı elle yazıldığında "Raf eklensin mi?"
+     * çıkıyor ve isimle arama hiç açılmıyordu (Rafa Kaldır, terminal TRM-01, 2026-11-08; raf "0-" elle yazılmıştı, ürün adı da).
+     * Kod bilinen bir raf bölgesiyle başlıyorsa (KUTU-3-12, TK3-B2) yeni raf olabilir: ürün sayılmaz, eklemesi sorulur.
+     * Değilse ürün adı ya da koduyla eşleşiyorsa ürün sayılır; küçük harfle yazılmışsa yazım hatası da tolere edilir ("daycoo").
+     * True dönerse çağıran false verir, okutma alanı isimle arama penceresini açar.
+     */
+    fun looksLikeProduct(raw: String): Boolean {
+        val t = raw.trim()
+        if (repo.db.shelfPrefixKnown(t)) return false
+        return repo.db.productTextMatches(t) || (t.any { it.isLowerCase() } && repo.db.searchProducts(t, 1).isNotEmpty())
+    }
+
     /** Tanımsız raf okutuldu: kod raf olabilecekse eklemeyi sor, değilse hata ver. */
     fun unknownShelf(code: String, depot: Int = repo.db.depot, onAdded: (String) -> Unit) {
         val s = code.trim().uppercase()

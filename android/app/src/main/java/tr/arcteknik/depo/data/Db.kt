@@ -622,6 +622,29 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
     }
 
     /**
+     * Kodun ilk parçası (KUTU-3-12 → KUTU) herhangi bir depoda tanımlı bir rafın başı mı? Evetse kod yeni bir raf olabilir
+     * ("Raf eklensin mi?" sorulur), ürün adı sayılmaz. Raf kodu yalnız A-Z, 0-9 ve "-./ " içerir, LIKE joker karakteri taşımaz.
+     */
+    fun shelfPrefixKnown(code: String): Boolean {
+        val first = code.trim().uppercase().split('-', '.', '/', ' ').firstOrNull().orEmpty()
+        if (first.isEmpty() || !first.all { it.isLetterOrDigit() }) return false
+        return scalar("SELECT 1 FROM shelf WHERE code LIKE ? LIMIT 1", "$first%") != null
+    }
+
+    /**
+     * Metindeki her kelimeyi içeren en az bir ürün var mı (ad ya da kod; yazım hatası aranmaz, ilk bulunanda durur).
+     * Raf alanına elle yazılan "dayco" gibi bir ad, raf kodu sanılıp "Raf eklensin mi?" diye sorulmasın diye kullanılır.
+     */
+    fun productTextMatches(q: String): Boolean {
+        val tokens = Fuzzy.tokens(q)
+        if (tokens.isEmpty()) return false
+        return scalar(
+            "SELECT 1 FROM product WHERE " + tokens.joinToString(" AND ") { "search LIKE ?" } + " LIMIT 1",
+            *tokens.map { "%$it%" }.toTypedArray(),
+        ) != null
+    }
+
+    /**
      * Oturumdaki kullanıcının raf sınırı (raf önekleri); boşsa tüm raflar. Giriş ve yetki yenilemesinde AppVm ayarlar.
      * Sınır dışı raf bu sınıfın raf sorgularında görünmez: terminal onu hiç bilmiyormuş gibi davranır (sunucu da işlemi reddeder).
      */

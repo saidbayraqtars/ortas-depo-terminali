@@ -181,6 +181,8 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
                     onOther = { code ->
                         val s = code.uppercase()
                         when {
+                            // Elle yazılan ürün adı raf sanılmasın (kapsam hatası ya da "Raf eklensin mi?" çıkmasın): isimle arama açılır.
+                            !db.shelfExists(s, session.depot) && vm.looksLikeProduct(code) -> false
                             !inScope(s) -> { scopeError(s); true }
                             !db.shelfExists(s, session.depot) -> { vm.unknownShelf(s, session.depot) { assign(p, it) }; true }
                             else -> { assign(p, s); true }

@@ -78,6 +78,8 @@ fun TransferScreen(vm: AppVm, online: Boolean, version: Int, initialProduct: Str
         val s = code.trim().uppercase()
         if (!db.shelfExists(s)) {
             if (from == null || cart.isEmpty()) return false
+            // Elle yazılan ürün adı raf sanılmasın: isimle arama penceresi açılır.
+            if (vm.looksLikeProduct(code)) return false
             // Sepet dolu: tanımsız raf hedef olarak eklenebilir.
             vm.unknownShelf(s) { toShelf = it }
             return true

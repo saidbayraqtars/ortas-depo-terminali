@@ -340,6 +340,8 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
             return true
         }
         if (!Repo.validShelfCode(s)) return false
+        // Elle yazılan ürün adı ("dayco") raf kodu desenine uyar ama raf değildir: false dönünce isimle arama penceresi açılır.
+        if (vm.looksLikeProduct(code)) return false
         vm.unknownShelf(s, rd) { shelf = it }
         return true
     }
@@ -361,16 +363,13 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
     ) {
         DocUnlockedNotice(vm)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // Hızlı özel raf (SIPARIS SATIS): en üstte küçük düğme; dokunmak etiketi okutmakla aynıdır, sonra ürünler okutulur, "Rafa kaldır" işler.
+            SpecialShelfChips(db.specialShelves.sorted(), shelf) { onShelf(it) }
             ProductScanField(
                 vm, "Ürün okutun",
                 if (shelf == null) "Önce raf okutun" else "Raf $shelf · ${fmt(cart.sumOf { it.qty })} adet",
                 ::onProduct, onOther = ::onShelf, showSearchLink = false,
             )
-            // Hızlı özel raf (SIPARIS SATIS): dokunmak barkodu okutmakla aynıdır; sonra ürünler okutulur, "Rafa kaldır" işler.
-            db.specialShelves.sorted().forEach { code ->
-                val active = shelf == code
-                SecondaryButton(if (active) "$code · seçili" else "$code · doğrudan siparişe", { if (!active) onShelf(code) }, dark = active)
-            }
             MessageBar(vm.message?.takeIf { it.second }?.first, true)
             val missing = lines.filter { it.remaining - cart.cartQty(it.product.id) > 1e-9 }
             val rows = if (tab == 0) {
@@ -571,6 +570,8 @@ fun ProductPutAwayScreen(vm: AppVm, online: Boolean, version: Int, productId: St
         } else {
             QtyDoneRow(qty, product.unit) { qtyDone = false; shelf = null }
             if (shelf == null) {
+                // Mal doğrudan siparişe gidiyorsa: küçük düğme etiketi okutmakla aynıdır (adres verilmez, stok tutulmaz).
+                SpecialShelfChips(db.specialShelves.sorted(), null) { onShelf(it) }
                 ScanField("Raf okutun", (suggested?.let { "Önerilen raf: $it" } ?: if (removed.isEmpty()) "Ürün henüz hiçbir rafta yok" else "Raf adresi silindi, öneri yok") + " · ürünü tekrar okutunca +1", true, vm.repo.prefs.cameraButton, { onShelf(it) }, onTextChange = { typed = it })
                 MessageBar(vm.message?.first, vm.message?.second == true)
                 ShelfChoices(vm, productId, d, typed, { onShelf(it) }) { removed = removed + it }
@@ -582,6 +583,29 @@ fun ProductPutAwayScreen(vm: AppVm, online: Boolean, version: Int, productId: St
 
     conflict?.let { (current, scanned) ->
         ShelfConflictDialog(vm, product, current, scanned, d, { shelf = it; conflict = null }, { conflict = null })
+    }
+}
+
+/**
+ * Özel raf (SIPARIS SATIS) için küçük hızlı düğme. Dokunmak etiketi okutmakla aynıdır; okutma alanının üstünde durur, böylece
+ * etiketi taşımayan ya da elle yazmak istemeyen çalışan tek dokunuşla seçer. Seçiliyken koyu görünür. Odak almaz:
+ * okuyucunun Enter'ı düğmeye basmasın.
+ */
+@Composable
+private fun SpecialShelfChips(codes: List<String>, active: String?, onPick: (String) -> Unit) {
+    if (codes.isEmpty()) return
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        codes.forEach { code ->
+            val on = active == code
+            val shape = RoundedCornerShape(18.dp)
+            Box(
+                Modifier.height(36.dp).clip(shape).background(if (on) C.Bar else C.Surface).border(1.5.dp, C.Bar, shape)
+                    .focusProperties { canFocus = false }.clickable { if (!on) onPick(code) }.padding(horizontal = 14.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(if (on) "$code · seçili" else code, color = if (on) Color.White else C.Ink, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1)
+            }
+        }
     }
 }
 

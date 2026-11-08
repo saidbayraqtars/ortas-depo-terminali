@@ -64,8 +64,8 @@ Taslak **Vega'ya ve sunucuya hiçbir şey yazmaz**; okutulanlar ancak **Rafa kal
   kayıtlı rafı yoksa önce raf istenir. Belgede kalandan fazlası da rafa kalkar (uyarıyla). Ayrılırken okutulanlar için "rafa kaldırılsın mı"
   sorulur. **Kalan** sekmesi belgede henüz okutulmamış kalemleri gösterir.
 - **Özel raf: SIPARIS SATIS** (2.3.0+): mal kabulden raf yerine doğrudan sipariş hazırlığına giden mal için. Raf yerine **SIPARIS SATIS**
-  barkodu okutulur (ya da belge içinde **SIPARIS SATIS · doğrudan siparişe** düğmesine dokunulur, okutmakla aynıdır; ürün okutarak
-  rafa kaldırmada "Ürünün rafları" listesinden seçilir), ürünler her zamanki gibi okutulur; **Rafa kaldır**dan sonra seçim kalkar, sonraki
+  barkodu okutulur (ya da okutma alanının üstündeki küçük **SIPARIS SATIS** düğmesine dokunulur, okutmakla aynıdır; belge içinde ve
+  ürün okutarak rafa kaldırmanın raf adımında vardır, seçilince "seçili" yazar), ürünler her zamanki gibi okutulur; **Rafa kaldır**dan sonra seçim kalkar, sonraki
   mal için düğmeye yeniden dokunulur (yanlışlıkla siparişe yazılmasın); böylece 50 adetlik girişin 5'i
   SIPARIS SATIS'e, 45'i rafa kaldırılırsa belgede/Rafa bekleyen'de eksik kalmaz. Bu rafta **stok tutulmaz** (rafta görünmez, sayıma girmez),
   ürüne **raf adresi verilmez** (Vega KOD10'a yazılmaz), raf sınırı uygulanmaz, "önerilen raf / farklı raf" uyarısı çıkmaz. Yalnız Rafa Kaldır'da
