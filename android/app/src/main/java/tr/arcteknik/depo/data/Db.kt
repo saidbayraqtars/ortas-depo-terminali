@@ -268,7 +268,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
         if (op.type == OpType.COUNT_SUBMIT || op.type == OpType.SHELF_ARRANGE || (ids.isEmpty() && op.type != OpType.SHELF_ADD)) return clearMasterParts()
         val w = writableDatabase
         w.delete("master_part", "key IN ('head', 'shelves')", null)
-        for (b in ids.map { Buckets.of(it) }.toSet()) w.delete("master_part", "key=? OR key=?", arrayOf("b$b", "q$b"))
+        for (b in ids.map { Buckets.of(it) }.toSet()) forgetBucket(w, b)
     }
 
     /**
@@ -285,16 +285,30 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
         }
         val w = writableDatabase
         w.delete("master_part", "key='shelves'", null)
-        for (b in ids.map { Buckets.of(it) }.toSet()) w.delete("master_part", "key=? OR key=?", arrayOf("b$b", "q$b"))
+        for (b in ids.map { Buckets.of(it) }.toSet()) forgetBucket(w, b)
+    }
+
+    /** Kovanın bütün parçalarının (kart, raf stoku, raf adresi, Vega stoku) özetini unutur: sonraki turda sunucu yeniden gönderir. */
+    private fun forgetBucket(w: SQLiteDatabase, b: Int) {
+        w.delete("master_part", "key IN (?,?,?,?)", arrayOf("b$b", "l$b", "h$b", "q$b"))
     }
 
     /** [applyParts] sonucu: sunucuda kalan değişmiş kova sayısı ve geldiyse "head" (depo, belge, uygulama sürümü). */
     class PartsResult(val remaining: Int, val head: JSONObject?, val parts: Int, val surum: Int = -1)
 
     /**
-     * Sunucunun `/api/master/parts` cevabını akıştan okur. Her parça (head, raflar, bir kova) kendi kısa işlemiyle
-     * yazılır: kullanıcı kayıt yaparsa en çok bir kovanın (~2 bin ürün) yazılmasını bekler, ekran donmaz;
-     * bağlantı yarıda koparsa yazılan kovalar kalır, sonraki tur kaldığı yerden devam eder.
+     * Sunucunun `/api/master/parts` cevabını akıştan okur ve yerel tablolara FARK olarak yazar.
+     *
+     * 2.3.1'e kadar her parça "işlemi aç → ağdan oku → kovayı sil, baştan yaz → işlemi kapat" diye yazılıyordu: yazma kilidi
+     * ağdan veri beklenirken de tutuluyordu. Depoda Wi-Fi takılınca (parça başına 20-180 sn görüldü) kullanıcının okutması
+     * o kilidi bekleyip ekranı donduruyor, Android "yanıt vermiyor" diyordu; ayrıca tek bir raf miktarı değişse 2 bin ürünlük
+     * kova silinip yeniden yazılıyordu. Artık:
+     *  1. parça önce bütünüyle belleğe okunur (kilit yok; ağ ne kadar yavaş olursa olsun ekran beklemez),
+     *  2. sonra kısa bir işlemde yereldeki haliyle karşılaştırılır ve yalnız farklı satırlar yazılır (bir rafa kaldırma = 1 satır).
+     * Bağlantı yarıda koparsa yazılan parçalar kalır, sonraki tur kaldığı yerden devam eder.
+     *
+     * Parçalar: `head`, `shelves`, `b<kova>` ürün kartları (v2 sunucuda raf stoku ve raf adresleri de içindedir), v3 sunucuda
+     * ayrıca `l<kova>` raf stoku ve `h<kova>` raf adresleri, `q<kova>` Vega stoku. Hangi alan geldiyse o yazılır.
      */
     fun applyParts(input: Reader): PartsResult {
         var remaining = 0
@@ -320,21 +334,16 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
                                     "key" -> key = r.nextString()
                                     "hash" -> hash = r.nextString()
                                     "data" -> {
-                                        db.beginTransaction()
-                                        try {
-                                            when {
-                                                key == "head" -> (r.readValue() as JSONObject).also { applyHead(db, it); head = it }
-                                                key == "shelves" -> writeShelves(db, r)
-                                                key.startsWith("b") -> writeBucket(db, key.substring(1).toInt(), r)
-                                                key.startsWith("q") -> writeStock(db, key.substring(1).toInt(), r)
-                                                else -> r.skipValue()
+                                        val no = key.drop(1).toIntOrNull()
+                                        when {
+                                            key == "head" -> (r.readValue() as JSONObject).also { h ->
+                                                db.inTx { applyHead(db, h); savePart(db, key, hash) }
+                                                head = h
                                             }
-                                            db.insertWithOnConflict("master_part", null, ContentValues().apply {
-                                                put("key", key); put("hash", hash)
-                                            }, SQLiteDatabase.CONFLICT_REPLACE)
-                                            db.setTransactionSuccessful()
-                                        } finally {
-                                            db.endTransaction()
+                                            key == "shelves" -> applyShelves(db, r.readShelves(), key, hash)
+                                            no != null && key[0] in "blh" -> r.readBucket().also { d -> db.inTx { applyBucket(db, no, d); savePart(db, key, hash) } }
+                                            no != null && key[0] == 'q' -> r.readStock().also { items -> db.inTx { applyStock(db, no, items); savePart(db, key, hash) } }
+                                            else -> r.skipValue()
                                         }
                                         parts++
                                     }
@@ -353,81 +362,293 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
         return PartsResult(remaining, head, parts, surum)
     }
 
-    private fun writeShelves(db: SQLiteDatabase, r: JsonReader) {
-        db.delete("shelf", null, null)
+    /** Kısa yazma işlemi. Ekranlar (başka bağlantıdan okuyanlar) beklemesin diye dışlayıcı değil. */
+    private inline fun SQLiteDatabase.inTx(block: () -> Unit) {
+        beginTransactionNonExclusive()
+        try {
+            block()
+            setTransactionSuccessful()
+        } finally {
+            endTransaction()
+        }
+    }
+
+    private fun savePart(db: SQLiteDatabase, key: String, hash: String) {
+        db.insertWithOnConflict("master_part", null, ContentValues().apply {
+            put("key", key); put("hash", hash)
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    private class PRow(val id: String, val code: String, val name: String, val unit: String, val barcodes: List<String>, val stocks: List<Pair<Int, Double>>?)
+    private class LRow(val depot: Int, val pid: String, val shelf: String, val qty: Double)
+    private class SRow(val id: String, val stocks: List<Pair<Int, Double>>)
+    private class BucketData(var products: List<PRow>? = null, var locations: List<LRow>? = null, var homes: List<LRow>? = null)
+
+    private fun JsonReader.text(): String = if (peek() == JsonToken.NULL) "".also { nextNull() } else nextString()
+
+    private inline fun JsonReader.each(f: () -> Unit) {
+        if (peek() == JsonToken.NULL) return nextNull()
+        beginArray()
+        while (hasNext()) f()
+        endArray()
+    }
+
+    private fun JsonReader.readStocks(): List<Pair<Int, Double>> {
+        if (peek() == JsonToken.NULL) return emptyList<Pair<Int, Double>>().also { nextNull() }
+        val out = ArrayList<Pair<Int, Double>>(2)
+        beginObject()
+        while (hasNext()) {
+            val depot = nextName().toIntOrNull() ?: 0
+            out += depot to nextDouble()
+        }
+        endObject()
+        return out
+    }
+
+    /** Kova parçası: ürünler, raf stoku, raf adresleri (hangisi varsa). JSONObject kurulmadan, alan alan okunur. */
+    private fun JsonReader.readBucket(): BucketData {
+        val d = BucketData()
+        beginObject()
+        while (hasNext()) {
+            when (nextName()) {
+                "products" -> ArrayList<PRow>(2048).also { list ->
+                    d.products = list
+                    each {
+                        var id = ""; var code = ""; var name = ""; var unit = "Adet"
+                        var barcodes: MutableList<String>? = null
+                        var stocks: List<Pair<Int, Double>>? = null
+                        beginObject()
+                        while (hasNext()) {
+                            when (nextName()) {
+                                "id" -> id = text()
+                                "code" -> code = text()
+                                "name" -> name = text()
+                                "unit" -> unit = text().ifEmpty { "Adet" }
+                                "barcodes" -> each { (barcodes ?: ArrayList<String>(2).also { barcodes = it }) += text() }
+                                // Yalnız eski (v1) sunucu: Vega stoku kovanın içinde.
+                                "stocks" -> stocks = readStocks()
+                                else -> skipValue()
+                            }
+                        }
+                        endObject()
+                        if (id.isNotEmpty()) list += PRow(id, code, name, unit, barcodes ?: emptyList(), stocks)
+                    }
+                }
+                "locations" -> ArrayList<LRow>(1024).also { list -> d.locations = list; each { readRow()?.let { list += it } } }
+                "homes" -> ArrayList<LRow>(2048).also { list -> d.homes = list; each { readRow()?.let { list += it } } }
+                else -> skipValue()
+            }
+        }
+        endObject()
+        return d
+    }
+
+    private fun JsonReader.readRow(): LRow? {
+        var depot = 0; var pid = ""; var shelf = ""; var qty = 0.0
+        beginObject()
+        while (hasNext()) {
+            when (nextName()) {
+                "depot" -> depot = nextInt()
+                "productId" -> pid = text()
+                "shelf" -> shelf = text().uppercase()
+                "qty" -> qty = nextDouble()
+                else -> skipValue()
+            }
+        }
+        endObject()
+        return if (pid.isEmpty() || shelf.isEmpty()) null else LRow(depot, pid, shelf, qty)
+    }
+
+    private fun JsonReader.readStock(): List<SRow> {
+        val out = ArrayList<SRow>(1024)
+        beginObject()
+        while (hasNext()) {
+            when (nextName()) {
+                "items" -> each {
+                    var id = ""
+                    var st: List<Pair<Int, Double>> = emptyList()
+                    beginObject()
+                    while (hasNext()) {
+                        when (nextName()) {
+                            "id" -> id = text()
+                            "st" -> st = readStocks()
+                            else -> skipValue()
+                        }
+                    }
+                    endObject()
+                    if (id.isNotEmpty()) out += SRow(id, st)
+                }
+                else -> skipValue()
+            }
+        }
+        endObject()
+        return out
+    }
+
+    private fun JsonReader.readShelves(): List<Triple<Int, String, String>> {
+        val out = ArrayList<Triple<Int, String, String>>(4096)
+        each {
+            var depot = 0; var code = ""; var zone = ""
+            beginObject()
+            while (hasNext()) {
+                when (nextName()) {
+                    "depot" -> depot = nextInt()
+                    "code" -> code = text().uppercase()
+                    "zone" -> zone = text()
+                    else -> skipValue()
+                }
+            }
+            endObject()
+            if (code.isNotEmpty()) out += Triple(depot, code, zone)
+        }
+        return out
+    }
+
+    private fun SQLiteStatement.run(vararg args: Any) {
+        clearBindings()
+        args.forEachIndexed { i, v ->
+            when (v) {
+                is Int -> bindLong(i + 1, v.toLong())
+                is Double -> bindDouble(i + 1, v)
+                else -> bindString(i + 1, v.toString())
+            }
+        }
+        executeUpdateDelete()
+    }
+
+    private fun same(a: Double, b: Double) = Math.abs(a - b) < 1e-9
+
+    /**
+     * Raf listesi (Ortaş'ta 70 bin raf): yereldekiyle karşılaştırılır, yalnız eklenen/değişen/silinen raflar yazılır. İlk
+     * yüklemede hepsi yenidir; ekran uzun süre beklemesin diye 1000'erlik kısa işlemlerle yazılır. Özet en sonda kaydedilir:
+     * yarıda kalırsa sonraki tur aynı karşılaştırmayı yapar, kaldığı yerden devam etmiş olur.
+     */
+    private fun applyShelves(db: SQLiteDatabase, list: List<Triple<Int, String, String>>, key: String, hash: String) {
+        val old = HashMap<String, String>(list.size * 2)
+        db.rawQuery("SELECT depot, code, zone FROM shelf", null).use { c -> while (c.moveToNext()) old["${c.getInt(0)}|${c.getString(1)}"] = c.getString(2) }
+        val seen = HashSet<String>(list.size * 2)
+        val upsert = ArrayList<Triple<Int, String, String>>()
+        for (s in list) {
+            val k = "${s.first}|${s.second}"
+            seen += k
+            if (old[k] != s.third) upsert += s
+        }
+        val remove = old.keys.filter { it !in seen }
         val ins = db.compileStatement("INSERT OR REPLACE INTO shelf(depot, code, zone) VALUES(?,?,?)")
-        r.eachObject { s -> ins.exec(s.optInt("depot", 0), s.getString("code").uppercase(), s.optString("zone", "")) }
+        val del = db.compileStatement("DELETE FROM shelf WHERE depot=? AND code=?")
+        for (chunk in upsert.chunked(1000)) db.inTx { for (s in chunk) ins.exec(s.first, s.second, s.third) }
+        for (chunk in remove.chunked(1000)) db.inTx { for (k in chunk) del.run(k.substringBefore('|').toInt(), k.substringAfter('|')) }
+        db.inTx { savePart(db, key, hash) }
+    }
+
+    /** Kova parçasında gelen alanlar (ürünler / raf stoku / raf adresleri) yereldekiyle karşılaştırılıp yazılır. Çağıran işlemin içinde. */
+    private fun applyBucket(db: SQLiteDatabase, b: Int, d: BucketData) {
+        val arg = arrayOf(b.toString())
+        d.products?.let { list ->
+            val old = HashMap<String, Array<String>>(list.size * 2)
+            db.rawQuery("SELECT id, code, name, unit FROM product WHERE bucket=?", arg).use { c ->
+                while (c.moveToNext()) old[c.getString(0)] = arrayOf(c.getString(1), c.getString(2), c.getString(3))
+            }
+            val oldBarcodes = HashMap<String, MutableList<String>>()
+            db.rawQuery("SELECT b.product_id, b.code FROM barcode b JOIN product p ON p.id=b.product_id WHERE p.bucket=?", arg).use { c ->
+                while (c.moveToNext()) oldBarcodes.getOrPut(c.getString(0)) { ArrayList(2) } += c.getString(1)
+            }
+            val insProduct = db.compileStatement("INSERT OR REPLACE INTO product(id, code, name, unit, vega_stock, bucket, search) VALUES(?,?,?,?,0,?,?)")
+            val updProduct = db.compileStatement("UPDATE product SET code=?, name=?, unit=?, search=? WHERE id=?")
+            val insBarcode = db.compileStatement("INSERT OR REPLACE INTO barcode(code, product_id) VALUES(?,?)")
+            val delBarcode = db.compileStatement("DELETE FROM barcode WHERE code=? AND product_id=?")
+            val seen = HashSet<String>(list.size * 2)
+            var added = false
+            for (p in list) {
+                seen += p.id
+                val o = old[p.id]
+                if (o == null) {
+                    insProduct.exec(p.id, p.code, p.name, p.unit, b, Fuzzy.searchKey(p.code, p.name))
+                    added = true
+                } else if (o[0] != p.code || o[1] != p.name || o[2] != p.unit) {
+                    updProduct.run(p.code, p.name, p.unit, Fuzzy.searchKey(p.code, p.name), p.id)
+                }
+                val ob = oldBarcodes[p.id]
+                for (code in p.barcodes) if (ob == null || code !in ob) insBarcode.exec(code, p.id)
+                if (ob != null) for (code in ob) if (code !in p.barcodes) delBarcode.run(code, p.id)
+            }
+            for (id in old.keys) {
+                if (id in seen) continue
+                db.delete("barcode", "product_id=?", arrayOf(id))
+                db.delete("product_stock", "product_id=?", arrayOf(id))
+                db.delete("product", "id=?", arrayOf(id))
+            }
+            if (list.any { it.stocks != null }) {
+                // Eski (v1) sunucu: stok kovanın içinde.
+                applyStock(db, b, list.map { SRow(it.id, it.stocks ?: emptyList()) })
+            } else if (added) {
+                // Yeni gelen ürünün Vega stoku henüz yok: stok parçası elimizdekiyle aynı özetteyse sunucu göndermezdi. Özet
+                // unutulur ki (bu cevapta gelmezse) sonraki turda istensin.
+                db.delete("master_part", "key=?", arrayOf("q$b"))
+            }
+        }
+        d.locations?.let { list ->
+            val old = HashMap<String, Double>(list.size * 2)
+            db.rawQuery("SELECT depot, product_id, shelf, qty FROM location WHERE bucket=?", arg).use { c ->
+                while (c.moveToNext()) old["${c.getInt(0)}|${c.getString(1)}|${c.getString(2)}"] = c.getDouble(3)
+            }
+            val ins = db.compileStatement("INSERT OR REPLACE INTO location(depot, product_id, shelf, qty, bucket) VALUES(?,?,?,?,?)")
+            val seen = HashSet<String>(list.size * 2)
+            for (l in list) {
+                val k = "${l.depot}|${l.pid}|${l.shelf}"
+                seen += k
+                val o = old[k]
+                if (o == null || !same(o, l.qty)) ins.exec(l.depot, l.pid, l.shelf, l.qty, b)
+            }
+            for (k in old.keys) if (k !in seen) k.split('|', limit = 3).let { db.delete("location", "depot=? AND product_id=? AND shelf=?", arrayOf(it[0], it[1], it[2])) }
+        }
+        d.homes?.let { list ->
+            val old = HashSet<String>(list.size * 2)
+            db.rawQuery("SELECT depot, product_id, shelf FROM home WHERE bucket=?", arg).use { c ->
+                while (c.moveToNext()) old += "${c.getInt(0)}|${c.getString(1)}|${c.getString(2)}"
+            }
+            val ins = db.compileStatement("INSERT OR REPLACE INTO home(depot, product_id, shelf, bucket) VALUES(?,?,?,?)")
+            val seen = HashSet<String>(list.size * 2)
+            for (h in list) {
+                val k = "${h.depot}|${h.pid}|${h.shelf}"
+                seen += k
+                if (k !in old) ins.exec(h.depot, h.pid, h.shelf, b)
+            }
+            for (k in old) if (k !in seen) k.split('|', limit = 3).let { db.delete("home", "depot=? AND product_id=? AND shelf=?", arrayOf(it[0], it[1], it[2])) }
+        }
     }
 
     /**
-     * Bir kovanın Vega stoku (v2 sunucu, `q` parçası): kovadaki ürünlerin stokları baştan yazılır. Parçada olmayan ürünün
-     * stoku 0'dır. Kovada olmayan ürün satırı alınmaz (kova henüz gelmediyse stok öksüz kalmasın).
+     * Bir kovanın Vega stoku (`q` parçası; v1 sunucuda kovanın içinden): kovadaki ürünlerin depo stokları. Parçada olmayan
+     * ürünün stoku 0'dır (satırı silinir). Kovada olmayan ürünün satırı alınmaz (kova henüz gelmediyse stok öksüz kalmasın).
+     * Vega'da her satışta bütün kovanın stoku silinip yeniden yazılmaz; yalnız değişen satır yazılır.
      */
-    private fun writeStock(db: SQLiteDatabase, b: Int, r: JsonReader) {
+    private fun applyStock(db: SQLiteDatabase, b: Int, items: List<SRow>) {
         val arg = arrayOf(b.toString())
-        db.execSQL("DELETE FROM product_stock WHERE product_id IN (SELECT id FROM product WHERE bucket=?)", arg)
-        db.execSQL("UPDATE product SET vega_stock=0 WHERE bucket=?", arg)
-        val upd = db.compileStatement("UPDATE product SET vega_stock=? WHERE id=?")
-        val insStock = db.compileStatement("INSERT OR REPLACE INTO product_stock(product_id, depot, qty) VALUES(?,?,?)")
-        r.beginObject()
-        while (r.hasNext()) {
-            when (r.nextName()) {
-                "items" -> r.eachObject { item ->
-                    val id = item.getString("id")
-                    upd.clearBindings()
-                    upd.bindDouble(1, item.optDouble("vs", 0.0))
-                    upd.bindString(2, id)
-                    if (upd.executeUpdateDelete() > 0) {
-                        val st = item.optJSONObject("st")
-                        if (st != null) for (k in st.keys()) insStock.exec(id, k.toIntOrNull() ?: 0, st.optDouble(k, 0.0))
-                    }
-                }
-                else -> r.skipValue()
+        val known = HashSet<String>(4096)
+        db.rawQuery("SELECT id FROM product WHERE bucket=?", arg).use { c -> while (c.moveToNext()) known += c.getString(0) }
+        val old = HashMap<String, Double>(items.size * 2)
+        db.rawQuery("SELECT s.product_id, s.depot, s.qty FROM product_stock s JOIN product p ON p.id=s.product_id WHERE p.bucket=?", arg).use { c ->
+            while (c.moveToNext()) old["${c.getString(0)}|${c.getInt(1)}"] = c.getDouble(2)
+        }
+        val ins = db.compileStatement("INSERT OR REPLACE INTO product_stock(product_id, depot, qty) VALUES(?,?,?)")
+        val seen = HashSet<String>(items.size * 2)
+        for (item in items) {
+            if (item.id !in known) continue
+            for ((depot, qty) in item.stocks) {
+                val k = "${item.id}|$depot"
+                seen += k
+                val o = old[k]
+                if (o == null || !same(o, qty)) ins.exec(item.id, depot, qty)
             }
         }
-        r.endObject()
-    }
-
-    private fun writeBucket(db: SQLiteDatabase, b: Int, r: JsonReader) {
-        val arg = arrayOf(b.toString())
-        // Kova yeniden yazılırken stoku silinir (v2'de stok ayrı `q` parçasında gelir); stok özeti unutulur ki bağlantı
-        // yarıda kalırsa sonraki turda sunucu stok parçasını yeniden göndersin.
-        db.delete("master_part", "key=?", arrayOf("q$b"))
-        db.execSQL("DELETE FROM product_stock WHERE product_id IN (SELECT id FROM product WHERE bucket=?)", arg)
-        db.execSQL("DELETE FROM barcode WHERE product_id IN (SELECT id FROM product WHERE bucket=?)", arg)
-        for (t in listOf("product", "location", "home")) db.delete(t, "bucket=?", arg)
-        val insProduct = db.compileStatement("INSERT OR REPLACE INTO product(id, code, name, unit, vega_stock, bucket, search) VALUES(?,?,?,?,?,?,?)")
-        val insStock = db.compileStatement("INSERT OR REPLACE INTO product_stock(product_id, depot, qty) VALUES(?,?,?)")
-        val insBarcode = db.compileStatement("INSERT OR REPLACE INTO barcode(code, product_id) VALUES(?,?)")
-        val insLocation = db.compileStatement("INSERT OR REPLACE INTO location(depot, product_id, shelf, qty, bucket) VALUES(?,?,?,?,?)")
-        val insHome = db.compileStatement("INSERT OR REPLACE INTO home(depot, product_id, shelf, bucket) VALUES(?,?,?,?)")
-        r.beginObject()
-        while (r.hasNext()) {
-            when (r.nextName()) {
-                "products" -> r.eachObject { p ->
-                    val id = p.getString("id")
-                    insProduct.exec(id, p.getString("code"), p.getString("name"), p.optString("unit", "Adet"), p.optDouble("vegaStock", 0.0), b, Fuzzy.searchKey(p.getString("code"), p.getString("name")))
-                    val stocks = p.optJSONObject("stocks")
-                    if (stocks != null) for (k in stocks.keys()) insStock.exec(id, k.toIntOrNull() ?: 0, stocks.optDouble(k, 0.0))
-                    val bcs = p.optJSONArray("barcodes")
-                    for (j in 0 until (bcs?.length() ?: 0)) insBarcode.exec(bcs!!.getString(j), id)
-                }
-                "locations" -> r.eachObject { l ->
-                    insLocation.exec(l.optInt("depot", 0), l.getString("productId"), l.getString("shelf").uppercase(), l.getDouble("qty"), b)
-                }
-                "homes" -> r.eachObject { h ->
-                    insHome.exec(h.optInt("depot", 0), h.getString("productId"), h.getString("shelf").uppercase(), b)
-                }
-                else -> r.skipValue()
-            }
-        }
-        r.endObject()
+        for (k in old.keys) if (k !in seen) db.delete("product_stock", "product_id=? AND depot=?", arrayOf(k.substringBeforeLast('|'), k.substringAfterLast('|')))
     }
 
     /** Depolar, açık belgeler, sayım oturumları ve kullanıcılar. Çağıran işlemin içinde. */
     private fun applyHead(db: SQLiteDatabase, head: JSONObject) {
         val dd = head.optInt("defaultDepot", 0)
-        for (t in listOf("depot", "receipt", "receipt_line", "app_user")) db.delete(t, null, null)
+        for (t in listOf("depot", "app_user")) db.delete(t, null, null)
         val depots = head.optJSONArray("depots")
         for (i in 0 until (depots?.length() ?: 0)) {
             val d = depots!!.getJSONObject(i)
@@ -435,29 +656,54 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
                 put("id", d.getInt("id")); put("name", d.optString("name", d.getInt("id").toString()))
             }, SQLiteDatabase.CONFLICT_REPLACE)
         }
+        // Belgeler ve satırları (Ortaş'ta "Rafa bekleyen ürünler" binlerce satır) her rafa kaldırmada silinip yeniden yazılmaz:
+        // yereldekiyle karşılaştırılır, yalnız değişen satır yazılır.
+        val oldReceipts = HashMap<String, String>()
+        db.rawQuery("SELECT id, doc_no, supplier, date, depot, depot_name FROM receipt", null).use { c ->
+            while (c.moveToNext()) oldReceipts[c.getString(0)] = "${c.getString(1)}\u0001${c.getString(2)}\u0001${c.getString(3)}\u0001${c.getInt(4)}\u0001${c.getString(5)}"
+        }
+        val oldLines = HashMap<String, String>()
+        db.rawQuery("SELECT id, receipt_id, product_id, accepted, shelved FROM receipt_line", null).use { c ->
+            while (c.moveToNext()) oldLines[c.getString(0)] = "${c.getString(1)}\u0001${c.getString(2)}\u0001${c.getDouble(3)}\u0001${c.getDouble(4)}"
+        }
+        val seenReceipts = HashSet<String>()
+        val seenLines = HashSet<String>()
         val receipts = head.optJSONArray("receipts")
         for (i in 0 until (receipts?.length() ?: 0)) {
             val r = receipts!!.getJSONObject(i)
-            db.insert("receipt", null, ContentValues().apply {
-                put("id", r.getString("id"))
-                put("doc_no", r.getString("docNo"))
-                put("supplier", r.optString("supplier", ""))
-                put("date", r.optString("date", ""))
-                put("depot", r.optInt("depot", dd))
-                put("depot_name", r.optString("depotName", ""))
-            })
+            val rid = r.getString("id")
+            seenReceipts += rid
+            val depot = r.optInt("depot", dd)
+            if (oldReceipts[rid] != "${r.getString("docNo")}\u0001${r.optString("supplier", "")}\u0001${r.optString("date", "")}\u0001$depot\u0001${r.optString("depotName", "")}") {
+                db.insertWithOnConflict("receipt", null, ContentValues().apply {
+                    put("id", rid)
+                    put("doc_no", r.getString("docNo"))
+                    put("supplier", r.optString("supplier", ""))
+                    put("date", r.optString("date", ""))
+                    put("depot", depot)
+                    put("depot_name", r.optString("depotName", ""))
+                }, SQLiteDatabase.CONFLICT_REPLACE)
+            }
             val lines = r.optJSONArray("lines")
             for (j in 0 until (lines?.length() ?: 0)) {
                 val l = lines!!.getJSONObject(j)
-                db.insert("receipt_line", null, ContentValues().apply {
-                    put("id", l.getString("id"))
-                    put("receipt_id", r.getString("id"))
-                    put("product_id", l.getString("productId"))
-                    put("accepted", l.getDouble("accepted"))
-                    put("shelved", l.optDouble("shelved", 0.0))
-                })
+                val lid = l.getString("id")
+                seenLines += lid
+                val accepted = l.getDouble("accepted")
+                val shelved = l.optDouble("shelved", 0.0)
+                if (oldLines[lid] != "$rid\u0001${l.getString("productId")}\u0001$accepted\u0001$shelved") {
+                    db.insertWithOnConflict("receipt_line", null, ContentValues().apply {
+                        put("id", lid)
+                        put("receipt_id", rid)
+                        put("product_id", l.getString("productId"))
+                        put("accepted", accepted)
+                        put("shelved", shelved)
+                    }, SQLiteDatabase.CONFLICT_REPLACE)
+                }
             }
         }
+        for (id in oldLines.keys) if (id !in seenLines) db.delete("receipt_line", "id=?", arrayOf(id))
+        for (id in oldReceipts.keys) if (id !in seenReceipts) db.delete("receipt", "id=?", arrayOf(id))
         // Sayım oturumları: sunucudan gelenler eklenir/güncellenir, cihazda sürenlerin satırları korunur.
         val counts = head.optJSONArray("counts")
         val serverIds = mutableSetOf<String>()
@@ -659,6 +905,11 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
     @Volatile var specialShelves: Set<String> = emptySet()
 
     fun isSpecialShelf(code: String): Boolean = specialShelves.isNotEmpty() && code.trim().uppercase() in specialShelves
+
+    /** Rafa Kaldır'ın belgeye bağlı olmadığı depolar (sunucunun `freePutAwayDepots`'u; Ortaş: 108 Toybelen). */
+    @Volatile var freePutAwayDepots: Set<Int> = emptySet()
+
+    fun isFreePutAway(d: Int): Boolean = d in freePutAwayDepots
 
     fun shelfExists(code: String, d: Int = depot): Boolean =
         shelfAllowed(code) && scalar("SELECT 1 FROM shelf WHERE depot=? AND code=?", d.toString(), code.trim().uppercase()) != null

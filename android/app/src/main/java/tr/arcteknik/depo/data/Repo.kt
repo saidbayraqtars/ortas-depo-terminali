@@ -16,12 +16,14 @@ class Repo(val db: Db, val prefs: Prefs) {
     init {
         db.depot = prefs.depot
         db.specialShelves = prefs.specialShelves
+        db.freePutAwayDepots = prefs.freePutAwayDepots
     }
 
     /** Ana veri (head) geldi: tercihler ve özel raflar güncellenir. */
     fun applyMaster(head: JSONObject) {
         prefs.applyMaster(head)
         db.specialShelves = prefs.specialShelves
+        db.freePutAwayDepots = prefs.freePutAwayDepots
     }
 
     /** Çalışılan depoyu değiştirir (transfer, sayım, sorgu bu depoda). */

@@ -14,10 +14,49 @@ function open(file, ayar = {}) {
   secenek = ayar;
   dosya = file;
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  hazirlar.clear();
   db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
   migrate();
+  izKur();
+  acilisNo++;
   return db;
+}
+
+// ---- Değişen ürün izi ---------------------------------------------------------------------------
+// Terminale giden ana veri (depo.js "Ana veri, artımlı") her değişiklikte baştan kurulmasın diye: raf stoku (location), raf
+// adresi (product_home) ve raf (shelf) tablolarında değişen ürünler geçici bir tabloya düşer. Tetikleyiciler bu bağlantıya
+// özeldir (TEMP), veritabanı dosyasına yazılmaz; hangi koddan yazılırsa yazılsın satır değişikliği kaçmaz.
+
+function izKur() {
+  // INSERT OR IGNORE kullanılmaz: tetikleyen sorgunun çakışma kuralı (OR REPLACE, upsert) tetikleyicininkini ezer.
+  const ekle = (t, pid) => `INSERT INTO degisen SELECT '${t}', ${pid} WHERE NOT EXISTS (SELECT 1 FROM degisen WHERE t='${t}' AND pid=${pid});`;
+  // Tablonun değişiklik sayacı (tabloSayaci): "son bakışımdan beri bu tablo değişti mi" sorusu için.
+  const say = (t) => `UPDATE degisen_sayac SET n = n + 1 WHERE t='${t}';`;
+  const tetik = (ad, tablo, t, pid) => `
+    CREATE TEMP TRIGGER IF NOT EXISTS ${ad}_i AFTER INSERT ON main.${tablo} BEGIN ${ekle(t, pid('NEW'))} ${say(t)} END;
+    CREATE TEMP TRIGGER IF NOT EXISTS ${ad}_u AFTER UPDATE ON main.${tablo} BEGIN ${ekle(t, pid('NEW'))} ${ekle(t, pid('OLD'))} ${say(t)} END;
+    CREATE TEMP TRIGGER IF NOT EXISTS ${ad}_d AFTER DELETE ON main.${tablo} BEGIN ${ekle(t, pid('OLD'))} ${say(t)} END;`;
+  db.exec(`
+    CREATE TEMP TABLE IF NOT EXISTS degisen(t TEXT NOT NULL, pid TEXT NOT NULL, PRIMARY KEY(t, pid)) WITHOUT ROWID;
+    CREATE TEMP TABLE IF NOT EXISTS degisen_sayac(t TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID;
+    INSERT OR IGNORE INTO degisen_sayac VALUES('l', 0), ('h', 0), ('s', 0);
+    ${tetik('dg_l', 'location', 'l', (x) => `${x}.product_id`)}
+    ${tetik('dg_h', 'product_home', 'h', (x) => `${x}.product_id`)}
+    ${tetik('dg_s', 'shelf', 's', () => "''")}
+  `);
+}
+
+/** Tablonun (l: raf stoku, h: raf adresi, s: raf) bu açılıştan beri kaç satırı değişti. */
+function tabloSayaci(t) {
+  return get('SELECT n FROM temp.degisen_sayac WHERE t=?', t).n;
+}
+
+/** Son çağrıdan beri değişen satırların ürünleri: [{ t: 'l' | 'h' | 's', pid }]. Okununca iz boşalır. */
+function degisenAl() {
+  const r = all('SELECT t, pid FROM temp.degisen');
+  if (r.length) run('DELETE FROM temp.degisen');
+  return r;
 }
 
 function migrate() {
@@ -452,18 +491,36 @@ function migrate() {
     `);
     set('surum', '15');
   }
+  if (v < 16) {
+    // Ana veri artımlı kurulurken bir ürünün raf adresleri ürün kimliğiyle okunur (depo.js aynaUrun).
+    db.exec('CREATE INDEX IF NOT EXISTS ix_home_product ON product_home(product_id);');
+    set('surum', '16');
+  }
+}
+
+// Hazırlanmış sorgular saklanır: aynı sorgu (terminal isteği başına onlarca kez) her seferinde yeniden derlenmez.
+// Metnine değer gömülmüş (IN listeli) sorgular birikirse önbellek boşaltılır.
+const hazirlar = new Map();
+function hazir(sql) {
+  let s = hazirlar.get(sql);
+  if (!s) {
+    if (hazirlar.size >= 500) hazirlar.clear();
+    s = db.prepare(sql);
+    hazirlar.set(sql, s);
+  }
+  return s;
 }
 
 function get(sql, ...args) {
-  return db.prepare(sql).get(...args);
+  return hazir(sql).get(...args);
 }
 
 function all(sql, ...args) {
-  return db.prepare(sql).all(...args);
+  return hazir(sql).all(...args);
 }
 
 function run(sql, ...args) {
-  return db.prepare(sql).run(...args);
+  return hazir(sql).run(...args);
 }
 
 function set(key, value) {
@@ -503,8 +560,12 @@ function backup(hedef) {
 }
 
 function close() {
+  hazirlar.clear();
   if (db) db.close();
   db = null;
 }
 
-module.exports = { open, get, all, run, tx, set, meta, backup, close, file: () => dosya };
+// Veritabanı her açıldığında artar (yedekten dönüş): bellekteki türetilmiş veriler (ana veri aynaları) bununla geçersizleşir.
+let acilisNo = 0;
+
+module.exports = { open, get, all, run, tx, set, meta, backup, close, file: () => dosya, degisenAl, tabloSayaci, acilis: () => acilisNo, txIcinde: () => derinlik > 0 };

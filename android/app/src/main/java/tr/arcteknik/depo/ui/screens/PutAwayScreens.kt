@@ -264,6 +264,8 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
     // Belge depo bazlı: raflar ve öneri belgenin deposundan.
     // Ortak liste (BEK-<depo>) bütün bekleyenler bitince listeden kalkabilir; depo kimliği belge numarasındadır.
     val rd = receipt?.depot ?: receiptId.takeIf { it.startsWith("BEK-") }?.removePrefix("BEK-")?.toIntOrNull() ?: db.depot
+    // Belgeye bağlı olmayan depo (Ortaş: Toybelen): belgede olmayan ürün de okutulur, belgeden fazlası belgesiz kalkar, uyarı yok.
+    val freeDepot = db.isFreePutAway(rd)
 
     /**
      * Sepetteki her satır rafa kaldırılır: adet ürünün belge satırlarına (en çok kalanı olandan başlayarak) bölünür, artanı
@@ -280,10 +282,12 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
             }
             var left = c.qty
             pl.forEachIndexed { i, l ->
-                val q = if (i == pl.lastIndex) left else minOf(left, l.remaining)
+                // Belgesiz depoda belge satırı kalanından fazla işlenmez: artan aşağıda belgesiz kalkar.
+                val q = if (i == pl.lastIndex && !freeDepot) left else minOf(left, l.remaining)
                 if (q > 1e-9) vm.repo.putAway(l, c.shelf, q, vm.userName)
                 left -= q
             }
+            if (freeDepot && left > 1e-9) db.productById(c.productId, rd)?.let { vm.repo.putAwayProduct(it, c.shelf, left, vm.userName, rd) }
         }
         cart.clear()
         // Özel raf (SIPARIS SATIS) seçimi kaldırılınca kalmaz: sonraki mal yanlışlıkla siparişe yazılmasın (rafta izi kalmaz), yeniden dokunulur.
@@ -313,7 +317,8 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
     fun onProduct(p: Product) {
         // Ortak ürün listesinde (BEK-) ürünün bekleyeni başka bir çalışanca bitirilmiş olabilir: mal elinizdeyse yine okutulur, belgesiz kaldırılır.
         val shared = receiptId.startsWith("BEK-")
-        if (lines.none { it.product.id == p.id } && !shared) return vm.error("${p.name} bu belgede yok")
+        val notInDoc = lines.none { it.product.id == p.id }
+        if (notInDoc && !shared && !freeDepot) return vm.error("${p.name} bu belgede yok")
         val suggested = suggestedShelf(vm, p.id, rd)
         val target = shelf ?: suggested ?: return vm.error("${p.name}: önce rafı okutun (kayıtlı rafı yok)")
         val firstOnShelf = cart.cartQty(p.id, target) <= 1e-9
@@ -322,11 +327,13 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
         showRestored = false
         val total = cart.cartQty(p.id)
         when {
-            // Belgede kalandan fazlası da okutulur (mal fiziken rafa konur); uyarı verilir.
-            total - remaining(p.id) > 1e-9 -> vm.error("${p.name}: belgede ${fmt(remaining(p.id))} kalmıştı, ${fmt(total)} okutuldu")
+            // Belgede kalandan fazlası da okutulur (mal fiziken rafa konur); uyarı verilir. Belgesiz depoda uyarı yok.
+            !freeDepot && total - remaining(p.id) > 1e-9 -> vm.error("${p.name}: belgede ${fmt(remaining(p.id))} kalmıştı, ${fmt(total)} okutuldu")
             // Özel rafa (SIPARIS SATIS) giden mal başka raftaki stokla çakışmaz: uyarı verilmez.
             firstOnShelf && !db.isSpecialShelf(target) && suggested != null && suggested != target && db.qtyAt(p.id, suggested, rd) > 0 ->
                 vm.error("${p.name} şu an $suggested rafında; $target rafına da ekleniyor")
+            freeDepot && total - remaining(p.id) > 1e-9 ->
+                vm.ok("${p.name} · $target · ${fmt(n)} · ${if (notInDoc) "belgede yok, " else "belgeden fazlası "}belgesiz")
             else -> vm.ok("${p.name} · $target · ${fmt(n)}")
         }
     }
@@ -346,7 +353,7 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
         return true
     }
 
-    val over = lines.map { it.product.id }.distinct().filter { cart.cartQty(it) - remaining(it) > 1e-9 }
+    val over = if (freeDepot) emptyList() else lines.map { it.product.id }.distinct().filter { cart.cartQty(it) - remaining(it) > 1e-9 }
     BackHandler(enabled = cart.isNotEmpty()) { leaveAsk = true }
     Screen(
         receipt?.docNo ?: "Belge", sub = receipt?.let { listOf(it.depotName.takeIf { n -> n.isNotBlank() && db.depots().size > 1 }, it.supplier, "${it.doneLines} / ${it.lineCount}").filterNotNull().joinToString(" · ") },
@@ -380,7 +387,7 @@ fun PutAwayScreen(vm: AppVm, online: Boolean, version: Int, receiptId: String) {
                     BasketRow(
                         key = c.productId + "|" + c.shelf, name = p?.name ?: c.productId,
                         detail = listOfNotNull(p?.code, "→ ${c.shelf}", "belgede ${fmt(rem)}").joinToString(" · "),
-                        count = fmt(c.qty), countColor = if (tot - rem > 1e-9) C.Err else C.Ink,
+                        count = fmt(c.qty), countColor = if (!freeDepot && tot - rem > 1e-9) C.Err else C.Ink,
                         highlight = if (c === cart.last()) C.AccentBg else Color.Transparent,
                         onUndo = { cart.undo(c.productId, c.shelf) },
                     )
@@ -478,7 +485,10 @@ fun ProductPutAwayScreen(vm: AppVm, online: Boolean, version: Int, productId: St
     val free = remember(version) { db.unshelved(productId, d) }
     val onShelves = remember(version) { db.shelvedTotal(productId, d) }
     val elsewhere = remember(version) { db.pendingElsewhere(productId, d) }
-    val available = pending + free
+    // Belgeye bağlı olmayan depo (Ortaş: Toybelen): Vega stoku tutulamıyor, kayıtsız mal da rafa konuyor; sınır yok, yalnız uyarı.
+    val freeDepot = db.isFreePutAway(d)
+    val limit = pending + free
+    val available = if (freeDepot) UNLIMITED_QTY else limit
     // Sepet mantığı (1.8.2'deki diğer okutma ekranları gibi): ilk okutma 1 adet, ürün tekrar okutulunca +1; çok adet için "Değiştir".
     // Eskiden miktar kalan stoğun tamamıyla (ör. 24) açılıyordu.
     var qty by remember { mutableStateOf(minOf(1.0, available)) }
@@ -565,7 +575,9 @@ fun ProductPutAwayScreen(vm: AppVm, online: Boolean, version: Int, productId: St
         }
         if (!qtyDone) {
             QtyRow(qty, { qty = it }, product.unit, available)
-            if (free > 0 && qty > pending + 1e-9) Hint("${fmt(qty - maxOf(pending, 0.0))} ${product.unit.lowercase()} belgesiz rafa kalkar (Vega'da stok var, mal kabul belgesi yok).")
+            if (freeDepot && qty > limit + 1e-9) {
+                Hint("Vega'da bu depoda rafa kaldırılmamış ${fmt(maxOf(limit, 0.0))} ${product.unit.lowercase()} var; fazlası da belgesiz rafa kalkar (sayımda fark çıkabilir).")
+            } else if (free > 0 && qty > pending + 1e-9) Hint("${fmt(qty - maxOf(pending, 0.0))} ${product.unit.lowercase()} belgesiz rafa kalkar (Vega'da stok var, mal kabul belgesi yok).")
             elsewhere.forEach { (name, q) -> Hint("$name deposunda da açık belgede ${fmt(q)} var.") }
         } else {
             QtyDoneRow(qty, product.unit) { qtyDone = false; shelf = null }
@@ -690,13 +702,16 @@ private fun suggestedShelf(vm: AppVm, productId: String, d: Int, skip: Set<Strin
         ?: db.homeShelves(productId, d).firstOrNull { it !in skip }
 }
 
+/** Belgesiz depoda (Ortaş: Toybelen) rafa kaldırma miktarının pratikte sınırsız üst değeri. */
+internal const val UNLIMITED_QTY = 999_999.0
+
 @Composable
 fun QtyRow(qty: Double, onChange: (Double) -> Unit, unit: String, max: Double) {
     Card {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Miktar", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = C.Text2)
-                Hint("$unit · en çok ${fmt(max)}")
+                Hint(if (max >= UNLIMITED_QTY) unit else "$unit · en çok ${fmt(max)}")
             }
             QtyStepper(qty, onChange, max = max)
         }

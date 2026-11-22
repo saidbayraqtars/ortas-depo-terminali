@@ -63,6 +63,10 @@ Taslak **Vega'ya ve sunucuya hiçbir şey yazmaz**; okutulanlar ancak **Rafa kal
   değiştirilecekse yeni raf okutulur (3. kat, 2. kat, zemin gibi bölerek). Raf okutulmadıysa ürünün durduğu ya da asıl rafı kullanılır;
   kayıtlı rafı yoksa önce raf istenir. Belgede kalandan fazlası da rafa kalkar (uyarıyla). Ayrılırken okutulanlar için "rafa kaldırılsın mı"
   sorulur. **Kalan** sekmesi belgede henüz okutulmamış kalemleri gösterir.
+- **Belgeye bağlı olmayan depo** (2.4.0+, yönetici ayarı `belgesizDepolar`, Ortaş: 108 Toybelen): belge içinde belgede olmayan ürün de
+  okutulur ve belgesiz kalkar; belgedekinden fazlası uyarısız belgesiz kalkar (belge satırına kalanından fazlası yazılmaz). Ürün okutarak
+  kaldırmada "belgede + belgesiz" sınırı yoktur, yalnız bilgi notu çıkar. Ana ekrandaki Rafa Kaldır rozeti yalnız çalışılan deponun
+  bekleyenini sayar.
 - **Özel raf: SIPARIS SATIS** (2.3.0+): mal kabulden raf yerine doğrudan sipariş hazırlığına giden mal için. Raf yerine **SIPARIS SATIS**
   barkodu okutulur (ya da okutma alanının üstündeki küçük **SIPARIS SATIS** düğmesine dokunulur, okutmakla aynıdır; belge içinde ve
   ürün okutarak rafa kaldırmanın raf adımında vardır, seçilince "seçili" yazar), ürünler her zamanki gibi okutulur; **Rafa kaldır**dan sonra seçim kalkar, sonraki

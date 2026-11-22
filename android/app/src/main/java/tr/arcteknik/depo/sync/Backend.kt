@@ -143,8 +143,10 @@ class HttpBackend(private val baseUrl: String, private val deviceKey: String, pr
     override fun masterParts(known: Map<String, String>, max: Int, read: (Reader) -> Unit): Boolean {
         val k = JSONObject()
         known.forEach { (key, hash) -> k.put(key, hash) }
-        // v=2: Vega stoku kovadan ayrı parçada gelir (docs/API.md "Stok parçaları"); eski sunucu bunu yok sayar.
-        val body = JSONObject().put("known", k).put("max", max).put("v", 2).toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+        // v=3: kova üç parçadır (b ürün kartları, l raf stoku, h raf adresleri) ve Vega stoku ayrı parçadadır (q); bir rafa
+        // kaldırma yalnız birkaç KB'lık raf stoku parçasını indirir. 2.3.x sunucu bunu v=2 sayar (kova tek parça, stok ayrı),
+        // daha eskisi hiç bakmaz; terminal gelen parçada hangi alan varsa onu yazar (docs/API.md "Ana veri parçaları").
+        val body = JSONObject().put("known", k).put("max", max).put("v", 3).toString().toRequestBody("application/json; charset=utf-8".toMediaType())
         client.newCall(request("/api/master/parts").post(body).build()).execute().use { r ->
             if (r.code == 404) return false
             if (!r.isSuccessful) throw IOException(errorText(r.code, r.body?.string()))

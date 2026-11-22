@@ -54,8 +54,9 @@ import java.util.Locale
 fun HomeScreen(vm: AppVm, online: Boolean, version: Int) {
     val db = vm.repo.db
     // Kullanıcının çalışamayacağı depoların belge ve sayımları sayılmaz (yetki: yönetici programı Kullanıcılar).
-    // Rafa bekleyen mal ürün bazlı: sayı, bekleyen ürün (satır) sayısıdır.
-    val openReceipts = remember(version, vm.user) { db.receipts(true).filter { vm.canDepot(it.depot) }.sumOf { it.lineCount - it.doneLines } }
+    // Rafa bekleyen mal ürün bazlı: sayı, bekleyen ürün (satır) sayısıdır. Yalnız çalışılan deponun bekleyeni sayılır: Toybelen'de
+    // Merkez'in ~1000 bekleyeni rozette görünüyordu (Batuhan, 2026-11-20); Rafa Kaldır listesi de varsayılan olarak bu depoyu gösterir.
+    val openReceipts = remember(version, vm.user, db.depot) { db.receipts(true).filter { it.depot == db.depot && vm.canDepot(it.depot) }.sumOf { it.lineCount - it.doneLines } }
     val openCounts = remember(version, vm.user) { db.countSessions().count { vm.canDepot(it.depot) } }
     val pending = remember(version) { db.pendingOpCount() }
     val transfer = remember(version) { vm.repo.transferInfo() }

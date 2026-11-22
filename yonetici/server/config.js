@@ -52,6 +52,10 @@ const DEFAULTS = {
   // Özel raflar (Ortaş: "SIPARIS SATIS"): fiziksel raf değildir. Mal kabulden doğrudan sipariş hazırlığına giden mal bu barkodla
   // "rafa kaldırıldı" sayılır (rafa bekleyen düşer); rafta stok tutulmaz, ürüne raf adresi verilmez, Vega'ya bir şey yazılmaz.
   ozelRaflar: ['SIPARIS SATIS'],
+  // Rafa Kaldır'ın belgeye bağlı olmadığı depolar (Ortaş: 108 Toybelen; Batuhan isteği, 2026-11-20). Bu depolarda terminal
+  // belgede olmayan ürünü de okutur (belgesiz kalkar) ve belge seçmeden kaldırmada Vega stoku sınırı uygulamaz (yalnız uyarır).
+  // Toybelen'de Vega stoku tutulamıyor, rafçı yok; eldeki mal "sağdan soldan" rafa konuyor. Bedeli: sayımda rafta fazlalık çıkabilir.
+  belgesizDepolar: [108],
   // Terminale giden ürün listesi: 'aktif' = stoklu, son N günde hareketli ya da rafta olan kartlar.
   urun: { kapsam: 'aktif', gun: 365 },
   sayim: {

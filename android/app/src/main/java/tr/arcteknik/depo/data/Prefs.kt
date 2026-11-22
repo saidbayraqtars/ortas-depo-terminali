@@ -95,10 +95,20 @@ class Prefs(context: Context) {
         get() = sp.getStringSet("specialShelves", emptySet())?.toSet() ?: emptySet()
         set(v) = sp.edit().putStringSet("specialShelves", v.toSet()).apply()
 
+    /**
+     * Rafa Kaldır'ın belgeye bağlı olmadığı depolar (Ortaş: 108 Toybelen): belgede olmayan ürün de okutulur (belgesiz kalkar),
+     * belge seçmeden kaldırmada Vega stoku sınırı uygulanmaz. Ana veriyle gelir; sunucu eskiyse boş (eski davranış).
+     */
+    var freePutAwayDepots: Set<Int>
+        get() = (sp.getStringSet("freePutAwayDepots", emptySet()) ?: emptySet()).mapNotNull { it.toIntOrNull() }.toSet()
+        set(v) = sp.edit().putStringSet("freePutAwayDepots", v.map { it.toString() }.toSet()).apply()
+
     /** Ana veriyle gelen depo adı ve uygulama sürümü bilgisini saklar. */
     fun applyMaster(json: JSONObject) {
         val special = json.optJSONArray("specialShelves")
         specialShelves = (0 until (special?.length() ?: 0)).map { special!!.getString(it).trim().uppercase() }.filter { it.isNotEmpty() }.toSet()
+        val free = json.optJSONArray("freePutAwayDepots")
+        freePutAwayDepots = (0 until (free?.length() ?: 0)).map { free!!.optInt(it) }.filter { it > 0 }.toSet()
         // Yalnız head parçasında gelir; sunucu bilmiyorsa (eski) alan hiç yoktur.
         val tr = json.optJSONObject("transfer")
         transferJson = tr?.toString() ?: ""

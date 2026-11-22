@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { api, belirtecYaz, Btn, Ctx, Icon, oturumDinle, useHash } from './lib.jsx';
+import { api, belirtecYaz, Btn, Ctx, HataSiniri, Icon, oturumDinle, useHash } from './lib.jsx';
 import Ozet from './sayfalar/Ozet.jsx';
 import Kabul, { KabulDetay } from './sayfalar/Kabul.jsx';
 import Urunler, { UrunDetay } from './sayfalar/Urunler.jsx';
@@ -151,21 +151,50 @@ export default function App() {
     } catch {}
   }, []);
 
+  // Sunucuya ulaşılamazsa (program yeni açıldı, sunucu meşgul) boş ekranda kalınmaz: durum yazılır, kendiliğinden yeniden denenir.
+  const [baglanti, setBaglanti] = useState('');
   useEffect(() => {
     oturumDinle(() => setOturum(false));
-    api('/oturum')
-      .then((o) => setOturum(o.girildi))
-      .catch(() => setOturum(false));
+    let bitti = false;
+    let zaman = null;
+    const dene = () =>
+      api('/oturum', { sure: 15000 })
+        .then((o) => !bitti && setOturum(o.girildi))
+        .catch((e) => {
+          if (bitti) return;
+          setBaglanti(e.message || 'Sunucuya ulaşılamadı');
+          zaman = setTimeout(dene, 2000);
+        });
+    dene();
+    return () => {
+      bitti = true;
+      clearTimeout(zaman);
+    };
   }, []);
 
+  // Durum 5 sn'de bir sorulur; pencere görünmüyorken (simge durumunda) sorulmaz, görününce hemen sorulur.
   useEffect(() => {
-    if (!oturum) return;
+    if (!oturum) return undefined;
     durumAl();
-    const t = setInterval(durumAl, 5000);
-    return () => clearInterval(t);
+    const t = setInterval(() => !document.hidden && durumAl(), 5000);
+    const gorun = () => !document.hidden && durumAl();
+    document.addEventListener('visibilitychange', gorun);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener('visibilitychange', gorun);
+    };
   }, [oturum, durumAl]);
 
-  if (oturum === null) return null;
+  if (oturum === null) {
+    return (
+      <div className="login">
+        <div className="card" style={{ textAlign: 'center' }}>
+          <div className="empty"><Icon name="refresh" className="spin" /></div>
+          <p className="muted">{baglanti ? `Sunucu bekleniyor: ${baglanti}. Yeniden deneniyor…` : 'Yükleniyor…'}</p>
+        </div>
+      </div>
+    );
+  }
   if (!oturum) return <Giris tamam={() => setOturum(true)} />;
 
   const aktif = '/' + (yol.split('/')[1] || 'ozet');
@@ -217,7 +246,9 @@ export default function App() {
         </nav>
         <main className="main">
           <div className="page">
-            <Sayfa yol={yol} />
+            <HataSiniri anahtar={yol}>
+              <Sayfa yol={yol} />
+            </HataSiniri>
           </div>
         </main>
       </div>

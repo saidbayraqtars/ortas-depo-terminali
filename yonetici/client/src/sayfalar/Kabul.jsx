@@ -17,7 +17,7 @@ const gunAd = (ts) => new Date(ts).toLocaleDateString('tr-TR');
 function BekleyenUrunler() {
   const { cok, depo, setDepo, ad } = useDepo();
   const [q, setQ] = useState('');
-  const { veri, hata, yukleniyor } = useVeri('/bekleyen?limit=5000');
+  const { veri, hata, yukleniyor } = useVeri('/bekleyen?limit=5000', [], { enAz: 10000 });
   const liste = useMemo(() => {
     const a = q.trim().toLocaleLowerCase('tr');
     return (veri?.urunler || []).filter((u) => (!depo || u.depo === Number(depo))

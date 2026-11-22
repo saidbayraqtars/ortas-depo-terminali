@@ -394,6 +394,15 @@ function yoneticiApi() {
     res.json({ ok: true });
   });
 
+  // Arayüzde yakalanan hata (lib.jsx hataBildir): günlüğe ve destek raporuna düşer.
+  r.post('/istemci-hata', sar((req) => {
+    const b = req.body || {};
+    const e = new Error(String(b.mesaj || 'bilinmeyen hata').slice(0, 500));
+    e.stack = `${e.message}\n${String(b.yigin || '').slice(0, 4000)}`;
+    log.hata(`Arayüz hatası (${String(b.yol || '').slice(0, 80)})`, e);
+    return { ok: true };
+  }));
+
   // Özet
   r.get(
     '/durum',
@@ -595,7 +604,13 @@ function yoneticiApi() {
   }));
 
   // Raflar
-  r.get('/raflar', sar((req) => depo.raflar(depo.depoSuzgec(req.query.depo))));
+  r.get('/raflar', sar((req, res) => {
+    const x = depo.raflarJson(depo.depoSuzgec(req.query.depo));
+    res.setHeader('ETag', x.etag);
+    res.setHeader('Cache-Control', 'no-cache');
+    if (req.get('If-None-Match') === x.etag) return void res.status(304).end();
+    res.type('application/json').send(x.json);
+  }));
   r.get('/raflar.csv', sar((req, res) => {
     csv(res, 'raflar.csv', ['Depo', 'Raf', 'Bölge', 'Ürün çeşidi', 'Toplam miktar', 'Not'], depo.raflar(depo.depoSuzgec(req.query.depo)).map((s) => [s.depoAd, s.code, s.zone, s.cesit, s.miktar, s.note]));
   }));

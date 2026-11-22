@@ -28,7 +28,7 @@ export default function Urunler() {
   const ara = useGecikmeli(q);
   const { qs, depo, ad } = useDepo();
   const yol = `/urunler?filtre=${filtre}&q=${encodeURIComponent(ara)}${qs}`;
-  const { veri, hata, yukleniyor } = useVeri(yol, [yol]);
+  const { veri, hata, yukleniyor } = useVeri(yol, [yol], { enAz: 20000 });
   const { toast } = useApp();
   const [secili, setSecili] = useState(() => new Set());
   const [etiket, setEtiket] = useState(false);

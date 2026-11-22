@@ -301,7 +301,7 @@ const SAYFA_BOYU = 200;
 export default function Raflar() {
   const { toast } = useApp();
   const { depo, qs, cok } = useDepo();
-  const { veri, hata, yukleniyor, yukle } = useVeri(`/raflar?x=1${qs}`, [qs]);
+  const { veri, hata, yukleniyor, yukle } = useVeri(`/raflar?x=1${qs}`, [qs], { enAz: 20000 });
   const [q, setQ] = useState('');
   const [bolge, setBolge] = useState('');
   const [dolu, setDolu] = useState('hepsi');

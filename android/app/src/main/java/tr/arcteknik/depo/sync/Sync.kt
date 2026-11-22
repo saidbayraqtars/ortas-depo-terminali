@@ -240,23 +240,28 @@ class Sync(private val context: Context, private val repo: Repo) {
                             repo.applyMaster(head)
                             repo.ensureDepot(head.optInt("defaultDepot", 0))
                             repo.prefs.masterEtag = newEtag ?: ""
+                            repo.changed()
                         }
                     }
                     repo.prefs.lastSync = System.currentTimeMillis()
                 }
+                // Ekranlar her "değişti" bildiriminde listelerini veritabanından yeniden okur (ana iş parçacığında). Veri değiştiyse
+                // yukarıda zaten bildirildi; burada yalnız hata durumu değiştiyse bildirilir (boş turlar ekranı yormasın).
+                val hadError = repo.prefs.lastSyncError.isNotEmpty()
                 repo.prefs.lastSyncError = ""
                 _reachable.value = true
                 _progress.value = null
-                repo.changed()
+                if (hadError) repo.changed()
                 null
             } catch (e: Exception) {
                 val msg = e.message ?: e.javaClass.simpleName
                 Diag.crumb("eşitleme hatası: $msg")
                 // Ağ hatası olağan; başka türlü istisna (veri, SQLite) rapor edilir.
                 if (e !is IOException) Diag.error("eşitleme", e)
+                val sameError = repo.prefs.lastSyncError == msg
                 repo.prefs.lastSyncError = msg
                 _reachable.value = false
-                repo.changed()
+                if (!sameError) repo.changed()
                 msg
             } finally {
                 _busy.value = false

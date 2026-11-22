@@ -17,6 +17,8 @@ const EPS = 1e-9;
 const DEPO_BELGE_TIP = new Set([37, 128, 129]);
 const now = () => Date.now();
 const yuvarla = (x) => Math.round(Number(x) * 10000) / 10000;
+// Türkçe ad sıralaması: her karşılaştırmada yerel ayar çözen localeCompare(…, 'tr') yerine hazır karşılaştırıcı.
+const trSira = new Intl.Collator('tr');
 
 // ---- Değişiklik sayacı ---------------------------------------------------------------------
 // Ana veri her değişiklikte yeniden kurulur; terminal ETag ile değişmediyse 304 alır.
@@ -49,14 +51,29 @@ const vegaDurum = {
   deneme: null, tetik: null, sonraki: null, ardisikHata: 0, sureler: null, degisiklik: null,
 };
 let sonGoruntuOzet = '';
+let sonKartOzet = '';
+// Kartların tamamı en az bu aralıkla yeniden okunur (bkz. vegaYenile).
+const TAM_OKUMA_MS = 6 * 3600 * 1000;
+let sonTamDeneme = 0;
+let sonTamOkuma = 0;
 let vegaTurNo = 0;
 let vegaBasladi = 0;
 // Okuma bu kadar sürede bitmediyse takılmış sayılır (ağ sessizce koptu); yeni okuma başlayabilir.
 const VEGA_TAKILMA_MS = 10 * 60 * 1000;
 
-function goruntuKur(g) {
+// Kartlar (ürün ve barkod dizileri) her yeniden kurulduğunda artar; kartlardan türetilen önbellekler bununla geçersizleşir.
+let kartNesil = 0;
+
+/** `zorla`: kart dizileri aynı nesne olsa da dizinleri yeniden kur (testler diziyi yerinde değiştirir). */
+function goruntuKur(g, zorla = false) {
+  // Kartlar yeniden okunmadıysa (aynı diziler) 125 bin kartlık dizin ve isimle arama dizini yeniden kurulmaz.
+  const kartAyni = !zorla && Boolean(goruntu) && goruntu.products === g.products && goruntu.barcodes === g.barcodes;
   goruntu = g;
-  urunIndex = new Map(g.products.map((p) => [p.id, p]));
+  if (!kartAyni) {
+    urunIndex = new Map(g.products.map((p) => [p.id, p]));
+    aramaIndex = null;
+    kartNesil++;
+  }
   // depo → (ürün → Vega stoku); toplam ürün başına. Sanal bekleme depoları hedef depoda toplanır, belgeleri hedefte görünür
   // (bekleme.js); ham liste g.receipts, g.depolar, stokHam olarak durur.
   const gor = bekleme.gorunum(g, bekleme.ayar());
@@ -68,7 +85,6 @@ function goruntuKur(g) {
   for (const m of goruntu.stokDepo.values()) for (const [pid, q] of m) goruntu.stokToplam.set(pid, (goruntu.stokToplam.get(pid) || 0) + Number(q));
   goruntu.movedSet = new Set(g.moved || []);
   goruntu.depoAd = new Map((g.depolar || []).map((d) => [Number(d.ind), d.ad]));
-  aramaIndex = null;
 }
 
 /** Ayar değişince (bekleme depoları) son Vega görüntüsü yeniden yorumlanır; Vega yeniden okunmaz. */
@@ -77,11 +93,57 @@ function yenidenKur() {
   degisti();
 }
 
-// İsimle arama alanları; ilk aramada kurulur.
+/** Bir süre kullanılmayan büyük önbelleği bırakır (bellek): her kullanımda süre baştan başlar. */
+function bostaBirak(ms, birak) {
+  let zaman = null;
+  return () => {
+    clearTimeout(zaman);
+    zaman = setTimeout(birak, ms);
+    zaman.unref?.();
+  };
+}
+
+// İsimle arama alanları; ilk aramada kurulur (125 bin kart, ~90 MB), 15 dakika arama yapılmazsa bırakılır.
 let aramaIndex = null;
+const aramaKullanildi = bostaBirak(15 * 60 * 1000, () => {
+  aramaIndex = null;
+});
 function arama(p) {
-  if (!aramaIndex) aramaIndex = new Map(goruntu.products.map((x) => [x.id, fuzzy.kayit(x)]));
+  if (!aramaIndex) {
+    aramaIndex = new Map(goruntu.products.map((x) => [x.id, fuzzy.kayit(x)]));
+    aramaKullanildi();
+  }
   return aramaIndex.get(p.id);
+}
+
+// ---- Vega görüntüsünün önbelleği ----------------------------------------------------------------
+// Program açılırken Vega'ya ulaşılamasa da terminaller son veriyle çalışsın diye görüntü veritabanında saklanır. Eskiden her
+// okumada (dakikada bir) 20-30 MB'lık tek JSON baştan yazılıyordu (günde onlarca GB disk yazması). Artık kartlar ve barkodlar
+// ayrı anahtarda durur ve yalnız değiştiklerinde yazılır; stok ve belgeler (küçük) en çok 5 dakikada bir yazılır.
+
+let kayitliKartIz = null;
+let sonDinamikKayit = 0;
+const DINAMIK_KAYIT_MS = 5 * 60 * 1000;
+const onbellekYaz = (key, json, at) =>
+  db.run('INSERT INTO vega_cache(key, json, updated_at) VALUES(?, ?, ?) ON CONFLICT(key) DO UPDATE SET json=excluded.json, updated_at=excluded.updated_at', key, json, at);
+
+/** Ham görüntüden (vega.goruntu çıktısı) türetilmiş alanları ayıklar. */
+function hamGoruntu(g) {
+  const { belgeGorunum, depoGorunum, stokDepo, stokHam, stokToplam, movedSet, depoAd, ...ham } = g;
+  return ham;
+}
+
+function goruntuKaydet(g, kartOzeti, { hemen = false } = {}) {
+  const kartIz = `${kartOzeti}|${g.iz ? JSON.stringify(g.iz) : ''}`;
+  if (kartIz !== kayitliKartIz) {
+    onbellekYaz('goruntu:kart', JSON.stringify({ products: g.products, barcodes: g.barcodes, iz: g.iz || null, tamAt: sonTamOkuma }), g.at);
+    kayitliKartIz = kartIz;
+    hemen = true;
+  }
+  if (!hemen && now() - sonDinamikKayit < DINAMIK_KAYIT_MS) return;
+  const { products, barcodes, iz, ...dinamik } = hamGoruntu(g);
+  onbellekYaz('goruntu', JSON.stringify({ ...dinamik, parcali: true }), g.at);
+  sonDinamikKayit = now();
 }
 
 function goruntuYukleOnbellek() {
@@ -91,6 +153,16 @@ function goruntuYukleOnbellek() {
     const g = JSON.parse(r.json);
     // Tek depolu eski önbellek kullanılmaz; ilk Vega okumasında yenisi gelir.
     if (g.surum !== 2) return;
+    if (g.parcali) {
+      const k = db.get("SELECT json FROM vega_cache WHERE key='goruntu:kart'");
+      if (!k) return;
+      const { tamAt, ...kart } = JSON.parse(k.json);
+      Object.assign(g, kart);
+      delete g.parcali;
+      // Kartların son tam okunduğu an: açılışta kartlar yeniden okunmaz, parmak iziyle denetlenir.
+      sonTamOkuma = Number(tamAt) || 0;
+    }
+    if (!Array.isArray(g.products)) return;
     goruntuKur(g);
     vegaDurum.at = r.updated_at;
     vegaDurum.onbellek = true;
@@ -123,23 +195,36 @@ async function vegaYenile(tetik = 'elle') {
   vegaDurum.deneme = now();
   const bas = (vegaBasladi = now());
   try {
-    const { sureler, ...g } = await vega.goruntu(cfg);
+    // Kartlar (125 bin kart, ağdan ~25 MB) yalnız parmak izi değiştiyse okunur. "Şimdi yenile" ve ayar değişikliği hepsini
+    // okur; ayrıca 6 saatte bir (iz bir şeyi kaçırdıysa düzelsin). Zamanlı tam okuma başarısız olursa sonraki tur yine hafif
+    // okur: bağlantı büyük okumayı kaldırmıyorsa stok ve belgeler yine de güncel kalır.
+    const tam = tetik === 'elle' || tetik === 'ayar' || now() - Math.max(sonTamOkuma, sonTamDeneme) > TAM_OKUMA_MS;
+    if (tam) sonTamDeneme = now();
+    const onceki = goruntu && goruntu.iz ? goruntu : null;
+    const { sureler, ...g } = await vega.goruntu(cfg, onceki, { tam });
     // Takılmış eski okuma sonradan dönerse yenisinin durumunu ezmesin.
     if (tur !== vegaTurNo) return vegaDurum;
+    // İçerik özeti: kartlar aynı diziyse (yeniden okunmadı) 20 MB'lık kart listesi yeniden özetlenmez.
     // Filigran her okumada değişebilir (başka depoda satış); içerik özetine girmez, yoksa terminaller boş yere uyarılırdı.
-    const ozet0 = ozet(JSON.stringify({ ...g, at: 0, filigran: 0, filigranAt: 0 }));
+    const kartAyni = Boolean(onceki) && g.products === onceki.products && g.barcodes === onceki.barcodes && Boolean(sonKartOzet);
+    const kartOzeti = kartAyni ? sonKartOzet : ozet(JSON.stringify([g.products, g.barcodes]));
+    const { products, barcodes, iz, ...dinamik } = g;
+    // Karttaki raf adresi alanı özete girmez: terminale gitmez, programın kendi yazdığı da "değişiklik" sayılmasın.
+    const ozet0 = ozet(`${kartOzeti}|${JSON.stringify({ ...dinamik, at: 0, filigran: 0, filigranAt: 0 })}`);
     const ayni = Boolean(goruntu) && ozet0 === sonGoruntuOzet;
-    if (!ayni) {
+    sonKartOzet = kartOzeti;
+    if (!onceki || g.products !== onceki.products) sonTamOkuma = now();
+    if (!ayni || g.products !== goruntu.products) {
+      // İçerik değişti ya da kartlar baştan okundu (içerik aynı olsa da karttaki raf adresi alanı yeni dizidedir).
       // Önbelleğe ham görüntü yazılır; yorumlanmış hali her açılışta o anki ayarla yeniden kurulur.
-      const json = JSON.stringify(g);
       goruntuKur(g);
-      db.run(
-        "INSERT INTO vega_cache(key, json, updated_at) VALUES('goruntu', ?, ?) ON CONFLICT(key) DO UPDATE SET json=excluded.json, updated_at=excluded.updated_at",
-        json,
-        g.at,
-      );
+      goruntuKaydet(g, kartOzeti);
       sonGoruntuOzet = ozet0;
     } else {
+      const rafDegisti = (goruntu.iz ? goruntu.iz.raf : '') !== (g.iz ? g.iz.raf : '');
+      goruntu.iz = g.iz;
+      // Yalnız karttaki raf adresi alanı değişti (vega.goruntu ürünlerin üzerine yazdı): önbelleğe geçsin.
+      if (rafDegisti) goruntuKaydet(goruntu, kartOzeti);
       // İçerik aynı: stok bu filigranda da aynıdır.
       goruntu.filigran = g.filigran;
       goruntu.filigranAt = g.filigranAt;
@@ -259,14 +344,31 @@ function rafVarMi(depo, code) {
 // Rafa kaldırma hareketi yazılır (rafa bekleyen düşer, kim ne zaman kaldırdı görünür) ama rafta stok satırı oluşmaz, ürüne
 // raf adresi (zimmet) verilmez, dolayısıyla Vega kartının raf alanına bir şey yazılmaz. Raf sınırı da bu rafa uygulanmaz.
 
+let ozelKaynak = null;
+let ozelListe = [];
+let ozelKume = new Set();
 function ozelRaflar() {
   const l = config.load().ozelRaflar;
-  return Array.isArray(l) ? [...new Set(l.map(rafKodu).filter(Boolean))] : [];
+  // Ayar değişmedikçe (aynı dizi) yeniden kurulmaz: raf listesinde 70 bin raf için tek tek soruluyor.
+  if (l !== ozelKaynak) {
+    ozelKaynak = l;
+    ozelListe = Array.isArray(l) ? [...new Set(l.map(rafKodu).filter(Boolean))] : [];
+    ozelKume = new Set(ozelListe);
+  }
+  return ozelListe;
 }
 
 function ozelRafMi(code) {
   const c = rafKodu(code);
-  return Boolean(c) && ozelRaflar().includes(c);
+  if (!c) return false;
+  ozelRaflar();
+  return ozelKume.has(c);
+}
+
+/** Rafa Kaldır'ın belgeye bağlı olmadığı depolar (config.belgesizDepolar; Ortaş: 108 Toybelen). Terminale ana veriyle gider. */
+function belgesizDepolar() {
+  const l = config.load().belgesizDepolar;
+  return Array.isArray(l) ? [...new Set(l.map(Number).filter((n) => Number.isInteger(n) && n > 0))].sort((a, b) => a - b) : [];
 }
 
 /** Özel raf yalnız rafa kaldırmada kullanılır; raftan alma, transfer, sayım, raf düzenleme gibi stok gerektiren işlemde reddedilir. */
@@ -614,6 +716,9 @@ function vegaZimmetEsitle(cfg = config.load()) {
 // sonraki yazmada programdaki zimmet geçerli olur (sayısı "elle" olarak bildirilir).
 
 let rafYazZaman = null;
+// Son başarılı yazmadaki durum (raf adresleri sayacı + karttaki alanın izi); aynıysa yazma atlanır (rafYazCalistir).
+let sonRafYazDurumu = null;
+let sonSigmayan = -1;
 let rafYaziyor = null;
 let rafYazTekrar = false;
 
@@ -659,8 +764,13 @@ async function rafYazCalistir(cfg) {
   }
   const d = Number(cfg.rafAdresi?.depo) || varsayilanDepo();
   const bas = now();
+  // Her Vega okumasından sonra çağrılır. Raf adresleri de karttaki alan da son yazmadan beri değişmediyse yapacak iş yoktur:
+  // 190 bin adres ve 125 bin kart her dakika baştan karşılaştırılmaz. Kartın izi yoksa (alınamadıysa) eskisi gibi her seferinde bakılır.
+  const hSayac = db.tabloSayaci('h');
+  const durumAnahtari = () => (goruntu.iz ? `${hSayac}|${kartNesil}|${goruntu.iz.raf}|${alan}|${cfg.rafAdresi?.tumDepolar !== false}|${d}` : null);
+  if (sonRafYazDurumu && sonRafYazDurumu === durumAnahtari() && vegaDurum.rafAdresi && !vegaDurum.rafAdresi.hata) return vegaDurum.rafAdresi;
   // Alanın sahibi artık program: önceden karttan okunmuş zimmetler programdan yönetilir.
-  db.run("UPDATE product_home SET source='ADMIN' WHERE source='VEGA'");
+  if (db.get("SELECT 1 AS x FROM product_home WHERE source='VEGA' LIMIT 1")) db.run("UPDATE product_home SET source='ADMIN' WHERE source='VEGA'");
   const uz = (await vega.kartAlanUzunluk(cfg, alan)) || 50;
   const tum = cfg.rafAdresi?.tumDepolar !== false;
   const raflar = new Map();
@@ -697,6 +807,9 @@ async function rafYazCalistir(cfg) {
       db.run('INSERT INTO vega_alan(alan, product_id, eski, yazilan, updated_at) VALUES(?,?,?,NULL,?) ON CONFLICT(alan, product_id) DO NOTHING', alan, s.id, s.mevcut, now());
     }
   });
+  // Yazmadan önceki raf adresi izi bildiğimizle aynıysa, yazdıktan sonraki iz "bilinen" olur: sonraki Vega okuması kendi
+  // yazdığımızı değişiklik sanıp alanı yeniden okumaz. Aynı değilse (Vega'da elle değişmiş) dokunulmaz; sonraki okuma alanı okur.
+  const izOnce = yazilacak.length && goruntu.iz ? await vega.rafIzi(cfg).catch(() => null) : null;
   await vega.kartAlanYaz(cfg, alan, yazilacak, (parca) => {
     db.tx(() => {
       for (const s of parca) {
@@ -709,11 +822,25 @@ async function rafYazCalistir(cfg) {
       }
     });
   });
+  if (izOnce !== null && goruntu.iz && goruntu.iz.raf === izOnce) {
+    const izSonra = await vega.rafIzi(cfg).catch(() => null);
+    if (izSonra !== null) {
+      goruntu.iz.raf = izSonra;
+      // Karttaki yeni raf adresleri önbelleğe de geçsin (açılışta eski adresle karşılaştırıp boşuna yazmasın).
+      try {
+        goruntuKaydet(goruntu, `${sonKartOzet}|raf`);
+      } catch (e) {
+        log.hata('Vega önbelleği yazılamadı', e);
+      }
+    }
+  }
   const toplam = tum
     ? db.get('SELECT COUNT(DISTINCT product_id || shelf) AS n, COUNT(DISTINCT product_id) AS u FROM product_home')
     : db.get('SELECT COUNT(*) AS n, COUNT(DISTINCT product_id) AS u FROM product_home WHERE depo=?', d);
   if (yazilacak.length) log.bilgi(`Raf adresleri Vega'ya yazıldı (${alan}): ${yazilacak.length} kart${elle ? `, ${elle} kartta Vega'daki elle değişiklik ezildi` : ''}`);
-  if (sigmayan.length) log.uyari(`${alan} alanına sığmayan raf adresi: ${sigmayan.length} kart (ör. ${sigmayan.slice(0, 3).join(', ')}); ilk raflar yazıldı`);
+  // Aynı uyarı her yazmada yinelenmez (günlük şişmesin); sayı değişince yeniden yazılır.
+  if (sigmayan.length && sigmayan.length !== sonSigmayan) log.uyari(`${alan} alanına sığmayan raf adresi: ${sigmayan.length} kart (ör. ${sigmayan.slice(0, 3).join(', ')}); ilk raflar yazıldı`);
+  sonSigmayan = sigmayan.length;
   const kullanilmiyor = !tum && !depolar().some((x) => x.ind === d);
   // tumDepolar kapalıysa kartta yalnız raf deposunun zimmetleri olur; başka depodakiler sayılıp görünür kılınır.
   const baska = tum ? { n: 0 } : db.get('SELECT COUNT(*) AS n, COUNT(DISTINCT product_id) AS u FROM product_home WHERE depo<>?', d);
@@ -735,6 +862,7 @@ async function rafYazCalistir(cfg) {
     sureMs: now() - bas,
     kullanilmiyor,
   };
+  sonRafYazDurumu = durumAnahtari();
   if (yazilacak.length) degisti();
   return vegaDurum.rafAdresi;
 }
@@ -1557,6 +1685,31 @@ function masterGovde() {
     products.push({ id: p.id, code: p.code, name: p.name, unit: p.unit, vegaStock: Number(toplam || 0), stocks, barcodes: [...(goruntu.barcodes[p.id] || [])].sort() });
   }
   products.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const bas = masterBas(bekleyenler, gonderilen);
+  // Alan sırası eskisiyle aynı (tek parça ana verinin ETag'i değişmesin).
+  const { warehouse, defaultDepot, depots, specialShelves, ...kalan } = bas;
+  return {
+    warehouse,
+    defaultDepot,
+    depots,
+    products,
+    shelves: db.all('SELECT depo, code, zone FROM shelf ORDER BY depo, code').map((s) => ({ depot: s.depo, code: s.code, zone: s.zone })),
+    specialShelves,
+    locations: locations.map((l) => ({ depot: l.depo, productId: l.product_id, shelf: l.shelf, qty: l.qty })),
+    // Ürünün zimmetli rafları (Excel, Vega kartı, yönetici): rafa kaldırmada önerilir, sayımda rafta beklenir.
+    homes: db
+      .all('SELECT depo, product_id, shelf FROM product_home ORDER BY depo, product_id, shelf')
+      .filter((h) => gonderilen.has(h.product_id))
+      .map((h) => ({ depot: h.depo, productId: h.product_id, shelf: h.shelf })),
+    ...kalan,
+  };
+}
+
+/**
+ * Ana verinin "head" parçası: depolar, özel raflar, rafa bekleyen ürünler (belge biçiminde), açık sayımlar, kullanıcılar,
+ * transfer görünümü, APK sürümü. `gonderilen.has(ürün)`: ürün terminale gidiyor mu.
+ */
+function masterBas(bekleyenler, gonderilen) {
   const depoListe = depolar();
   const vars = varsayilanDepo();
   const counts = db
@@ -1566,21 +1719,14 @@ function masterGovde() {
   const users = db
     .all('SELECT username, name, salt, pin_hash, role, perms, depots, shelves FROM app_user WHERE active=1 ORDER BY username')
     .map((u) => ({ username: u.username, name: u.name, salt: u.salt, pinHash: u.pin_hash, ...yetki.terminalGorunumu(u) }));
-
-  const govde = {
+  const bas = {
     warehouse: depoAdi(vars),
     defaultDepot: vars,
     depots: depoListe.map((d) => ({ id: d.ind, name: d.ad })),
-    products,
-    shelves: db.all('SELECT depo, code, zone FROM shelf ORDER BY depo, code').map((s) => ({ depot: s.depo, code: s.code, zone: s.zone })),
     // Özel raflar (SIPARIS SATIS): terminal bunları her depoda tanımlı sayar; stok tutulmaz, öneri/uyarı/raf sınırı uygulanmaz.
     specialShelves: ozelRaflar(),
-    locations: locations.map((l) => ({ depot: l.depo, productId: l.product_id, shelf: l.shelf, qty: l.qty })),
-    // Ürünün zimmetli rafları (Excel, Vega kartı, yönetici): rafa kaldırmada önerilir, sayımda rafta beklenir.
-    homes: db
-      .all('SELECT depo, product_id, shelf FROM product_home ORDER BY depo, product_id, shelf')
-      .filter((h) => gonderilen.has(h.product_id))
-      .map((h) => ({ depot: h.depo, productId: h.product_id, shelf: h.shelf })),
+    // Rafa Kaldır'ın belgeye bağlı olmadığı depolar: terminal belgede olmayan ürünü de okutur, Vega stoku sınırı uygulamaz.
+    freePutAwayDepots: belgesizDepolar(),
     receipts: bekleyenBelgeleri(bekleyenler, gonderilen),
     counts,
     users,
@@ -1588,8 +1734,8 @@ function masterGovde() {
     transfer: require('./transfer').terminalGorunumu(),
   };
   const apk = require('./apk').bilgi();
-  if (apk) govde.app = { versionName: apk.versionName, versionCode: apk.versionCode, path: '/apk' };
-  return govde;
+  if (apk) bas.app = { versionName: apk.versionName, versionCode: apk.versionCode, path: '/apk' };
+  return bas;
 }
 
 function ozet(json) {
@@ -1634,7 +1780,7 @@ let parcaCache = null;
  * olunca stok her turda değişir; kovanın içinde olsa bütün kovalar (yüzlerce KB) yeniden inerdi. Artık kova yalnız
  * rafa kaldırma/transfer/zimmet ile değişir, stok parçası ~50 KB'dır. v1 (eski terminal) kovada stokla birlikte alır.
  */
-function masterParcalari(v = 1) {
+function masterParcalariTam(v = 1) {
   if (!parcaCache || parcaCache.surum !== surum) parcaCache = { surum, v1: null, v2: null };
   const onbellek = v >= 2 ? 'v2' : 'v1';
   if (parcaCache[onbellek]) return parcaCache[onbellek];
@@ -1665,41 +1811,316 @@ function masterParcalari(v = 1) {
   return parcalar;
 }
 
+// ---- Ana veri, artımlı (1.5.0+ terminal: v2 ve v3) ----------------------------------------------
+//
+// Eskiden her değişiklikte (her rafa kaldırma, her Vega okuması) 130 bin ürünün tamamı baştan kurulup 30 MB JSON'a çevriliyor
+// ve özetleniyordu (~1 sn; program tek iş parçacığında çalıştığından o sırada bütün terminaller ve yönetim ekranı bekliyordu).
+// Artık parçalar bileşenlerinden saklanır, yalnız değişen bileşen yeniden kurulur:
+//   - ürün kartı metinleri Vega'daki kartlar değişince,
+//   - raf stoku ve raf adresi satırları yalnız değişen ürünün kovasında (db.js "Değişen ürün izi"),
+//   - Vega stoku parçaları stok değişince,
+//   - "head" her seferinde (küçük).
+// v2 parçaları `masterParcalariTam(2)` ile bayt bayt aynıdır (test/anaveri.test.js); eski APK baştan indirmez.
+// v3 (2.4.0+ terminal): kova üçe ayrılır: b = ürün kartları, l = raf stoku, h = raf adresleri. Bir rafa kaldırma artık
+// ~450 KB'lık kovayı değil yalnız o kovanın raf stokunu (birkaç KB) indirir.
+
+let av = null;
+
+/** Ürünün raf stoku / raf adresi satırları bellekte: ürün → satırlar; kova → o kovada satırı olan ürünler. */
+function aynaYeni() {
+  return { urun: new Map(), kova: Array.from({ length: KOVA_SAYISI }, () => new Set()), kirli: new Set() };
+}
+
+function aynaKoy(ayna, pid, satirlar, k) {
+  if (satirlar.length) {
+    ayna.urun.set(pid, satirlar);
+    ayna.kova[k].add(pid);
+  } else {
+    ayna.urun.delete(pid);
+    ayna.kova[k].delete(pid);
+  }
+  ayna.kirli.add(k);
+}
+
+// Satırların JSON metni saklanmaz (190 bin raf adresi); kovanın dizisi kurulurken yazılır.
+const konumSatiri = (pid, r) => ({ d: r.depo, s: r.shelf, q: r.qty });
+const adresSatiri = (pid, r) => ({ d: r.depo, s: r.shelf });
+const satirMetni = (x) => JSON.stringify(x.q === undefined ? { depot: x.d, productId: x.pid, shelf: x.s } : { depot: x.d, productId: x.pid, shelf: x.s, qty: x.q });
+const kartMetni = (p) => JSON.stringify({ id: p.id, code: p.code, name: p.name, unit: p.unit, barcodes: [...(goruntu.barcodes[p.id] || [])].sort() });
+
+function avKova(pid) {
+  const e = av.kartIndex.get(pid);
+  return e ? e.k : kova(pid);
+}
+
+/** Tabloyu baştan okur (ilk kurulum, çok satır değişince). */
+function aynaYukle(tur) {
+  const ayna = aynaYeni();
+  const rows = tur === 'l'
+    ? db.all('SELECT depo, product_id, shelf, qty FROM location WHERE qty > 0 ORDER BY product_id, depo, shelf')
+    : db.all('SELECT depo, product_id, shelf FROM product_home ORDER BY product_id, depo, shelf');
+  const satir = tur === 'l' ? konumSatiri : adresSatiri;
+  let pid = null;
+  let liste = null;
+  for (const r of rows) {
+    if (r.product_id !== pid) {
+      if (liste) aynaKoy(ayna, pid, liste, avKova(pid));
+      pid = r.product_id;
+      liste = [];
+    }
+    liste.push(satir(pid, r));
+  }
+  if (liste) aynaKoy(ayna, pid, liste, avKova(pid));
+  for (let k = 0; k < KOVA_SAYISI; k++) ayna.kirli.add(k);
+  return ayna;
+}
+
+function aynaUrun(tur, pid) {
+  if (tur === 'l') {
+    aynaKoy(av.konum, pid, db.all('SELECT depo, shelf, qty FROM location WHERE product_id=? AND qty > 0 ORDER BY depo, shelf', pid).map((r) => konumSatiri(pid, r)), avKova(pid));
+  } else {
+    aynaKoy(av.adres, pid, db.all('SELECT depo, shelf FROM product_home WHERE product_id=? ORDER BY depo, shelf', pid).map((r) => adresSatiri(pid, r)), avKova(pid));
+  }
+}
+
+/** Kovadaki satırlar eski sırayla (depo, ürün, raf) virgülle birleşik; `suz` verilirse yalnız o ürünler. */
+function aynaDizi(ayna, k, suz = null) {
+  const hepsi = [];
+  for (const pid of ayna.kova[k]) {
+    if (suz && !suz(pid)) continue;
+    for (const r of ayna.urun.get(pid)) hepsi.push({ d: r.d, pid, s: r.s, q: r.q });
+  }
+  hepsi.sort((a, b) => a.d - b.d || (a.pid < b.pid ? -1 : a.pid > b.pid ? 1 : 0) || (a.s < b.s ? -1 : a.s > b.s ? 1 : 0));
+  return hepsi.map(satirMetni).join(',');
+}
+
+/** Aynı metin yeniden özetlenmez. */
+function ozetli(onbellek, anahtar, json) {
+  const e = onbellek.get(anahtar);
+  if (e && e.json === json) return e;
+  const y = { json, hash: ozet(json) };
+  onbellek.set(anahtar, y);
+  return y;
+}
+
+/** Bu değişiklik sayacındaki ana verinin bileşenleri (bkz. yukarıdaki açıklama). */
+function anaVeriKur() {
+  if (!goruntu) {
+    const e = new Error('Vega verisi henüz alınamadı. Yönetici programında Vega bağlantısını kontrol edin.');
+    e.status = 503;
+    throw e;
+  }
+  if (av && av.acilis !== db.acilis()) av = null;
+  if (!av) {
+    av = {
+      acilis: db.acilis(), surum: -1, kartNesil: -1, stokKaynak: null,
+      kartIndex: new Map(), kovaUrun: [], uyeler: new Array(KOVA_SAYISI).fill(null),
+      konum: null, adres: null, rafKirli: true,
+      pDizi: new Array(KOVA_SAYISI).fill(''), lDizi: new Array(KOVA_SAYISI).fill(''), hDizi: new Array(KOVA_SAYISI).fill(''), qJson: new Array(KOVA_SAYISI).fill(''),
+      head: null, shelves: null, ozetler: new Map(), haritalar: {},
+      // Üyelik (hangi ürün terminale gidiyor) en son hangi girdilerle hesaplandı.
+      uyeKart: -1, uyeTum: null, uyeStok: null, bekleyen: new Set(),
+    };
+  }
+  if (av.surum === surum) return av;
+
+  // 1. Ürün kartları: Vega'daki kartlar ya da barkodlar yeniden okunduysa metinleri baştan.
+  let kartDegisti = false;
+  if (av.kartNesil !== kartNesil) {
+    kartDegisti = true;
+    av.kartIndex = new Map();
+    av.kovaUrun = Array.from({ length: KOVA_SAYISI }, () => []);
+    for (const p of goruntu.products) {
+      const e = { id: p.id, p, k: kova(p.id), dahil: false };
+      av.kartIndex.set(p.id, e);
+      av.kovaUrun[e.k].push(e);
+    }
+    for (const l of av.kovaUrun) l.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    av.uyeler.fill(null);
+    av.kartNesil = kartNesil;
+  }
+
+  // 2. Raf stoku ve raf adresi aynaları: yalnız değişen ürünler yeniden okunur.
+  const degisen = db.degisenAl();
+  let aynaBastan = false;
+  if (!av.konum || !av.adres || degisen.length > 20000) {
+    av.konum = aynaYukle('l');
+    av.adres = aynaYukle('h');
+    av.rafKirli = true;
+    aynaBastan = true;
+  } else {
+    for (const x of degisen) {
+      if (x.t === 's') av.rafKirli = true;
+      else aynaUrun(x.t, x.pid);
+    }
+  }
+
+  // 3. Terminale giden ürünler (masterGovde ile aynı kural).
+  const cfg = config.load();
+  const tum = cfg.urun.kapsam === 'tum';
+  const bekleyenler = [...bekleyenUrunler().values()].filter((x) => x.bekleyen > EPS);
+  const bekleyen = new Set(bekleyenler.map((x) => x.productId));
+  const uyeDegisti = new Array(KOVA_SAYISI).fill(false);
+  const dahilMi = (e) => {
+    const rafta = av.konum.urun.has(e.id);
+    // Pasif kart terminale gitmez; yalnız programda bir rafta duruyorsa (raf stoku görünsün, kaldırılabilsin) gider.
+    return !(e.p.pasif && !rafta)
+      && (tum || rafta || av.adres.urun.has(e.id) || bekleyen.has(e.id) || Boolean(goruntu.stokToplam.get(e.id)) || goruntu.movedSet.has(e.id));
+  };
+  // Kartlar, kapsam ayarı ya da Vega stoku değişmediyse 125 bin ürün baştan taranmaz: yalnız raf stoku / raf adresi değişen
+  // ve rafa bekleyen listesine giren ya da çıkan ürünlere bakılır.
+  const bakilacak = new Set();
+  if (aynaBastan || av.uyeKart !== kartNesil || av.uyeTum !== tum || av.uyeStok !== goruntu.stokDepo) {
+    for (let k = 0; k < KOVA_SAYISI; k++) {
+      for (const e of av.kovaUrun[k]) e.dahil = dahilMi(e);
+      bakilacak.add(k);
+    }
+  } else {
+    const aday = new Set();
+    for (const x of degisen) if (x.t !== 's') aday.add(x.pid);
+    for (const id of bekleyen) if (!av.bekleyen.has(id)) aday.add(id);
+    for (const id of av.bekleyen) if (!bekleyen.has(id)) aday.add(id);
+    for (const id of aday) {
+      const e = av.kartIndex.get(id);
+      if (!e) continue;
+      const d = dahilMi(e);
+      if (d !== e.dahil) {
+        e.dahil = d;
+        bakilacak.add(e.k);
+      }
+    }
+  }
+  av.uyeKart = kartNesil;
+  av.uyeTum = tum;
+  av.uyeStok = goruntu.stokDepo;
+  av.bekleyen = bekleyen;
+  for (const k of bakilacak) {
+    const yeni = av.kovaUrun[k].filter((e) => e.dahil);
+    const eski = av.uyeler[k];
+    let ayni = Boolean(eski) && eski.length === yeni.length;
+    for (let i = 0; ayni && i < yeni.length; i++) if (eski[i] !== yeni[i]) ayni = false;
+    if (!ayni) {
+      av.uyeler[k] = yeni;
+      uyeDegisti[k] = true;
+      av.pDizi[k] = yeni.map((e) => kartMetni(e.p)).join(',');
+    }
+  }
+  const gonderilen = { has: (id) => av.kartIndex.get(String(id))?.dahil === true };
+
+  // 4. Kova bileşenleri.
+  const stokDegisti = av.stokKaynak !== goruntu.stokDepo;
+  for (let k = 0; k < KOVA_SAYISI; k++) {
+    if (av.konum.kirli.has(k)) av.lDizi[k] = aynaDizi(av.konum, k);
+    if (av.adres.kirli.has(k) || uyeDegisti[k]) av.hDizi[k] = aynaDizi(av.adres, k, gonderilen.has);
+    if (stokDegisti || uyeDegisti[k]) {
+      const items = [];
+      for (const e of av.uyeler[k]) {
+        const toplam = goruntu.stokToplam.get(e.id);
+        const stocks = {};
+        for (const [d, m] of goruntu.stokDepo) {
+          const q = m.get(e.id);
+          if (q) stocks[d] = Number(q);
+        }
+        const vegaStock = Number(toplam || 0);
+        if (vegaStock || Object.keys(stocks).length) items.push({ id: e.id, vs: vegaStock, st: stocks });
+      }
+      av.qJson[k] = JSON.stringify({ items });
+    }
+  }
+  av.konum.kirli.clear();
+  av.adres.kirli.clear();
+  av.stokKaynak = goruntu.stokDepo;
+
+  // 5. head ve raflar.
+  av.head = ozetli(av.ozetler, 'head', JSON.stringify(masterBas(bekleyenler, gonderilen)));
+  if (av.rafKirli || !av.shelves) {
+    av.shelves = ozetli(av.ozetler, 'shelves', JSON.stringify(db.all('SELECT depo, code, zone FROM shelf ORDER BY depo, code').map((s) => ({ depot: s.depo, code: s.code, zone: s.zone }))));
+    av.rafKirli = false;
+  }
+  av.haritalar = {};
+  av.surum = surum;
+  return av;
+}
+
+/**
+ * Map: anahtar → { hash, json }. v1: head, shelves, b0..b63 (kovada stokla; `masterParcalariTam`). v2: ayrıca q0..q63 (Vega
+ * stoku ayrı). v3: b (ürün kartları), l (raf stoku), h (raf adresleri), q.
+ */
+function masterParcalari(v = 1) {
+  // İşlem içinden çağrılırsa (geri alınabilecek veri) aynalara dokunulmaz.
+  if (v < 2 || db.txIcinde()) return masterParcalariTam(v);
+  const a = anaVeriKur();
+  const tur = v >= 3 ? 'v3' : 'v2';
+  if (a.haritalar[tur]) return a.haritalar[tur];
+  const m = new Map();
+  m.set('head', a.head);
+  m.set('shelves', a.shelves);
+  // Bileşeni değişmemiş parça yeniden özetlenmez (kova ~450 KB). Parçanın metni saklanmaz (v2 ve v3 birlikte 60 MB tutardı):
+  // bileşenleri saklıdır, `json` istenince birleştirilir.
+  const parca = (anahtar, bilesenler, kur) => {
+    const onceki = a.ozetler.get(anahtar);
+    if (onceki && onceki.b.length === bilesenler.length && onceki.b.every((x, i) => x === bilesenler[i])) return onceki;
+    const y = {
+      hash: ozet(kur(bilesenler)),
+      b: bilesenler,
+      get json() {
+        return kur(this.b);
+      },
+    };
+    a.ozetler.set(anahtar, y);
+    return y;
+  };
+  if (tur === 'v3') {
+    for (let k = 0; k < KOVA_SAYISI; k++) m.set('b' + k, parca('3b' + k, [a.pDizi[k]], (b) => `{"products":[${b[0]}]}`));
+    for (let k = 0; k < KOVA_SAYISI; k++) m.set('l' + k, parca('3l' + k, [a.lDizi[k]], (b) => `{"locations":[${b[0]}]}`));
+    for (let k = 0; k < KOVA_SAYISI; k++) m.set('h' + k, parca('3h' + k, [a.hDizi[k]], (b) => `{"homes":[${b[0]}]}`));
+  } else {
+    for (let k = 0; k < KOVA_SAYISI; k++) {
+      m.set('b' + k, parca('2b' + k, [a.pDizi[k], a.lDizi[k], a.hDizi[k]], (b) => `{"products":[${b[0]}],"locations":[${b[1]}],"homes":[${b[2]}]}`));
+    }
+  }
+  for (let k = 0; k < KOVA_SAYISI; k++) m.set('q' + k, ozetli(a.ozetler, 'q' + k, a.qJson[k]));
+  a.haritalar[tur] = m;
+  return m;
+}
+
 /**
  * Terminalin bilmediği ya da değişmiş parçalar, en çok `en` kova. head, shelves ve stok parçaları sınırdan sayılmaz.
  * Dönen JSON metni: { buckets, surum, parts: [{ key, hash, data }], remaining }. `surum`: bu verinin değişiklik sayacı
  * (terminal `GET /api/changes?since=` ile bunu bekler).
  *
- * v2'de stok parçası kovasına bağlıdır: kova bu cevapta geliyorsa (terminal kovayı yazarken stokunu siler) ya da
- * terminalde güncel kova varsa gönderilir; kovası eski kalan terminale stok parçası gönderilmez.
+ * v2+'da stok parçası kovasına bağlıdır: kova bu cevapta geliyorsa (terminal yeni ürünün stokunu bilmez) ya da terminalde
+ * güncel kova varsa gönderilir; kovası eski kalan terminale stok parçası gönderilmez. v3'te bir kovanın b, l, h parçaları
+ * birlikte bir kova sayılır.
  */
 function masterParcaCevabi(bilinen = {}, en = 8, v = 1) {
   const parcalar = masterParcalari(v);
   const giden = [];
-  const gidenKova = new Set();
+  const stok = [];
   let kalan = 0;
-  for (const [k, p] of parcalar) {
-    if (k[0] === 'q' && k !== 'q') continue; // stok parçaları aşağıda
-    if (bilinen[k] === p.hash) continue;
-    if (k[0] === 'b' && gidenKova.size >= en) {
-      kalan++;
-      continue;
+  let kovaSayisi = 0;
+  for (const k of ['head', 'shelves']) if (bilinen[k] !== parcalar.get(k).hash) giden.push(k);
+  const turler = v >= 3 ? ['b', 'l', 'h'] : ['b'];
+  for (let i = 0; i < KOVA_SAYISI; i++) {
+    const eksik = turler.filter((t) => bilinen[t + i] !== parcalar.get(t + i).hash);
+    if (eksik.length) {
+      if (kovaSayisi >= en) {
+        kalan++;
+        continue;
+      }
+      kovaSayisi++;
+      for (const t of eksik) giden.push(t + i);
     }
-    if (k[0] === 'b') gidenKova.add(k);
-    giden.push({ k, p });
+    if (v < 2) continue;
+    if (!eksik.includes('b') && bilinen['q' + i] === parcalar.get('q' + i).hash) continue;
+    stok.push('q' + i);
   }
-  if (v >= 2) {
-    for (let i = 0; i < KOVA_SAYISI; i++) {
-      const q = parcalar.get('q' + i);
-      const b = parcalar.get('b' + i);
-      const kovaGelir = gidenKova.has('b' + i);
-      const kovaGuncel = bilinen['b' + i] === b.hash;
-      if (!kovaGelir && !kovaGuncel) continue;
-      if (!kovaGelir && bilinen['q' + i] === q.hash) continue;
-      giden.push({ k: 'q' + i, p: q });
-    }
-  }
-  const govde = giden.map(({ k, p }) => `{"key":${JSON.stringify(k)},"hash":${JSON.stringify(p.hash)},"data":${p.json}}`).join(',');
+  const govde = [...giden, ...stok]
+    .map((k) => {
+      const p = parcalar.get(k);
+      return `{"key":${JSON.stringify(k)},"hash":${JSON.stringify(p.hash)},"data":${p.json}}`;
+    })
+    .join(',');
   return `{"buckets":${KOVA_SAYISI},"surum":${surum},"parts":[${govde}],"remaining":${kalan}}`;
 }
 
@@ -1715,15 +2136,27 @@ function rafToplamlari(depo = null) {
   return m;
 }
 
+/** Ürün → Türkçe ad sırasındaki yeri; kartlar yeniden okununca baştan kurulur. */
+let adSira = { nesil: -1, sira: new Map() };
+function adSirasi() {
+  if (adSira.nesil !== kartNesil) {
+    const sirali = [...goruntu.products].sort((a, b) => trSira.compare(a.name, b.name));
+    adSira = { nesil: kartNesil, sira: new Map(sirali.map((p, i) => [p.id, i])) };
+  }
+  return adSira.sira;
+}
+
 /** Ürün listesi: Vega stoku, raflardaki toplam, bekleyen kabul ve yerleşmemiş fark (depo verilirse o depoda). */
 function urunListesi({ q = '', filtre = 'hepsi', limit = 300, depo = null } = {}) {
   if (!goruntu) return { toplam: 0, liste: [] };
   const raf = rafToplamlari(depo);
   const bek = bekleyenKabul(depo);
-  const zimmetli = new Set(
+  // Yalnız "raf adresi yok" süzgecinde gerekir (190 bin adres her aramada okunmasın).
+  const zimmetli = filtre !== 'adressiz' ? null : new Set(
     (depo === null ? db.all('SELECT DISTINCT product_id FROM product_home') : db.all('SELECT DISTINCT product_id FROM product_home WHERE depo=?', depo)).map((r) => r.product_id),
   );
   const ara = String(q || '').trim();
+  if (ara) aramaKullanildi();
   const qt = fuzzy.tokens(ara);
   const compact = qt.join('');
   const bc = goruntu.barcodes;
@@ -1748,10 +2181,15 @@ function urunListesi({ q = '', filtre = 'hepsi', limit = 300, depo = null } = {}
       if (!skor) continue;
     }
     toplam++;
-    out.push({ ...p, vegaStock: vs, raf: rq, rafSayisi: r ? r.n : 0, bekleyen: yuvarla(b), fark, skor });
+    out.push({ p, vs, rq, n: r ? r.n : 0, b, fark, skor });
   }
-  out.sort((a, b) => b.skor - a.skor || a.name.localeCompare(b.name, 'tr'));
-  return { toplam, liste: out.slice(0, limit) };
+  // Ad sırası kartlar değişmedikçe aynıdır: 60 bin satır her seferinde Türkçe karşılaştırmayla sıralanmaz.
+  const sira = adSirasi();
+  out.sort((a, b) => b.skor - a.skor || sira.get(a.p.id) - sira.get(b.p.id));
+  return {
+    toplam,
+    liste: out.slice(0, limit).map((x) => ({ ...x.p, vegaStock: x.vs, raf: x.rq, rafSayisi: x.n, bekleyen: yuvarla(x.b), fark: x.fark, skor: x.skor })),
+  };
 }
 
 function urunDetay(id) {
@@ -1858,7 +2296,33 @@ async function stokTani(ara) {
   return { ara: String(ara || '').trim(), baslangic: bas, kartlar };
 }
 
+// Raf listesi (Ortaş'ta 70 bin raf) yalnız raf, raf stoku ya da raf adresi değişince yeniden kurulur.
+const rafListeOnbellek = new Map();
+// Raflar ekranı kapalıyken liste (15 MB) bellekte tutulmaz.
+const rafListeKullanildi = bostaBirak(3 * 60 * 1000, () => rafListeOnbellek.clear());
 function raflar(depo = null) {
+  rafListeKullanildi();
+  ozelRaflar();
+  const anahtar = `${db.acilis()}|${db.tabloSayaci('l')}|${db.tabloSayaci('h')}|${db.tabloSayaci('s')}|${goruntu ? goruntu.at : 0}`;
+  const e = rafListeOnbellek.get(depo);
+  if (e && e.anahtar === anahtar && e.ozel === ozelKaynak) return e.liste;
+  const liste = raflarKur(depo);
+  rafListeOnbellek.set(depo, { anahtar, ozel: ozelKaynak, liste, json: null, etag: null });
+  return liste;
+}
+
+/** Raf listesinin hazır JSON metni ve ETag'i: liste değişmediyse yönetim ekranına 304 döner, 15 MB yeniden gönderilmez. */
+function raflarJson(depo = null) {
+  raflar(depo);
+  const e = rafListeOnbellek.get(depo);
+  if (!e.json) {
+    e.json = JSON.stringify(e.liste);
+    e.etag = `"${ozet(e.json)}"`;
+  }
+  return e;
+}
+
+function raflarKur(depo) {
   const ozet = new Map(
     db.all('SELECT depo, shelf, COUNT(*) AS n, SUM(qty) AS q, MAX(updated_at) AS u FROM location WHERE qty>0 GROUP BY depo, shelf').map((r) => [`${r.depo}|${r.shelf}`, r]),
   );
@@ -2344,12 +2808,14 @@ async function sayimGeriAlAsil(id) {
 
 module.exports = {
   sayimMesgul: (id) => mesgul(`sayim:${id}`),
-  _goruntuKur: goruntuKur,
+  _goruntuKur: (g) => goruntuKur(g, true),
   yenidenKur,
   degisti,
   dinle,
   surum: () => surum,
   masterParcaCevabi,
+  _masterParcalari: masterParcalari,
+  _masterParcalariTam: masterParcalariTam,
   kova,
   vegaDurum,
   vegaYenile,
@@ -2368,6 +2834,7 @@ module.exports = {
   rafKodu,
   rafKoduGecerli,
   ozelRaflar,
+  belgesizDepolar,
   ozelRafMi,
   ozelRafTemizle,
   zimmetler,
@@ -2399,6 +2866,7 @@ module.exports = {
   urunDetay,
   stokTani,
   raflar,
+  raflarJson,
   rafDetay,
   urunAdi,
   sayimNo,

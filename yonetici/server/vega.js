@@ -154,11 +154,74 @@ async function kullanilanDepolar(v) {
   return liste.length ? liste : hepsi;
 }
 
+/** Stok kartı sorgusunun koşulu ve raf adresi alanı (ayara ve tablodaki sütunlara göre). */
+async function kartKosulu(p, cfg, F) {
+  const stokKol = await kolonlar(p, `${F}TBLSTOKLAR`);
+  const sart = ['ISNULL(S.DELETED,0)=0', 'S.IND>=100'];
+  if (stokKol.has('IPTAL')) sart.push('ISNULL(S.IPTAL,0)=0');
+  if (stokKol.has('KOD8')) sart.push("LTRIM(RTRIM(ISNULL(S.KOD8,''))) <> N'PASİF'");
+  if (stokKol.has('STOKTIPI')) sart.push('ISNULL(S.STOKTIPI,0) NOT IN (3,7,9)');
+  // Raf adresi stok kartının bir özel kod alanında (Ortaş: KOD10); alan adı ayardan, tabloda varsa okunur.
+  const ad = String(cfg.rafAdresi?.alan || '').toUpperCase();
+  const rafAlan = ad && stokKol.has(ad) ? ad : null;
+  const rafIfade = rafAlan ? `LTRIM(RTRIM(ISNULL(CAST(S.[${rafAlan}] AS nvarchar(400)),'')))` : null;
+  return { sart: sart.join(' AND '), rafAlan, rafIfade };
+}
+
+const izParca = (ad, h) => [1, 5, 9, 13].map((i) => `CHECKSUM_AGG(CAST(SUBSTRING(${h},${i},4) AS int)) AS ${ad}${i}`).join(', ');
+const izMetni = (r, ad) => [1, 5, 9, 13].map((i) => r[`${ad}${i}`]).join(':');
+
+/**
+ * Stok kartlarının ve birim/barkod tablosunun parmak izi: SQL Server'da hesaplanır, tek satır döner. Ortaş'ta 125 bin kart ve
+ * 120 bin barkod her okumada (dakikada bir) ~25 MB olarak ağdan geliyordu; kartlar çoğu zaman değişmediği halde. İz aynıysa
+ * kartlar yeniden okunmaz. Satır başına MD5, satırlar arası XOR (128 bit): satır sırası önemsiz, IND izde olduğu için aynı
+ * iki satır birbirini götürmez. `raf`: yalnız raf adresi alanı (program kendisi yazar; ayrı izlenir).
+ */
+async function izOku(p, F, k) {
+  const raf = k.rafIfade ? `, HASHBYTES('MD5', CAST(S.IND AS nvarchar(12)) + N'|' + ${k.rafIfade}) AS R` : '';
+  const r = await p.request().query(`
+    SELECT COUNT_BIG(*) AS N, ${izParca('K', 'X.H')}${k.rafIfade ? `, ${izParca('R', 'X.R')}` : ''}
+    FROM [${F}TBLSTOKLAR] S
+    CROSS APPLY (SELECT HASHBYTES('MD5', CAST(S.IND AS nvarchar(12)) + N'|' + CAST(ISNULL(S.STOKKODU,'') AS nvarchar(200)) + N'|' + CAST(ISNULL(S.MALINCINSI,'') AS nvarchar(600))) AS H${raf}) X
+    WHERE ${k.sart};
+    SELECT COUNT_BIG(*) AS N, ${izParca('B', 'X.H')}
+    FROM (SELECT HASHBYTES('MD5', CAST(IND AS binary(4)) + CAST(ISNULL(STOKNO,0) AS binary(4)) + CAST(CAST(ISNULL(CARPAN,1) AS float) AS binary(8))
+        + CAST(CAST(ISNULL(VARSAYILAN,0) AS tinyint) AS binary(1)) + CAST(CAST(ISNULL(ANABIRIM,0) AS tinyint) AS binary(1))
+        + CAST(CAST(ISNULL(BIRIMADI,'') AS nvarchar(100)) AS varbinary(200)) + 0x0000 + CAST(CAST(ISNULL(BARCODE,'') AS nvarchar(200)) AS varbinary(400))) AS H
+      FROM [${F}TBLBIRIMLEREX]) X`);
+  const [a, b] = r.recordsets;
+  return {
+    kart: `${a[0].N}:${izMetni(a[0], 'K')}`,
+    raf: k.rafIfade ? izMetni(a[0], 'R') : '',
+    birim: `${b[0].N}:${izMetni(b[0], 'B')}`,
+  };
+}
+
+/** Yalnız raf adresi alanının izi (program alanı yazdıktan sonra kendi yazdığını "değişiklik" saymasın diye). */
+async function rafIzi(cfg) {
+  const { p, F } = await baglam(cfg.vega);
+  const k = await kartKosulu(p, cfg, F);
+  if (!k.rafIfade) return '';
+  const r = await p.request().query(`
+    SELECT ${izParca('R', 'X.R')} FROM [${F}TBLSTOKLAR] S
+    CROSS APPLY (SELECT HASHBYTES('MD5', CAST(S.IND AS nvarchar(12)) + N'|' + ${k.rafIfade}) AS R) X
+    WHERE ${k.sart}`);
+  return izMetni(r.recordset[0], 'R');
+}
+
+// Son N günde hareket gören ürünler yavaş değişir; her okumada yeniden sorulmaz.
+let hareketOnbellek = null;
+const HAREKET_OMUR_MS = 10 * 60 * 1000;
+let izUyarildi = false;
+
 /**
  * Terminale gidecek Vega verisinin anlık görüntüsü, bütün kullanılan depolar için. Ürünlerin hepsi gelir;
  * terminale hangilerinin gideceğine ana veri kurulurken karar verilir (stoklu / hareketli / rafta olan).
+ *
+ * `onceki`: bir önceki görüntü. Kartların parmak izi aynıysa kartlar ve barkodlar yeniden okunmaz, önceki diziler AYNEN
+ * (aynı nesneler) döner; çağıran "kartlar değişmedi"yi dizi kimliğinden anlar. `tam`: iz ne olursa olsun hepsini oku.
  */
-async function goruntu(cfg) {
+async function goruntu(cfg, onceki = null, { tam = false } = {}) {
   const v = cfg.vega;
   // Her sorgunun süresi kaydedilir; zaman aşımında hangi sorgunun takıldığı hata metninde görünür.
   const sureler = {};
@@ -176,21 +239,39 @@ async function goruntu(cfg) {
   const { p, donem, F, FD } = await olc('bağlantı', () => baglam(v));
   const depoListe = await kullanilanDepolar(v);
   const depoIn = depoListe.map((d) => Number(d.ind)).filter(Number.isInteger).join(',') || '0';
-  const stokKol = await kolonlar(p, `${F}TBLSTOKLAR`);
+  const kk = await kartKosulu(p, cfg, F);
+  const { rafAlan } = kk;
+  const rafKol = kk.rafIfade ? `, ${kk.rafIfade} AS RAFADRES` : '';
 
-  const sart = ['ISNULL(S.DELETED,0)=0', 'S.IND>=100'];
-  if (stokKol.has('IPTAL')) sart.push('ISNULL(S.IPTAL,0)=0');
-  if (stokKol.has('KOD8')) sart.push("LTRIM(RTRIM(ISNULL(S.KOD8,''))) <> N'PASİF'");
-  if (stokKol.has('STOKTIPI')) sart.push('ISNULL(S.STOKTIPI,0) NOT IN (3,7,9)');
-
-  // Raf adresi stok kartının bir özel kod alanında (Ortaş: KOD14 "SERBEST"); alan adı ayardan, tabloda varsa okunur.
-  const rafAlan = String(cfg.rafAdresi?.alan || '').toUpperCase();
-  const rafKol = rafAlan && stokKol.has(rafAlan) ? `, LTRIM(RTRIM(ISNULL(CAST(S.[${rafAlan}] AS nvarchar(400)),''))) AS RAFADRES` : '';
-  const kartlar = await olc('kartlar', () => p.request().query(`
-    SELECT S.IND, ISNULL(S.STOKKODU,'') AS KOD, ISNULL(S.MALINCINSI,'') AS AD, ISNULL(B.BIRIMADI,'') AS BIRIM${rafKol}
-    FROM [${F}TBLSTOKLAR] S
-    OUTER APPLY (SELECT TOP 1 BIRIMADI FROM [${F}TBLBIRIMLEREX] X WHERE X.STOKNO=S.IND ORDER BY X.VARSAYILAN DESC, X.ANABIRIM DESC, X.IND) B
-    WHERE ${sart.join(' AND ')}`));
+  // Kartlar değişti mi: iz alınamazsa (eski SQL Server, yetki) eskisi gibi hepsi okunur.
+  let iz = null;
+  try {
+    iz = await olc('iz', () => izOku(p, F, kk));
+    iz.sekil = JSON.stringify([v.server, v.database, F, kk.sart, rafAlan]);
+  } catch (e) {
+    if (!izUyarildi) console.warn('[vega] kart izi alınamadı, kartlar her okumada baştan okunacak:', e.message);
+    izUyarildi = true;
+    delete sureler.iz;
+  }
+  const kartAyni = Boolean(!tam && iz && onceki && onceki.iz && Array.isArray(onceki.products) && onceki.barcodes
+    && onceki.iz.sekil === iz.sekil && onceki.iz.kart === iz.kart && onceki.iz.birim === iz.birim);
+  let kartlar = null;
+  if (!kartAyni) {
+    kartlar = await olc('kartlar', () => p.request().query(`
+      SELECT S.IND, ISNULL(S.STOKKODU,'') AS KOD, ISNULL(S.MALINCINSI,'') AS AD, ISNULL(B.BIRIMADI,'') AS BIRIM${rafKol}
+      FROM [${F}TBLSTOKLAR] S
+      OUTER APPLY (SELECT TOP 1 BIRIMADI FROM [${F}TBLBIRIMLEREX] X WHERE X.STOKNO=S.IND ORDER BY X.VARSAYILAN DESC, X.ANABIRIM DESC, X.IND) B
+      WHERE ${kk.sart}`));
+  } else if (kk.rafIfade && onceki.iz.raf !== iz.raf) {
+    // Kartlar aynı, yalnız raf adresi alanı değişmiş (Vega'da elle ya da başka bir programdan): yalnız o alan okunur.
+    const r = await olc('rafAdresi', () => p.request().query(`SELECT S.IND, ${kk.rafIfade} AS RAFADRES FROM [${F}TBLSTOKLAR] S WHERE ${kk.sart} AND ${kk.rafIfade} <> ''`));
+    const adres = new Map(r.recordset.map((x) => [String(x.IND), String(x.RAFADRES)]));
+    for (const u of onceki.products) {
+      const a = adres.get(u.id);
+      if (a) u.raf = a;
+      else delete u.raf;
+    }
+  }
 
   // Filigran: depo envanterinin şu anki en büyük IND'i. Stok tam bu kayda kadar okunur; canlı sayım "sayıldıktan sonra Vega'da ne
   // oldu" sorusunu IND aralığıyla sorar (envanter TARIH'inde saat yok). Kimlik sütunu sıralı artar.
@@ -201,12 +282,16 @@ async function goruntu(cfg) {
     WHERE DEPO IN (${depoIn}) AND ISNULL(BELGETIPI,0)<>67 AND IND <= @f GROUP BY DEPO, STOKNO HAVING ABS(SUM(ENVANTER)) > 0.00001`));
 
   const gun = Math.max(1, Number(cfg.urun.gun) || 365);
-  const hareket = await olc('hareket', () => p.request().input('gun', sql.Int, gun).query(`
-    SELECT DISTINCT STOKNO FROM [${FD}TBLSTOKHAREKETLERI]
-    WHERE DEPO IN (${depoIn}) AND TARIH >= DATEADD(day, -@gun, CAST(GETDATE() AS date))`));
+  const hareketAnahtar = `${FD}|${depoIn}|${gun}`;
+  if (tam || !hareketOnbellek || hareketOnbellek.anahtar !== hareketAnahtar || Date.now() - hareketOnbellek.at > HAREKET_OMUR_MS) {
+    const hareket = await olc('hareket', () => p.request().input('gun', sql.Int, gun).query(`
+      SELECT DISTINCT STOKNO FROM [${FD}TBLSTOKHAREKETLERI]
+      WHERE DEPO IN (${depoIn}) AND TARIH >= DATEADD(day, -@gun, CAST(GETDATE() AS date))`));
+    hareketOnbellek = { anahtar: hareketAnahtar, at: Date.now(), liste: hareket.recordset.map((h) => String(h.STOKNO)).sort() };
+  }
 
   // Barkod TBLBIRIMLEREX'te (Kılavuz §8). Çarpanlı birim (koli) barkodu terminalde 1 adet sayılırdı; alınmaz.
-  const barkod = await olc('barkod', () => p.request().query(`
+  const barkod = kartAyni ? null : await olc('barkod', () => p.request().query(`
     SELECT STOKNO, LTRIM(RTRIM(BARCODE)) AS BARKOD FROM [${F}TBLBIRIMLEREX]
     WHERE LTRIM(RTRIM(ISNULL(BARCODE,''))) <> '' AND ABS(ISNULL(CARPAN,1) - 1) < 0.00001`));
 
@@ -275,7 +360,7 @@ async function goruntu(cfg) {
   }
 
   const bk = new Map();
-  for (const b of barkod.recordset) {
+  for (const b of barkod ? barkod.recordset : []) {
     const id = String(b.STOKNO);
     if (!bk.has(id)) bk.set(id, []);
     if (!bk.get(id).includes(b.BARKOD)) bk.get(id).push(b.BARKOD);
@@ -283,7 +368,7 @@ async function goruntu(cfg) {
 
   const depoAd = new Map(depoListe.map((d) => [Number(d.ind), d.ad]));
   // Listede olmayan karta (hizmet, pasif) gelen satır terminalde ürünsüz kalırdı; alınmaz.
-  const kartVar = new Set(kartlar.recordset.map((k) => k.IND));
+  const kartVar = kartAyni ? new Set(onceki.products.map((u) => Number(u.id))) : new Set(kartlar.recordset.map((k) => k.IND));
   const belgeler = new Map();
   for (const h of kabul.recordset) {
     if (!kartVar.has(h.STOKNO)) continue;
@@ -318,7 +403,7 @@ async function goruntu(cfg) {
     (stock[d] ||= {})[String(s.STOKNO)] = Number(s.KALAN);
   }
   // Aynı Vega verisi hep aynı sırada ve aynı biçimde çıksın: içerik özeti değişmediyse ana veri yeniden kurulmaz (depo.js vegaYenile).
-  const urunler = kartlar.recordset.map((k) => ({
+  const urunler = kartAyni ? onceki.products : kartlar.recordset.map((k) => ({
     id: String(k.IND),
     code: String(k.KOD).trim(),
     name: String(k.AD).trim(),
@@ -339,11 +424,13 @@ async function goruntu(cfg) {
     donem,
     depolar: depoListe.map((d) => ({ ind: Number(d.ind), ad: d.ad })),
     products: urunler,
-    rafAlan: rafKol ? rafAlan : null,
+    rafAlan,
     stock,
-    moved: hareket.recordset.map((h) => String(h.STOKNO)).sort(),
-    barcodes: Object.fromEntries(bk),
+    moved: hareketOnbellek.liste,
+    barcodes: kartAyni ? onceki.barcodes : Object.fromEntries(bk),
     receipts: belgeListe,
+    // Kartların parmak izi (bir sonraki okumada karşılaştırılır); alınamadıysa null.
+    iz,
   };
 }
 
@@ -1036,4 +1123,4 @@ async function transferOku(cfg, { bas, alanlar, kaynaklar }) {
   return { sevkler: [...belgeler.values()], havuz: [...havuz.values()] };
 }
 
-module.exports = { sayimHareketleri, transferYaz, transferGeriAl, transferOku, kullanilanDepolar, dene, firmalar, donemler, depolar, donemCoz, hazirMi, goruntu, stokTani, BELGE_TURU, anlikStok, sayimYaz, sayimGeriAl, fisVarsayilanlari, PASIF_AD, kartAlanUzunluk, kartAlanYaz, kapat, oleTarih };
+module.exports = { sayimHareketleri, transferYaz, transferGeriAl, transferOku, kullanilanDepolar, dene, firmalar, donemler, depolar, donemCoz, hazirMi, goruntu, stokTani, BELGE_TURU, anlikStok, sayimYaz, sayimGeriAl, fisVarsayilanlari, PASIF_AD, kartAlanUzunluk, kartAlanYaz, kapat, oleTarih, rafIzi };

@@ -25,22 +25,52 @@ export function oturumDinle(f) {
   oturumDustu = f;
 }
 
-export async function api(yol, { method = 'GET', body } = {}) {
-  const r = await fetch('/yonetim/api' + yol, {
-    method,
-    headers: { 'Content-Type': 'application/json', 'X-Yonetici': belirtec() },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  const t = await r.text();
-  let d = null;
+function coz(t) {
   try {
-    d = t ? JSON.parse(t) : null;
+    return t ? JSON.parse(t) : null;
   } catch {
-    d = t;
+    return t;
   }
-  if (r.status === 401 && yol !== '/oturum') oturumDustu();
-  if (!r.ok) throw new Error((d && d.error) || `Hata ${r.status}`);
-  return d;
+}
+
+/**
+ * Cevabın ham metni. Okuma isteği (GET) 45 sn'de cevap gelmezse bırakılır: sunucu takılırsa ekran sonsuza dek boş beklemesin.
+ * Yazma istekleri (Vega'ya fiş, Excel aktarma) uzun sürebilir; onlara süre sınırı konmaz.
+ */
+export async function apiMetin(yol, { method = 'GET', body, sure = method === 'GET' ? 45000 : 0 } = {}) {
+  const dur = sure ? new AbortController() : null;
+  const zaman = dur ? setTimeout(() => dur.abort(), sure) : null;
+  try {
+    const r = await fetch('/yonetim/api' + yol, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'X-Yonetici': belirtec() },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: dur ? dur.signal : undefined,
+    });
+    const t = await r.text();
+    if (r.status === 401 && yol !== '/oturum') oturumDustu();
+    if (!r.ok) {
+      const d = coz(t);
+      throw new Error((d && d.error) || `Hata ${r.status}`);
+    }
+    return t;
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw new Error('Sunucu yanıt vermedi (zaman aşımı)');
+    throw e;
+  } finally {
+    clearTimeout(zaman);
+  }
+}
+
+export async function api(yol, secenek) {
+  return coz(await apiMetin(yol, secenek));
+}
+
+/** Arayüzde yakalanan hata sunucu günlüğüne (ve destek raporuna) düşer; gönderilemezse sessiz kalır. */
+export function hataBildir(mesaj, yigin = '') {
+  try {
+    apiMetin('/istemci-hata', { method: 'POST', body: { mesaj: String(mesaj).slice(0, 500), yigin: String(yigin || '').slice(0, 4000), yol: window.location.hash }, sure: 10000 }).catch(() => {});
+  } catch {}
 }
 
 /** CSV vb. indirme: oturum başlığı gerektiği için fetch ile alınıp kaydedilir. */
@@ -146,33 +176,119 @@ export function useDepo() {
   return { depo, setDepo, depolar, ad, cok: depolar.length > 1, varsayilan: durum?.varsayilanDepo, qs: depo ? `&depo=${depo}` : '' };
 }
 
-/** Sunucu verisi; sunucuda değişiklik olunca (surum) kendiliğinden yeniden yüklenir. */
-export function useVeri(yol, bag = []) {
+/**
+ * Sunucu verisi; sunucuda değişiklik olunca (surum) kendiliğinden yeniden yüklenir.
+ *
+ * Terminaller çalışırken sayaç birkaç saniyede bir artar. Eskiden her artışta açık sayfanın verisi baştan çekiliyor (raf
+ * listesi 70 bin satır), tablo silinip yeniden çiziliyordu; hem sunucu hem bu ekran kasılıyordu. Artık:
+ *  - sayaç değişince en çok `enAz` ms'de bir yenilenir (ağır listelerde 20 sn),
+ *  - bu yenileme sessizdir (tablo yerinde durur, "yükleniyor" çıkmaz),
+ *  - cevap bir öncekiyle aynıysa ekran hiç yeniden çizilmez,
+ *  - pencere görünmüyorken (simge durumunda, başka sekmede) yenilenmez; görününce bir kez yenilenir.
+ */
+export function useVeri(yol, bag = [], { enAz = 4000 } = {}) {
   const { surum } = useApp();
-  const [veri, setVeri] = useState(null);
+  const [veri, setVeriHam] = useState(null);
   const [hata, setHata] = useState(null);
   const [yukleniyor, setYukleniyor] = useState(true);
   const son = useRef(0);
-  const yukle = useCallback(async () => {
+  const sonMetin = useRef(null);
+  const sonYukleme = useRef(0);
+  const yuklenenSurum = useRef(surum);
+  const guncelSurum = useRef(surum);
+  guncelSurum.current = surum;
+  const bekleyen = useRef(false);
+  const yukle = useCallback(async (secenek) => {
+    // Düğmeye doğrudan bağlanabilir (olay nesnesi gelir); yalnız { sessiz: true } sessiz yeniler.
+    const sessiz = Boolean(secenek && secenek.sessiz === true);
     if (!yol) return;
     const no = ++son.current;
-    setYukleniyor(true);
+    if (!sessiz) setYukleniyor(true);
+    yuklenenSurum.current = guncelSurum.current;
     try {
-      const d = await api(yol);
+      const t = await apiMetin(yol);
       if (no === son.current) {
-        setVeri(d);
+        if (t !== sonMetin.current) {
+          sonMetin.current = t;
+          setVeriHam(coz(t));
+        }
         setHata(null);
       }
     } catch (e) {
       if (no === son.current) setHata(e.message);
     } finally {
-      if (no === son.current) setYukleniyor(false);
+      if (no === son.current) {
+        sonYukleme.current = Date.now();
+        setYukleniyor(false);
+      }
     }
   }, [yol]);
+  // Elle değiştirilen veri (iyimser güncelleme) sonraki aynı cevapla ezilebilsin.
+  const setVeri = useCallback((v) => {
+    sonMetin.current = null;
+    setVeriHam(v);
+  }, []);
   useEffect(() => {
     yukle();
-  }, [yukle, surum, ...bag]);
+  }, [yukle, ...bag]);
+  useEffect(() => {
+    if (surum === yuklenenSurum.current) return undefined;
+    const t = setTimeout(() => {
+      if (document.hidden) bekleyen.current = true;
+      else yukle({ sessiz: true });
+    }, Math.max(0, sonYukleme.current + enAz - Date.now()));
+    return () => clearTimeout(t);
+  }, [surum, yukle, enAz]);
+  useEffect(() => {
+    const f = () => {
+      if (!document.hidden && bekleyen.current) {
+        bekleyen.current = false;
+        yukle({ sessiz: true });
+      }
+    };
+    document.addEventListener('visibilitychange', f);
+    return () => document.removeEventListener('visibilitychange', f);
+  }, [yukle]);
   return { veri, hata, yukleniyor, yukle, setVeri };
+}
+
+/**
+ * Bir sayfa çizilirken hata verirse bütün pencere bomboş kalmasın: hata gösterilir, günlüğe bildirilir, "Yeniden yükle" çıkar.
+ * `anahtar` (sayfa yolu) değişince sıfırlanır; başka sayfaya geçince hata ekranı kalkar.
+ */
+export class HataSiniri extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hata: null, anahtar: props.anahtar };
+  }
+
+  static getDerivedStateFromError(hata) {
+    return { hata };
+  }
+
+  static getDerivedStateFromProps(props, state) {
+    return props.anahtar !== state.anahtar ? { hata: null, anahtar: props.anahtar } : null;
+  }
+
+  componentDidCatch(hata, bilgi) {
+    hataBildir(hata && hata.message, `${(hata && hata.stack) || ''}\n${(bilgi && bilgi.componentStack) || ''}`);
+  }
+
+  render() {
+    if (!this.state.hata) return this.props.children;
+    return (
+      <div className="notice err" style={{ margin: 16 }}>
+        <Icon name="alert" />
+        <div>
+          <p><b>Bu ekran gösterilemedi.</b> {String(this.state.hata.message || this.state.hata)}</p>
+          <p className="muted small">Hata günlüğe yazıldı. Terminaller ve sunucu çalışmaya devam ediyor.</p>
+          <div className="btns" style={{ marginTop: 8 }}>
+            <button className="btn primary" onClick={() => window.location.reload()}>Yeniden yükle</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 }
 
 // ---- Bileşenler --------------------------------------------------------------------------------

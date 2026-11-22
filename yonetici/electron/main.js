@@ -63,12 +63,20 @@ function adresMetni() {
   return ip ? `http://${ip}:${port}` : `port ${port}`;
 }
 
+const gunluk = () => require('../server/log');
+
 function pencereAc() {
   if (win && !win.isDestroyed()) {
-    if (win.isMinimized()) win.restore();
-    win.show();
-    win.focus();
-    return;
+    // Arayüz süreci çökmüşse pencere bomboş görünür (beyaz ekran): eskisi atılır, yenisi açılır.
+    if (win.webContents.isCrashed()) {
+      win.destroy();
+      win = null;
+    } else {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+      return;
+    }
   }
   win = new BrowserWindow({
     width: 1400,
@@ -98,10 +106,53 @@ function pencereAc() {
     win.maximize();
     win.show();
   });
-  win.on('close', (e) => {
+  // Arayüz süreci çökerse (bellek, ekran kartı) ya da sayfa yüklenemezse pencere boş kalmasın: günlüğe yazılır, yeniden yüklenir.
+  let yenidenDeneme = 0;
+  const pencere = win;
+  const yenidenYukle = (neden) => {
+    if (pencere.isDestroyed() || yenidenDeneme >= 5) return;
+    yenidenDeneme++;
+    setTimeout(() => !pencere.isDestroyed() && pencere.loadURL(adres), 1500);
+    try { gunluk().uyari(`Yönetim ekranı yeniden yükleniyor (${neden})`); } catch { /* günlük hazır değil */ }
+  };
+  win.webContents.on('render-process-gone', (e, ayrinti) => {
+    try { gunluk().hata('Yönetim ekranı süreci kapandı', new Error(`${ayrinti.reason} (çıkış kodu ${ayrinti.exitCode})`)); } catch { /* günlük hazır değil */ }
+    yenidenYukle(ayrinti.reason);
+  });
+  win.webContents.on('did-fail-load', (e, kod, aciklama, url, anaCerceve) => {
+    if (anaCerceve && kod !== -3) yenidenYukle(`${aciklama} ${kod}`);
+  });
+  win.webContents.on('did-finish-load', () => setTimeout(() => (yenidenDeneme = 0), 30000));
+  win.on('unresponsive', () => {
+    try { gunluk().uyari('Yönetim ekranı yanıt vermiyor'); } catch { /* günlük hazır değil */ }
+  });
+  // Bekçi: sayfa yüklenmiş görünüp bomboş kalabiliyor (Chromium'un ağ hizmeti yükleme sırasında çökerse hiçbir hata olayı
+  // gelmiyor; pencere beyaz kalıyordu). Arayüz her durumda bir şey çizer; 8 sn'de bir bakılır, iki kez üst üste boşsa ya da
+  // yanıt yoksa sayfa yeniden yüklenir.
+  let bosSayisi = 0;
+  const bekci = setInterval(async () => {
+    if (pencere.isDestroyed()) return void clearInterval(bekci);
+    if (!pencere.isVisible() || pencere.webContents.isLoading()) return;
+    let dolu = false;
+    try {
+      dolu = await Promise.race([
+        pencere.webContents.executeJavaScript("Boolean(document.getElementById('root') && document.getElementById('root').childElementCount)"),
+        new Promise((r) => setTimeout(() => r(false), 4000)),
+      ]);
+    } catch { /* süreç yok */ }
+    if (pencere.isDestroyed()) return;
+    bosSayisi = dolu ? 0 : bosSayisi + 1;
+    if (bosSayisi >= 2) {
+      bosSayisi = 0;
+      try { gunluk().hata('Yönetim ekranı boş kaldı, yeniden yükleniyor', new Error(`adres ${pencere.webContents.getURL() || '(yok)'}`)); } catch { /* günlük hazır değil */ }
+      pencere.loadURL(adres);
+    }
+  }, 8000);
+  win.on('closed', () => clearInterval(bekci));
+  win.on('close', () => {
+    // Pencere gizlenmez, kapatılır: gizli pencerede arayüz çalışmaya (veri çekmeye) devam ediyor, çökünce de yeniden açıldığında
+    // bomboş görünüyordu. Sunucu ana süreçte çalışır; pencere kapanınca terminaller etkilenmez. Yeniden açmak yeni pencere kurar.
     if (cikiyor) return;
-    e.preventDefault();
-    win.hide();
     if (!fs.existsSync(path.join(app.getPath('userData'), '.tepsi-bildirildi'))) {
       fs.writeFileSync(path.join(app.getPath('userData'), '.tepsi-bildirildi'), '1');
       if (Notification.isSupported()) {
@@ -356,6 +407,10 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', pencereAc);
+  // Chromium'un yardımcı süreçleri (ağ hizmeti, ekran kartı) çökerse günlüğe düşsün; pencere bekçisi sayfayı toparlar.
+  app.on('child-process-gone', (e, d) => {
+    try { require('../server/log').uyari(`Yardımcı süreç kapandı: ${d.type}${d.name ? ` ${d.name}` : ''} · ${d.reason} (çıkış kodu ${d.exitCode})`); } catch { /* günlük hazır değil */ }
+  });
   process.on('uncaughtException', (e) => require('../server/log').hata('Yakalanmamış hata', e));
   process.on('unhandledRejection', (e) => require('../server/log').hata('Yakalanmamış söz hatası', e));
   app.whenReady().then(baslat);
