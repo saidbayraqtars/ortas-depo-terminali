@@ -22,6 +22,10 @@ const DEFAULTS = {
     donem: null, // null = yıla göre kendisi seçer
     depo: null, // varsayılan depo (F{firma}TBLDEPOLAR.IND): terminal ilk açılışta ve depo bilgisi gelmeyen işlemde
     depolar: [], // kullanılan depolar; boş = firmanın bütün depoları
+    // Yalnız sayım yapılan depolar (Ortaş: 110 ZİNCİRDEPO; İsmail isteği, 2026-11-23). Kullanılan depolar arasında durur:
+    // terminalde ve sayımda seçilir, Vega stoku okunur; ama mal kabul belgesi / rafa bekleyen üretmez, rafları kartın raf adresi
+    // alanına (KOD10) yazılmaz, paketle gelen B2B raf listesi bu depoya kopyalanmaz.
+    sayimDepolar: [],
   },
   // Mal kabul: hangi stok girişleri rafa kaldırılacak belge sayılır.
   kabul: {

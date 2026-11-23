@@ -135,7 +135,7 @@ function VegaAyari({ a, kaydet }) {
 
   const kaydetVega = async () => {
     setMesgul('kaydet');
-    await kaydet({ vega: { ...govde(), firma: v.firma ? Number(v.firma) : null, donem: v.donem ? Number(v.donem) : null, depo: v.depo ? Number(v.depo) : null, depolar: (v.depolar || []).map(Number) } });
+    await kaydet({ vega: { ...govde(), firma: v.firma ? Number(v.firma) : null, donem: v.donem ? Number(v.donem) : null, depo: v.depo ? Number(v.depo) : null, depolar: (v.depolar || []).map(Number), sayimDepolar: (v.sayimDepolar || []).map(Number) } });
     setMesgul('');
   };
 
@@ -169,7 +169,7 @@ function VegaAyari({ a, kaydet }) {
         <Alan etiket="Varsayılan depo" ipucu="Terminal ilk açılışta bu depoda başlar; terminalden değiştirilebilir">
           <select className="inp" value={v.depo || ''} onChange={(e) => setV((x) => ({ ...x, depo: Number(e.target.value) || null }))}>
             <option value="">İlk depo</option>
-            {(depolar.length ? kullanilan : v.depo ? [{ ind: v.depo, ad: String(v.depo) }] : []).map((x) => <option key={x.ind} value={x.ind}>{x.ad} ({x.ind})</option>)}
+            {(depolar.length ? kullanilan.filter((x) => !(v.sayimDepolar || []).map(Number).includes(x.ind)) : v.depo ? [{ ind: v.depo, ad: String(v.depo) }] : []).map((x) => <option key={x.ind} value={x.ind}>{x.ad} ({x.ind})</option>)}
           </select>
         </Alan>
       </div>
@@ -184,8 +184,29 @@ function VegaAyari({ a, kaydet }) {
                     const yeni = secili ? (y.depolar || []).filter((d) => Number(d) !== x.ind) : [...(y.depolar || []), x.ind];
                     // Varsayılan depo kullanılanlardan çıkarsa sunucu sessizce ilk depoyu alırdı; seçimi boşalt.
                     const depo = !yeni.length || yeni.map(Number).includes(Number(y.depo)) ? y.depo : null;
-                    return { ...y, depolar: yeni, depo };
+                    // Kullanılmayan depo "yalnız sayım" listesinde de kalmaz.
+                    const sayimDepolar = (y.sayimDepolar || []).map(Number).filter((d) => !yeni.length || yeni.map(Number).includes(d));
+                    return { ...y, depolar: yeni, depo, sayimDepolar };
                   })} />
+                  <span>{x.ad} <span className="muted small">({x.ind})</span></span>
+                </label>
+              );
+            })}
+          </div>
+        </Alan>
+      )}
+      {kullanilan.length > 1 && (
+        <Alan etiket="Yalnız sayım yapılan depolar" ipucu="Sayımda ve terminalde seçilir, Vega stoku okunur; ama mal kabul belgesi ve rafa bekleyen çıkmaz, rafları stok kartının raf adresine (KOD10) yazılmaz, B2B raf listesi kopyalanmaz. Ortaş: ZİNCİRDEPO.">
+          <div className="chip-list" style={{ maxHeight: 140, overflow: 'auto', gap: 10 }}>
+            {kullanilan.map((x) => {
+              const secili = (v.sayimDepolar || []).map(Number).includes(x.ind);
+              const varsayilan = Number(v.depo) === x.ind;
+              return (
+                <label key={x.ind} className="check" style={{ minWidth: 180 }} title={varsayilan ? 'Varsayılan depo yalnız sayım olamaz' : ''}>
+                  <input type="checkbox" checked={secili} disabled={varsayilan && !secili} onChange={() => setV((y) => ({
+                    ...y,
+                    sayimDepolar: secili ? (y.sayimDepolar || []).filter((d) => Number(d) !== x.ind) : [...(y.sayimDepolar || []), x.ind],
+                  }))} />
                   <span>{x.ad} <span className="muted small">({x.ind})</span></span>
                 </label>
               );

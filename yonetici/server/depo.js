@@ -77,7 +77,9 @@ function goruntuKur(g, zorla = false) {
   // depo → (ürün → Vega stoku); toplam ürün başına. Sanal bekleme depoları hedef depoda toplanır, belgeleri hedefte görünür
   // (bekleme.js); ham liste g.receipts, g.depolar, stokHam olarak durur.
   const gor = bekleme.gorunum(g, bekleme.ayar());
-  goruntu.belgeGorunum = gor.belgeler;
+  // Yalnız sayım yapılan depoya giren mal rafa kaldırılacak iş değildir.
+  const yalnizSayim = sayimDepolari();
+  goruntu.belgeGorunum = yalnizSayim.size ? gor.belgeler.filter((r) => !yalnizSayim.has(Number(r.depo))) : gor.belgeler;
   goruntu.depoGorunum = gor.depolar;
   goruntu.stokDepo = gor.stokDepo;
   goruntu.stokHam = gor.stokHam;
@@ -307,7 +309,10 @@ function varsayilanDepo() {
   const v = bekleme.fiziksel(cfg.vega.depo);
   const liste = depolar();
   if (Number.isInteger(v) && v > 0 && (!liste.length || liste.some((d) => d.ind === v))) return v;
-  return liste[0] ? liste[0].ind : Number.isInteger(v) ? v : 0;
+  // Ayarda varsayılan yoksa ilk depo; yalnız sayım yapılan depo (Zincir) varsayılan olmaz.
+  const yalnizSayim = sayimDepolari();
+  const ilk = liste.find((d) => !yalnizSayim.has(d.ind)) || liste[0];
+  return ilk ? ilk.ind : Number.isInteger(v) ? v : 0;
 }
 
 /** İstekten gelen depo; yoksa ya da geçersizse varsayılan. Sanal bekleme deposu malın durduğu depoya çevrilir (kuyruktaki eski işlem de). */
@@ -369,6 +374,15 @@ function ozelRafMi(code) {
 function belgesizDepolar() {
   const l = config.load().belgesizDepolar;
   return Array.isArray(l) ? [...new Set(l.map(Number).filter((n) => Number.isInteger(n) && n > 0))].sort((a, b) => a - b) : [];
+}
+
+/**
+ * Yalnız sayım yapılan depolar (config.vega.sayimDepolar; Ortaş: 110 ZİNCİRDEPO). Sayımda ve terminalde seçilir, Vega stoku okunur;
+ * mal kabul belgesi ve rafa bekleyen üretmez, rafları KOD10'a yazılmaz, B2B raf listesi kopyalanmaz.
+ */
+function sayimDepolari() {
+  const l = config.load().vega?.sayimDepolar;
+  return new Set(Array.isArray(l) ? l.map(Number).filter((n) => Number.isInteger(n) && n > 0) : []);
 }
 
 /** Özel raf yalnız rafa kaldırmada kullanılır; raftan alma, transfer, sayım, raf düzenleme gibi stok gerektiren işlemde reddedilir. */
@@ -767,16 +781,19 @@ async function rafYazCalistir(cfg) {
   // Her Vega okumasından sonra çağrılır. Raf adresleri de karttaki alan da son yazmadan beri değişmediyse yapacak iş yoktur:
   // 190 bin adres ve 125 bin kart her dakika baştan karşılaştırılmaz. Kartın izi yoksa (alınamadıysa) eskisi gibi her seferinde bakılır.
   const hSayac = db.tabloSayaci('h');
-  const durumAnahtari = () => (goruntu.iz ? `${hSayac}|${kartNesil}|${goruntu.iz.raf}|${alan}|${cfg.rafAdresi?.tumDepolar !== false}|${d}` : null);
+  // Yalnız sayım yapılan depoların rafları karta yazılmaz: kart bütün depolarda ortak, Zincir'in rafı Merkez'deki çalışanı yanıltır.
+  const yalnizSayim = [...sayimDepolari()].sort((a, b) => a - b);
+  const durumAnahtari = () => (goruntu.iz ? `${hSayac}|${kartNesil}|${goruntu.iz.raf}|${alan}|${cfg.rafAdresi?.tumDepolar !== false}|${d}|${yalnizSayim.join(',')}` : null);
   if (sonRafYazDurumu && sonRafYazDurumu === durumAnahtari() && vegaDurum.rafAdresi && !vegaDurum.rafAdresi.hata) return vegaDurum.rafAdresi;
   // Alanın sahibi artık program: önceden karttan okunmuş zimmetler programdan yönetilir.
   if (db.get("SELECT 1 AS x FROM product_home WHERE source='VEGA' LIMIT 1")) db.run("UPDATE product_home SET source='ADMIN' WHERE source='VEGA'");
   const uz = (await vega.kartAlanUzunluk(cfg, alan)) || 50;
   const tum = cfg.rafAdresi?.tumDepolar !== false;
   const raflar = new Map();
+  const disla = yalnizSayim.length ? ` AND depo NOT IN (${yalnizSayim.join(',')})` : '';
   const zimmetSatirlari = tum
-    ? db.all('SELECT DISTINCT product_id, shelf FROM product_home ORDER BY shelf')
-    : db.all('SELECT product_id, shelf FROM product_home WHERE depo=? ORDER BY shelf', d);
+    ? db.all(`SELECT DISTINCT product_id, shelf FROM product_home WHERE 1=1${disla} ORDER BY shelf`)
+    : db.all(`SELECT product_id, shelf FROM product_home WHERE depo=?${disla} ORDER BY shelf`, d);
   for (const z of zimmetSatirlari) {
     if (!raflar.has(z.product_id)) raflar.set(z.product_id, []);
     raflar.get(z.product_id).push(z.shelf);
@@ -835,8 +852,8 @@ async function rafYazCalistir(cfg) {
     }
   }
   const toplam = tum
-    ? db.get('SELECT COUNT(DISTINCT product_id || shelf) AS n, COUNT(DISTINCT product_id) AS u FROM product_home')
-    : db.get('SELECT COUNT(*) AS n, COUNT(DISTINCT product_id) AS u FROM product_home WHERE depo=?', d);
+    ? db.get(`SELECT COUNT(DISTINCT product_id || shelf) AS n, COUNT(DISTINCT product_id) AS u FROM product_home WHERE 1=1${disla}`)
+    : db.get(`SELECT COUNT(*) AS n, COUNT(DISTINCT product_id) AS u FROM product_home WHERE depo=?${disla}`, d);
   if (yazilacak.length) log.bilgi(`Raf adresleri Vega'ya yazıldı (${alan}): ${yazilacak.length} kart${elle ? `, ${elle} kartta Vega'daki elle değişiklik ezildi` : ''}`);
   // Aynı uyarı her yazmada yinelenmez (günlük şişmesin); sayı değişince yeniden yazılır.
   if (sigmayan.length && sigmayan.length !== sonSigmayan) log.uyari(`${alan} alanına sığmayan raf adresi: ${sigmayan.length} kart (ör. ${sigmayan.slice(0, 3).join(', ')}); ilk raflar yazıldı`);
@@ -2835,6 +2852,7 @@ module.exports = {
   rafKoduGecerli,
   ozelRaflar,
   belgesizDepolar,
+  sayimDepolari,
   ozelRafMi,
   ozelRafTemizle,
   zimmetler,

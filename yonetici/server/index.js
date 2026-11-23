@@ -471,6 +471,9 @@ function yoneticiApi() {
       if (b.vega) {
         for (const k of ['server', 'port', 'database', 'user', 'firma', 'donem', 'depo']) if (k in b.vega) yeni.vega[k] = b.vega[k];
         if (Array.isArray(b.vega.depolar)) yeni.vega.depolar = b.vega.depolar.map(Number).filter(Number.isInteger);
+        if (Array.isArray(b.vega.sayimDepolar)) yeni.vega.sayimDepolar = [...new Set(b.vega.sayimDepolar.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+        // Yalnız sayım deposu varsayılan depo olamaz (terminal ilk açılışta mal kabul yapılacak depoda başlar).
+        if (yeni.vega.sayimDepolar?.includes(Number(yeni.vega.depo))) throw Object.assign(new Error('Varsayılan depo "yalnız sayım" olamaz'), { status: 400 });
         if (typeof b.vega.password === 'string' && b.vega.password) yeni.vega.password = b.vega.password;
       }
       if (b.kabul) {

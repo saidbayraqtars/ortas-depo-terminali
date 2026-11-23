@@ -299,7 +299,9 @@ function importluUrunler(depolar) {
 /** Dönen: null (yapılacak iş yok) ya da { dosya, satir, hata, ...uygula sonucu }. */
 function otomatik({ dosya = process.versions.electron ? otomatikDosya() : null } = {}) {
   const g = depo.goruntu();
-  const kullanilan = depo.depolar().map((d) => Number(d.ind)).filter(Number.isInteger);
+  // Yalnız sayım yapılan depoya (Ortaş: Zincir) B2B raf listesi kopyalanmaz: raflar orada sayımla oluşur.
+  const yalnizSayim = depo.sayimDepolari();
+  const kullanilan = depo.depolar().map((d) => Number(d.ind)).filter((d) => Number.isInteger(d) && !yalnizSayim.has(d));
   if (!dosya || !g || !kullanilan.length) return null;
   const st = fs.statSync(dosya);
   // Önbellek anahtarı dosyayla birlikte kullanılan depoları ve Vega kart sayısını da içerir: depo eklenince ya da kartlar
