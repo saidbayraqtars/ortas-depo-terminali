@@ -37,7 +37,11 @@ import tr.arcteknik.depo.data.Kapsam
 import tr.arcteknik.depo.data.Repo.Companion.fmt
 import tr.arcteknik.depo.data.Perm
 import tr.arcteknik.depo.data.Product
+import tr.arcteknik.depo.data.CountSession
+import tr.arcteknik.depo.data.SHELFLESS
 import tr.arcteknik.depo.data.isArrangeId
+import tr.arcteknik.depo.sync.CountClaim
+import tr.arcteknik.depo.ui.draftWhen
 import tr.arcteknik.depo.ui.AppVm
 import tr.arcteknik.depo.ui.C
 import tr.arcteknik.depo.ui.Caption
@@ -76,7 +80,10 @@ fun CountListScreen(vm: AppVm, online: Boolean, version: Int) {
                     }
                     Text(s.title, fontWeight = FontWeight.SemiBold)
                     if (s.scope.isNotEmpty()) MonoText("Raflar: " + s.scope.joinToString(", "), size = 13, weight = FontWeight.Medium, color = C.Text2)
-                    Hint(
+                    if (s.shelfless) {
+                        val counted = remember(version) { vm.repo.db.countLines(s.id).filter { it.qty > 0 } }
+                        Hint("Rafsız sayım · " + (if (counted.isEmpty()) "henüz ürün okutulmadı" else "${counted.size} ürün, ${fmt(counted.sumOf { it.qty })} adet okutuldu") + (s.sentAt?.let { " · son gönderim ${draftWhen(it)}" } ?: ""))
+                    } else Hint(
                         when {
                             s.scope.isNotEmpty() -> "Bu cihazda $lines / $inScope raf sayıldı"
                             lines == 0 -> "Henüz raf sayılmadı"
@@ -126,9 +133,19 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
     DisposableEffect(sessionId) { onDispose { vm.repo.discardEmptyLocal(sessionId) } }
     // Canlı sayım: rafın açıldığı an kaydedilir (sunucu sayarken rafa yapılan hareketi buna göre korur).
     LaunchedEffect(shelf) { if (!arrange) shelf?.let { vm.repo.openShelf(sessionId, it) } }
+    // Bölümler karışınca aynı raf ikinci kez okutulursa sorulur (üzerine ekle / baştan say); başka terminal aynı rafı sayıyor ya da
+    // saydıysa uyarılır (iki gönderimde son gönderen geçerli olur, sayılar toplanmaz).
+    var recount by remember { mutableStateOf<String?>(null) }
+    var others by remember { mutableStateOf<Pair<String, List<CountClaim>>?>(null) }
+    LaunchedEffect(shelf) { if (!arrange) shelf?.let { s -> vm.countClaim(sessionId, s, null) { if (shelf == s) others = s to it } } }
+    fun countedHere(s: String) = !arrange && s != shelf && s in shelves
 
     if (session == null) {
         Screen(if (arrange) "Raf Düzenle" else "Sayım", online = online, onBack = { vm.back() }) { Hint(if (arrange) "Düzenleme bulunamadı." else "Sayım bulunamadı.") }
+        return
+    }
+    if (session.shelfless) {
+        ShelflessCount(vm, online, version, session)
         return
     }
 
@@ -211,6 +228,7 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
                 when {
                     !inScope(s) -> scopeError(s)
                     !db.shelfExists(s, session.depot) -> vm.unknownShelf(s, session.depot) { shelf = it }
+                    countedHere(s) -> { recount = s; vm.feedback.ok() }
                     else -> { shelf = s; vm.feedback.ok() }
                 }
             })
@@ -233,7 +251,7 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
                 onOther = { code ->
                     val s = code.uppercase()
                     db.shelfExists(s, session.depot).also {
-                        if (it && !inScope(s)) scopeError(s) else if (it) { shelf = s; vm.ok("Raf $s") }
+                        if (it && !inScope(s)) scopeError(s) else if (it && countedHere(s)) { recount = s; vm.feedback.ok() } else if (it) { shelf = s; vm.ok("Raf $s") }
                     }
                 },
             )
@@ -279,6 +297,40 @@ fun CountScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String) {
             }
         }
     }
+    recount?.let { s ->
+        val n = remember(version, s) { db.countLines(sessionId, s) }
+        AlertDialog(
+            onDismissRequest = { recount = null },
+            title = { Text("$s bu sayımda sayıldı") },
+            text = {
+                Text(
+                    (if (n.isEmpty()) "Bu terminalde boş olarak sayıldı." else "Bu terminalde ${n.size} kalem, ${fmt(n.sumOf { it.qty })} adet sayıldı.") +
+                        " Rafta ya da yanında ayrı (yerleştirilmemiş) mal varsa üzerine ekleyin. Aynı malı yeniden sayacaksanız baştan sayın.",
+                )
+            },
+            confirmButton = {
+                Row {
+                    TextButton(onClick = { vm.repo.clearShelfCount(sessionId, s); recount = null; shelf = s; vm.ok("$s baştan sayılıyor") }) { Text("Baştan say") }
+                    TextButton(onClick = { recount = null; shelf = s; vm.ok("$s · üzerine ekleniyor") }) { Text("Üzerine ekle") }
+                }
+            },
+            dismissButton = { TextButton(onClick = { recount = null }) { Text("Vazgeç") } },
+        )
+    }
+    others?.let { (s, l) ->
+        AlertDialog(
+            onDismissRequest = { others = null },
+            title = { Text("$s başka terminalde de " + if (l.all { it.sent }) "sayıldı" else "sayılıyor") },
+            text = { Text(claimText(l) + "\n\nİki terminal aynı rafı gönderirse son gönderen geçerli olur, sayılar toplanmaz. Aynı rafı ikiniz saymayın.") },
+            confirmButton = { TextButton(onClick = { others = null }) { Text("Yine de say") } },
+            dismissButton = { TextButton(onClick = { others = null; if (shelf == s) shelf = null }) { Text("Raftan çık") } },
+        )
+    }
+}
+
+/** "Ahmet (TRM-02) · 14:20 · gönderdi, 12 adet" satırları. */
+private fun claimText(l: List<CountClaim>): String = l.joinToString("\n") { c ->
+    "${c.user.ifBlank { "?" }} (${c.device}) · ${draftWhen(c.at)} · " + if (c.sent) "gönderdi" + (c.qty?.let { ", ${fmt(it)} adet" } ?: "") else "şu an sayıyor"
 }
 
 @Composable
@@ -287,6 +339,10 @@ fun CountDiffScreen(vm: AppVm, online: Boolean, version: Int, sessionId: String)
     // Raf Düzenle aynı sonuç ekranını kullanır; metinler "sayım" demeden "düzenleme" der.
     val arrange = isArrangeId(sessionId)
     val session = remember(version) { db.countSession(sessionId) }
+    if (session?.shelfless == true) {
+        ShelflessSubmit(vm, online, version, session)
+        return
+    }
     var keep by remember { mutableStateOf(vm.repo.prefs.arrangeKeepOthers) }
     val diffs = remember(version, keep) { vm.repo.countDiffs(sessionId) }
     val changed = diffs.filter { it.diff != 0.0 }
@@ -390,5 +446,142 @@ private fun Stat(label: String, value: Int, modifier: Modifier, warn: Boolean = 
             Text(label, fontSize = 12.sp, color = if (warn) C.WarnText else C.Muted)
             MonoText("$value", size = 22, weight = FontWeight.SemiBold, color = if (warn) C.WarnText else C.Ink)
         }
+    }
+}
+
+/**
+ * Rafsız (envanter) sayım: raf okutulmaz, ürün okutulur (her okutma +1). Sayılan toplam yönetici programında Vega stokuyla
+ * karşılaştırılır; raf miktarları değişmez. Birden çok terminal aynı depoyu sayabilir, ürün sayıları sunucuda toplanır.
+ */
+@Composable
+private fun ShelflessCount(vm: AppVm, online: Boolean, version: Int, session: CountSession) {
+    val lines = remember(version) { vm.repo.db.countLines(session.id).filter { it.shelf == SHELFLESS } }
+    val unsent = remember(version) { session.sentAt != null && vm.repo.db.countLineTimes(session.id).values.any { it > session.sentAt } }
+    // Bölümler karışınca: bu terminalde daha önce sayılan ürün, arka arkaya okutmanın dışında yeniden okutulursa sorulur. Başka terminal
+    // aynı ürünü saydıysa (ilk okutmada sunucu söyler) uyarılır; sayılar toplanacağından aynı malı iki kez saymamak için.
+    var last by remember { mutableStateOf<String?>(null) }
+    var again by remember { mutableStateOf<Product?>(null) }
+    var others by remember { mutableStateOf<Pair<Product, List<CountClaim>>?>(null) }
+    val asked = remember { mutableSetOf<String>() }
+    fun add(p: Product) {
+        val first = lines.none { it.product.id == p.id && it.qty > 0 }
+        vm.repo.addCount(session.id, SHELFLESS, p, 1.0)
+        last = p.id
+        vm.feedback.ok()
+        if (first && asked.add(p.id)) vm.countClaim(session.id, null, p.id) { others = p to it }
+    }
+    Screen(session.no, sub = "${session.title} · rafsız sayım", online = online, onBack = { vm.back() }, monoTitle = true, footer = {
+        MessageBar(vm.message?.first, vm.message?.second == true)
+        PrimaryButton(if (session.sentAt == null) "Sayımı bitir" else "Yeniden gönder", { vm.go(Route.CountDiff(session.id)) }, enabled = lines.any { it.qty > 0 })
+    }) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("Okutulan ürün ${lines.count { it.qty > 0 }}", fontSize = 13.sp, color = C.Text2)
+            Text("${fmt(lines.sumOf { it.qty })} adet", fontSize = 13.sp, color = C.Text2)
+        }
+        session.sentAt?.let {
+            Hint("Son gönderim ${draftWhen(it)}" + if (unsent) " · sonra okutulanlar henüz gönderilmedi" else "")
+        }
+        ProductScanField(
+            vm, "Ürün okutun", "Her okutma 1 adet ekler",
+            onProduct = { p ->
+                if (p.id != last && lines.any { it.product.id == p.id && it.qty > 0 }) { again = p; vm.feedback.ok() } else add(p)
+            },
+            expects = "ürün",
+        )
+        Card(padding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp)) {
+            Caption("Bu terminalde sayılan")
+            if (lines.isEmpty()) Hint("Henüz ürün okutulmadı.", Modifier.padding(bottom = 10.dp))
+            LimitedList(lines, { it.product.id }, limit = Int.MAX_VALUE) { l ->
+                Divider()
+                Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(Modifier.weight(1f)) {
+                        Text(l.product.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        MonoText(l.product.code, size = 12, weight = FontWeight.Medium, color = C.Muted)
+                    }
+                    QtyStepper(l.qty, { vm.repo.setCount(session.id, SHELFLESS, l.product, it) }, small = true)
+                }
+            }
+        }
+        Notice("Raf miktarları değişmez. Başka terminaller de sayabilir; aynı ürünün sayıları toplanır. Gönderdikten sonra saymaya devam edip yeniden gönderebilirsiniz: yeni gönderim bu terminalin öncekinin yerine geçer.", Tone.Info)
+    }
+    again?.let { p ->
+        val had = lines.firstOrNull { it.product.id == p.id }?.qty ?: 0.0
+        AlertDialog(
+            onDismissRequest = { again = null },
+            title = { Text("${p.code} daha önce sayıldı") },
+            text = { Text("Bu terminalde ${fmt(had)} adet sayıldı. Başka yerde ayrı mal varsa üzerine ekleyin (${fmt(had)} + 1 = ${fmt(had + 1)}). Aynı malı yeniden sayıyorsanız vazgeçin.") },
+            confirmButton = { TextButton(onClick = { again = null; add(p) }) { Text("Üzerine ekle") } },
+            dismissButton = { TextButton(onClick = { again = null; vm.ok("Eklenmedi; ${p.code} ${fmt(had)} adet kaldı") }) { Text("Vazgeç") } },
+        )
+    }
+    others?.let { (p, l) ->
+        val had = lines.firstOrNull { it.product.id == p.id }?.qty ?: 0.0
+        AlertDialog(
+            onDismissRequest = { others = null },
+            title = { Text("${p.code} başka terminalde de " + if (l.all { it.sent }) "sayıldı" else "sayılıyor") },
+            text = { Text(claimText(l) + "\n\nSayılar toplanır. Aynı malı ikinci kez saymayın; başka yerdeki ayrı malsa devam edin.") },
+            confirmButton = { TextButton(onClick = { others = null }) { Text("Ayrı mal, devam") } },
+            dismissButton = {
+                TextButton(onClick = {
+                    others = null
+                    vm.repo.setCount(session.id, SHELFLESS, p, 0.0)
+                    vm.ok("${p.code} bu terminalden silindi (${fmt(had)} adet)")
+                }) { Text("Geri al") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun ShelflessSubmit(vm: AppVm, online: Boolean, version: Int, session: CountSession) {
+    val lines = remember(version) { vm.repo.db.countLines(session.id).filter { it.shelf == SHELFLESS && it.qty > 0 } }
+    var confirm by remember { mutableStateOf(false) }
+    Screen("Sayım sonucu", sub = "${session.no} · ${session.title}", online = online, onBack = { vm.back() }, footer = {
+        MessageBar(vm.message?.first, vm.message?.second == true)
+        SecondaryButton("Saymaya dön", { vm.back() })
+        PrimaryButton("Sayımı gönder", { confirm = true }, enabled = lines.isNotEmpty())
+    }) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Stat("Ürün", lines.size, Modifier.weight(1f))
+            Stat("Adet", lines.sumOf { it.qty }.toInt(), Modifier.weight(1f))
+        }
+        Card(padding = PaddingValues(start = 12.dp, end = 12.dp, top = 10.dp)) {
+            Row(Modifier.fillMaxWidth()) {
+                Caption("Ürün", Modifier.weight(1f))
+                Caption("Sayılan", Modifier.width(60.dp))
+            }
+            LimitedList(lines, { it.product.id }, limit = 80) { l ->
+                Divider()
+                Row(Modifier.padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(l.product.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        MonoText(l.product.code, size = 12, weight = FontWeight.Medium, color = C.Muted)
+                    }
+                    MonoText(fmt(l.qty), modifier = Modifier.width(60.dp), weight = FontWeight.Medium)
+                }
+            }
+        }
+        Notice("Yönetici programı sayılanı Vega stokuyla karşılaştırır; onaylanırsa fark Vega'ya sayım fişi olarak işlenebilir.", Tone.Info)
+    }
+    if (confirm) {
+        AlertDialog(
+            onDismissRequest = { confirm = false },
+            title = { Text("Sayım gönderilsin mi?") },
+            text = {
+                Text(
+                    "${lines.size} ürün, ${fmt(lines.sumOf { it.qty })} adet." +
+                        if (session.sentAt != null) " Bu terminalin önceki gönderiminin yerine geçer." else " Sonra saymaya devam edip yeniden gönderebilirsiniz.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirm = false
+                    vm.repo.submitCount(session, vm.userName)
+                    vm.saved("Sayım gönderilmek üzere kuyruğa alındı")
+                    vm.stack.removeAll { it is Route.Count || it is Route.CountDiff }
+                }) { Text("Gönder") }
+            },
+            dismissButton = { TextButton(onClick = { confirm = false }) { Text("Vazgeç") } },
+        )
     }
 }

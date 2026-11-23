@@ -31,6 +31,12 @@ data class LockReply(val supported: Boolean = true, val ok: Boolean = false, val
 /** Şu an tutulan bir belge ([id] terminalin kilitlerken kullandığı kimlik). */
 data class LockInfo(val id: String, val user: String, val device: String)
 
+/**
+ * Sayımda aynı rafı (rafsız sayımda aynı ürünü) sayan başka terminal (2.5.0+ sunucu). [sent] true: o terminal sayımını gönderdi
+ * ([qty] rafsızda gönderdiği adet); false: şu an sayıyor (rafı açtı / ürünü okuttu, henüz göndermedi).
+ */
+data class CountClaim(val device: String, val user: String, val at: Long, val sent: Boolean, val qty: Double?)
+
 /** Terminalin konuştuğu sunucu. Sözleşme: `docs/API.md`. */
 interface Backend {
     /**
@@ -73,6 +79,12 @@ interface Backend {
 
     /** Şu an tutulan belgeler (`GET /api/locks`); listelerde kilit simgesi için. Sunucu bilmiyorsa null. */
     fun locks(): List<LockInfo>?
+
+    /**
+     * Sayımda rafı açtığını / (rafsız sayımda) ürünü okuttuğunu bildirir (`POST /api/count/claim`); cevap aynısını sayan başka
+     * terminallerdir. Sunucu bilmiyorsa null; ulaşılamazsa IOException.
+     */
+    fun countClaim(sessionId: String, shelf: String?, productId: String?, user: String): List<CountClaim>?
 }
 
 /**
@@ -115,6 +127,8 @@ class DemoBackend(private val context: Context, private val online: () -> Boolea
     override fun lockRelease(docId: String, token: String) = Unit
 
     override fun locks(): List<LockInfo>? = null
+
+    override fun countClaim(sessionId: String, shelf: String?, productId: String?, user: String): List<CountClaim>? = null
 }
 
 class HttpBackend(private val baseUrl: String, private val deviceKey: String, private val deviceName: String) : Backend {
@@ -229,6 +243,20 @@ class HttpBackend(private val baseUrl: String, private val deviceKey: String, pr
             if (!r.isSuccessful) throw IOException(errorText(r.code, r.body?.string()))
             val a = JSONObject(r.body!!.string()).optJSONArray("locks") ?: return emptyList()
             return (0 until a.length()).map { a.getJSONObject(it) }.map { LockInfo(it.getString("id"), it.optString("user"), it.optString("device")) }
+        }
+    }
+
+    override fun countClaim(sessionId: String, shelf: String?, productId: String?, user: String): List<CountClaim>? {
+        val body = JSONObject().put("sessionId", sessionId).put("user", user).put("device", deviceName)
+        shelf?.let { body.put("shelf", it) }
+        productId?.let { body.put("productId", it) }
+        client.newCall(request("/api/count/claim").post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()).execute().use { r ->
+            if (r.code == 404) return null
+            if (!r.isSuccessful) throw IOException(errorText(r.code, r.body?.string()))
+            val a = JSONObject(r.body!!.string()).optJSONArray("baska") ?: return emptyList()
+            return (0 until a.length()).map { a.getJSONObject(it) }.map {
+                CountClaim(it.optString("device"), it.optString("user"), it.optLong("at"), it.optString("durum") == "GONDERDI", if (it.has("adet")) it.optDouble("adet") else null)
+            }
         }
     }
 

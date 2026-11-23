@@ -1174,6 +1174,7 @@ function sayimKaydet(op, p, h, olusturma, yetkiDenetle = () => {}) {
   if (s.status === 'APPROVED') throw new Ret(`${s.no} onaylandı; artık sayım gönderilemez`);
   const depo = s.depo;
   yetkiDenetle(null, depo);
+  if (s.kind === 'RAFSIZ') return rafsizSayimKaydet(s, p, h);
   const ref = s.no;
   const { raflar, satirlar } = rafGonderimi(p);
   // Kullanıcının raf sınırı dışındaki raf gönderimde varsa hiçbiri uygulanmaz (işlem tek SQLite işleminde geri alınır).
@@ -1244,6 +1245,106 @@ function sayimKaydet(op, p, h, olusturma, yetkiDenetle = () => {}) {
     );
   }
   if (urunAraligi.size) sayimDondurmaIste();
+}
+
+/** Rafsız sayımda bir terminalin gönderimi count_line'da bu anahtarla (raf sütununda) durur. */
+const RAFSIZ_ONEK = '#';
+const rafsizAnahtar = (device) => RAFSIZ_ONEK + String(device || '?');
+
+/**
+ * Rafsız (envanter) sayım (Ortaş İsmail, 2026-11-23: Zincir ve Ramazan'da bütün depolar). Raf okutulmaz, raf stoku değişmez;
+ * ürün başına sayılan toplam Vega stokuyla karşılaştırılır. Her terminal kendi sayısını gönderir ve her gönderim o terminalin
+ * önceki gönderiminin yerine geçer (terminal bütün listesini yeniden gönderir); ürün toplamı terminallerin toplamıdır.
+ */
+function rafsizSayimKaydet(s, p, h) {
+  // Raf okutan eski terminal rafsız sayıma raf stoku yazardı: reddedilir, kuyrukta hata olarak görünür.
+  if (!p.shelfless) throw new Ret(`${s.no} rafsız sayım; terminali güncelleyin (2.5.0 ve sonrası)`);
+  const sid = s.id;
+  const anahtar = rafsizAnahtar(h.device);
+  const gonderim = now();
+  const saatFarki = h.saatFarki;
+  const sayilan = new Map();
+  for (const l of Array.isArray(p.lines) ? p.lines : []) {
+    const pid = String(l.productId || '');
+    if (!pid || (goruntu && !urun(pid))) continue;
+    const x = sayilan.get(pid) || { q: 0, at: null };
+    x.q += Math.max(0, sayi(l.counted, 'Sayılan'));
+    const at = saatFarki === null || saatFarki === undefined ? null : terminalAni(l.at, saatFarki);
+    if (at !== null) x.at = Math.max(x.at ?? at, at);
+    sayilan.set(pid, x);
+  }
+  const eski = db.all('SELECT product_id FROM count_line WHERE session_id=? AND shelf=?', sid, anahtar).map((r) => r.product_id);
+  db.run('DELETE FROM count_line WHERE session_id=? AND shelf=?', sid, anahtar);
+  for (const [pid, x] of sayilan) {
+    db.run(
+      `INSERT INTO count_line(session_id, shelf, product_id, terminal_system, server_before, counted, user, device, submitted_at, ref_ts)
+       VALUES(?,?,?,0,0,?,?,?,?,?)`,
+      sid, anahtar, pid, yuvarla(x.q), h.user, h.device, gonderim, x.at,
+    );
+    // Vega farkı ürünün sayıldığı anda dondurulur; terminaller farklı saatlerde saydıysa aralık genişler.
+    const ilk = x.at ?? gonderim;
+    db.run(
+      `INSERT INTO count_urun(session_id, product_id, ilk_ts, son_ts, gonderim_at, zamanli, durum) VALUES(?,?,?,?,?,?,'BEKLIYOR')
+       ON CONFLICT(session_id, product_id) DO UPDATE SET ilk_ts=MIN(ilk_ts, excluded.ilk_ts), son_ts=MAX(son_ts, excluded.son_ts),
+         gonderim_at=excluded.gonderim_at, zamanli=MIN(zamanli, excluded.zamanli), durum='BEKLIYOR'`,
+      sid, pid, ilk, ilk, gonderim, x.at === null ? 0 : 1,
+    );
+  }
+  // Bu terminalin önceki gönderiminde olup artık olmayan ürünün toplamı değişti: farkı yeniden dondurulur.
+  for (const pid of eski) {
+    if (!sayilan.has(pid)) db.run("UPDATE count_urun SET gonderim_at=?, durum='BEKLIYOR' WHERE session_id=? AND product_id=?", gonderim, sid, pid);
+  }
+  if (sayilan.size || eski.length) sayimDondurmaIste();
+}
+
+// ---- Sayımda çakışma uyarısı (2.5.0) -------------------------------------------------------------
+// Aynı rafı ya da (rafsız sayımda) aynı ürünü iki terminal sayarsa terminal sorar. Terminal rafı açınca / ürünü ilk okutunca
+// bildirir; cevapta öbür terminallerin o rafı/ürünü saymaya başladığı ya da gönderdiği görünür. Uyarıdır, işlemi engellemez.
+// Bildirimler bellekte durur (yönetici yeniden başlarsa yalnız gönderilmiş sayımlar görünür).
+const sayimIzleri = new Map(); // oturum → Map(anahtar → Map(cihaz → { user, at }))
+const IZ_OMUR_MS = 24 * 3600 * 1000;
+
+/**
+ * { sessionId, shelf | productId, user, device } → { baska: [{ device, user, at, durum: 'SAYIYOR' | 'GONDERDI', adet? }] }.
+ * Raf sayımında anahtar raf, rafsız sayımda ürün. Kendi cihazının kaydı dönmez.
+ */
+function sayimIzle({ sessionId, shelf, productId, user = '', device = '' }) {
+  const sid = String(sessionId || '');
+  const s = sid ? db.get('SELECT id, kind, status FROM count_session WHERE id=?', sid) : null;
+  if (!s) return { baska: [] };
+  const rafsiz = s.kind === 'RAFSIZ';
+  const raf = rafsiz ? null : rafKodu(shelf);
+  const pid = rafsiz ? String(productId || '') : null;
+  const anahtar = rafsiz ? (pid ? `U:${pid}` : null) : raf ? `R:${raf}` : null;
+  if (!anahtar) return { baska: [] };
+  const ben = String(device || '');
+  const t = now();
+  for (const [k, m] of sayimIzleri) {
+    for (const [a, c] of m) {
+      for (const [d, x] of c) if (t - x.at > IZ_OMUR_MS) c.delete(d);
+      if (!c.size) m.delete(a);
+    }
+    if (!m.size) sayimIzleri.delete(k);
+  }
+  if (!sayimIzleri.has(sid)) sayimIzleri.set(sid, new Map());
+  const m = sayimIzleri.get(sid);
+  if (!m.has(anahtar)) m.set(anahtar, new Map());
+  const c = m.get(anahtar);
+  const baska = new Map();
+  // Gönderilmiş sayım: raf sayımında count_shelf, rafsızda o ürünün cihaz satırı (miktarıyla).
+  const gonderilen = rafsiz
+    ? db.all('SELECT device, user, submitted_at AS at, counted FROM count_line WHERE session_id=? AND product_id=?', sid, pid)
+    : db.all('SELECT device, user, submitted_at AS at FROM count_shelf WHERE session_id=? AND shelf=?', sid, raf);
+  for (const g of gonderilen) {
+    if (String(g.device) === ben) continue;
+    baska.set(String(g.device), { device: g.device, user: g.user || '', at: g.at, durum: 'GONDERDI', ...(rafsiz ? { adet: yuvarla(g.counted) } : {}) });
+  }
+  for (const [d, x] of c) {
+    if (d === ben || baska.has(d)) continue;
+    baska.set(d, { device: d, user: x.user, at: x.at, durum: 'SAYIYOR' });
+  }
+  c.set(ben, { user: String(user || '').slice(0, 60), at: t });
+  return { baska: [...baska.values()].sort((a, b) => a.at - b.at) };
 }
 
 /**
@@ -1730,8 +1831,9 @@ function masterBas(bekleyenler, gonderilen) {
   const depoListe = depolar();
   const vars = varsayilanDepo();
   const counts = db
-    .all("SELECT id, no, title, blind, depo, scope FROM count_session WHERE status='OPEN' ORDER BY created_at")
-    .map((c) => ({ id: c.id, no: c.no, title: c.title, blind: Boolean(c.blind), depot: c.depo, scope: c.scope ? c.scope.split(',') : [] }));
+    .all("SELECT id, no, title, blind, depo, scope, kind FROM count_session WHERE status='OPEN' ORDER BY created_at")
+    // shelfless: rafsız (envanter) sayım; 2.5.0+ terminal raf sormaz. Eski terminal alanı tanımaz, gönderimi sunucu reddeder.
+    .map((c) => ({ id: c.id, no: c.no, title: c.title, blind: Boolean(c.blind), depot: c.depo, scope: c.scope ? c.scope.split(',') : [], ...(c.kind === 'RAFSIZ' ? { shelfless: true } : {}) }));
   // Yetki (yetki.js): perms / depots / shelves null = sınırsız. Eski terminal bu alanları yok sayar; asıl denetim sunucuda.
   const users = db
     .all('SELECT username, name, salt, pin_hash, role, perms, depots, shelves FROM app_user WHERE active=1 ORDER BY username')
@@ -2485,16 +2587,20 @@ async function sayimDondurAsil() {
       continue;
     }
     const depo = s.depo;
+    // Rafsız sayımda olması gereken stok, terminallerin saydığı toplamdır; raf, bekleyen ve raf hareketi işe karışmaz.
+    const rafsiz = s.kind === 'RAFSIZ';
     // q, Vega okumasıyla aynı anda (await öncesi) hesaplanır: raf, bekleyen ve Vega aynı durumu göstersin.
     const qAt = now();
-    const bek = bekleyenKabul(depo);
+    const bek = rafsiz ? new Map() : bekleyenKabul(depo);
     const hesap = [];
     for (const r of liste) {
       if (!urun(r.product_id) || !/^\d+$/.test(r.product_id)) {
         db.run("UPDATE count_urun SET durum='YOK', dondu_at=? WHERE session_id=? AND product_id=?", qAt, sid, r.product_id);
         continue;
       }
-      const raf = Number(db.get('SELECT SUM(qty) AS q FROM location WHERE depo=? AND product_id=? AND qty>0', depo, r.product_id)?.q || 0);
+      const raf = rafsiz
+        ? Number(db.get('SELECT SUM(counted) AS q FROM count_line WHERE session_id=? AND product_id=?', sid, r.product_id)?.q || 0)
+        : Number(db.get('SELECT SUM(qty) AS q FROM location WHERE depo=? AND product_id=? AND qty>0', depo, r.product_id)?.q || 0);
       const vs = vegaStok(r.product_id, depo);
       const b = bek.get(r.product_id) || 0;
       const zamanli = Boolean(r.zamanli);
@@ -2527,7 +2633,9 @@ async function sayimDondurAsil() {
         let vegaArada = 0;
         let vegaSonra = 0;
         for (const v of vegaUrun.get(pid) || []) {
-          if (v.miktar > 0 && notr.has(v.tip)) continue;
+          // Raflı sayımda mal kabul girişi "rafa bekleyen" olarak hedefe de girdiğinden fark doğurmaz; rafsız sayımda hedef yalnız
+          // sayılandır, sayımdan sonra gelen mal da Vega'dan düşülür.
+          if (!rafsiz && v.miktar > 0 && notr.has(v.tip)) continue;
           if (x.wSon && v.ind > x.wSon.ind) {
             vegaSonra += v.miktar;
             tur.sonra[v.tip] = yuvarla((tur.sonra[v.tip] || 0) + v.miktar);
@@ -2536,8 +2644,8 @@ async function sayimDondurAsil() {
             tur.arada[v.tip] = yuvarla((tur.arada[v.tip] || 0) + v.miktar);
           }
         }
-        const rafSonra = rafHareketToplam(depo, pid, x.r.son_ts, qAt);
-        const rafArada = x.zamanli && x.r.ilk_ts < x.r.son_ts ? rafHareketToplam(depo, pid, x.r.ilk_ts, x.r.son_ts) : 0;
+        const rafSonra = rafsiz ? 0 : rafHareketToplam(depo, pid, x.r.son_ts, qAt);
+        const rafArada = !rafsiz && x.zamanli && x.r.ilk_ts < x.r.son_ts ? rafHareketToplam(depo, pid, x.r.ilk_ts, x.r.son_ts) : 0;
         // Sayım anına ait Vega kaydı yoksa (o saatte Vega okunamıyordu) düzeltme yapılamaz; yönetici bakar.
         const duzeltme = x.wSon ? yuvarla(vegaSonra - rafSonra) : 0;
         const belirsiz = !x.zamanli ? 0 : x.wIlk && x.wSon ? yuvarla(vegaArada - rafArada) : null;
@@ -2579,9 +2687,11 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
   const s = db.get('SELECT * FROM count_session WHERE id=?', id);
   if (!s) return null;
   const depo = s.depo;
+  // Rafsız sayım: olması gereken stok = terminallerin saydığı toplam; raflar ve rafa bekleyen işe karışmaz.
+  const rafsiz = s.kind === 'RAFSIZ';
   const satirlar = db.all('SELECT * FROM count_line WHERE session_id=? ORDER BY shelf, product_id', id);
-  const raf = rafToplamlari(depo);
-  const bek = bekleyenKabul(depo);
+  const raf = rafsiz ? new Map() : rafToplamlari(depo);
+  const bek = rafsiz ? new Map() : bekleyenKabul(depo);
   const donuk = new Map(db.all('SELECT * FROM count_urun WHERE session_id=?', id).map((r) => [r.product_id, r]));
   const urunler = new Map();
   for (const l of satirlar) {
@@ -2592,20 +2702,22 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
     u.onceki += l.server_before - (l.hareket_sonra || 0);
     u.hareketSonra += l.hareket_sonra || 0;
     u.hareketArada += l.hareket_arada || 0;
-    u.raflar.push(l.shelf);
+    // Rafsız sayımda "raflar" sayan terminallerdir (#TRM-01 → TRM-01).
+    u.raflar.push(rafsiz ? l.shelf.slice(RAFSIZ_ONEK.length) : l.shelf);
   }
   if (dahilSayilmayan && goruntu) {
     for (const [pid, st] of goruntu.stokDepo.get(depo) || []) {
       if (!urunler.has(pid) && Math.abs(Number(st)) > EPS) urunler.set(pid, { productId: pid, sayilan: 0, onceki: 0, raflar: [], sayilmadi: true });
     }
   }
-  const sayilanRaflar = new Set([...satirlar.map((l) => l.shelf), ...db.all('SELECT shelf FROM count_shelf WHERE session_id=?', id).map((r) => r.shelf)]);
+  const sayilanRaflar = rafsiz ? new Set() : new Set([...satirlar.map((l) => l.shelf), ...db.all('SELECT shelf FROM count_shelf WHERE session_id=?', id).map((r) => r.shelf)]);
   const liste = [...urunler.values()].map((u) => {
     const p = urun(u.productId);
     const rafToplam = raf.get(u.productId)?.q || 0;
     const b = bek.get(u.productId) || 0;
     const vs = vegaStok(u.productId, depo);
-    const hedef = yuvarla(rafToplam + b);
+    // Rafsız: sayılmayan (Vega'da stoklu, hiçbir terminal okutmadı) ürün seçilirse 0 sayılır.
+    const hedef = rafsiz ? yuvarla(u.sayilan) : yuvarla(rafToplam + b);
     const farkSimdi = yuvarla(hedef - vs);
     // Dondurulmuş fark (canlı sayım): sayım anındaki Vega farkı. Yoksa (Vega henüz okunmadı, eski sayım) onay anındaki fark.
     const d = donuk.get(u.productId);
@@ -2635,7 +2747,7 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
       name: p ? p.name : "Vega'da bulunamayan kart",
       unit: p ? p.unit : '',
       vegadaVar: Boolean(p),
-      digerRaflar: yuvarla(rafToplam - (u.sayilmadi ? 0 : satirlarRafToplam(depo, id, u.productId))),
+      digerRaflar: rafsiz ? 0 : yuvarla(rafToplam - (u.sayilmadi ? 0 : satirlarRafToplam(depo, id, u.productId))),
       bekleyen: yuvarla(b),
       hedef,
       vegaStock: vs,
@@ -2647,6 +2759,8 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
   // terminal rafa kaldırdı/aldı/düzenledi). Sayım mutlak yazar; o hareket ezilmiş olabilir, yönetici bakıp onaylasın.
   // Canlı sayımda (ref_ts dolu) sayarken rafa yapılan hareket sayılana eklendi: fark sayıldığı andaki raf kaydına göredir, çatışma yoktur.
   const satirDetay = satirlar.map((l) => {
+    // Rafsız: satır bir terminalin bir ürün için gönderdiği sayıdır; raf karşılaştırması yoktur.
+    if (rafsiz) return { ...l, ...urunAdi(l.product_id), terminal: l.shelf.slice(RAFSIZ_ONEK.length), canli: false, sistemAnda: 0, fark: 0, catisma: 0 };
     const canli = l.ref_ts !== null && l.ref_ts !== undefined;
     const sistem = yuvarla(l.server_before - (l.hareket_sonra || 0));
     return {
@@ -2685,9 +2799,41 @@ function sayimOzet(id, { dahilSayilmayan = false } = {}) {
       vegaFarkli: liste.filter((u) => Math.abs(u.fark) > EPS && u.vegadaVar).length,
       kontrol: liste.filter((u) => u.kontrol).length,
       donmayi: liste.filter((u) => u.dondurma === 'BEKLIYOR').length,
-      canli: satirlar.some((l) => l.ref_ts !== null && l.ref_ts !== undefined),
+      canli: !rafsiz && satirlar.some((l) => l.ref_ts !== null && l.ref_ts !== undefined),
+      // Rafsız sayımda sayan terminal sayısı ve hiç okutulmayan (sayılmadı) ürün sayısı.
+      terminal: rafsiz ? new Set(satirlar.map((l) => l.shelf)).size : 0,
+      sayilmadi: liste.filter((u) => u.sayilmadi).length,
     },
   };
+}
+
+/**
+ * Sayım sonucu Excel (İsmail, 2026-11-23): ürün başına stok kodu, sayılan adet ve seçilen her deponun Vega stoku (Merkez, Toybelen,
+ * Zincir…), sonda sayımın deposundaki fark. `depolar`: sütun olacak depolar (boşsa kullanılan bütün depolar).
+ */
+async function sayimExcel(id, { depolar: secili = [], dahilSayilmayan = false } = {}) {
+  const ozet = sayimOzet(id, { dahilSayilmayan });
+  if (!ozet) return null;
+  const s = ozet.oturum;
+  const tum = depolar();
+  const istenen = new Set((secili || []).map(Number).filter(Number.isInteger));
+  const sutunlar = istenen.size ? tum.filter((d) => istenen.has(d.ind)) : tum;
+  const ExcelJS = require('exceljs');
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Ortaş Depo Yönetici';
+  const ws = wb.addWorksheet(s.no);
+  ws.addRow([`${s.no} · ${s.title} · ${s.depoAd} · ${s.kind === 'RAFSIZ' ? 'rafsız sayım' : s.kind === 'GENEL' ? 'genel sayım' : 'raf sayımı'} · ${new Date().toLocaleString('tr-TR')}`]).font = { bold: true };
+  const baslik = ws.addRow(['Stok Kodu', 'Ürün Adı', 'Sayılan Adet', ...sutunlar.map((d) => d.ad), `Fark (${s.depoAd})`]);
+  baslik.font = { bold: true, color: { argb: 'FF8B0000' } };
+  baslik.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } };
+  const sirali = [...ozet.urunler].sort((a, b) => String(a.code).localeCompare(String(b.code), 'tr'));
+  for (const u of sirali) {
+    ws.addRow([u.code, u.name, u.sayilan, ...sutunlar.map((d) => yuvarla(vegaStok(u.productId, d.ind))), u.fark]);
+  }
+  ws.columns.forEach((c, i) => { c.width = i === 0 ? 24 : i === 1 ? 40 : 16; });
+  ws.views = [{ state: 'frozen', xSplit: 1, ySplit: 2 }];
+  ws.autoFilter = { from: { row: 2, column: 1 }, to: { row: 2, column: 4 + sutunlar.length } };
+  return { ad: `${s.no}.xlsx`, buf: Buffer.from(await wb.xlsx.writeBuffer()) };
 }
 
 /** Depoda kapsama uyan tanımlı raflar (terminal de yalnız tanımlı rafı kabul eder). */
@@ -2853,6 +2999,7 @@ module.exports = {
   ozelRaflar,
   belgesizDepolar,
   sayimDepolari,
+  sayimIzle,
   ozelRafMi,
   ozelRafTemizle,
   zimmetler,
@@ -2892,6 +3039,7 @@ module.exports = {
   urunRaflari,
   rafGruplari,
   sayimOzet,
+  sayimExcel,
   sayimDondur,
   sayimOnayla,
   sayimGeriAl,

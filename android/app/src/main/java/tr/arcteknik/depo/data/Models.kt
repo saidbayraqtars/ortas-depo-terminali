@@ -53,6 +53,13 @@ data class CountSession(
     val depot: Int = 0,
     /** Raf önekleri (bkz. [Kapsam]); boşsa bütün raflar. */
     val scope: List<String> = emptyList(),
+    /**
+     * Rafsız (envanter) sayım (2.5.0): raf okutulmaz, yalnız ürün sayılır; raf stoku değişmez. Satırlar [SHELFLESS] rafında durur.
+     * Gönderimden sonra sayım açık kalır; yeniden gönderim bu cihazın önceki sayısının yerine geçer.
+     */
+    val shelfless: Boolean = false,
+    /** Rafsız sayımda bu cihazdan son gönderim anı; gönderilmediyse null. */
+    val sentAt: Long? = null,
 ) {
     /** Raf Düzenle oturumu: aynı yerel tablolar kullanılır ama sayım değildir (sayım listesinde görünmez, SHELF_ARRANGE olarak gider). */
     val arrange: Boolean get() = isArrangeId(id)
@@ -62,6 +69,9 @@ data class CountSession(
 const val ARRANGE_PREFIX = "LOCAL-RD-"
 
 fun isArrangeId(id: String) = id.startsWith(ARRANGE_PREFIX)
+
+/** Rafsız sayımın satırlarının yerel tablodaki raf değeri (gerçek raf değildir; sunucuya raf olarak gitmez). */
+const val SHELFLESS = "#RAFSIZ"
 
 data class CountLine(val shelf: String, val product: Product, val qty: Double)
 

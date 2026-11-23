@@ -39,6 +39,7 @@ import tr.arcteknik.depo.data.TransferLine
 import tr.arcteknik.depo.data.User
 import tr.arcteknik.depo.data.isArrangeId
 import tr.arcteknik.depo.diag.Diag
+import tr.arcteknik.depo.sync.CountClaim
 import tr.arcteknik.depo.sync.LockInfo
 import tr.arcteknik.depo.sync.UserActivity
 import tr.arcteknik.depo.ui.screens.CountDiffScreen
@@ -284,6 +285,18 @@ class AppVm(app: Application) : AndroidViewModel(app) {
         stack.clear()
         stack += Route.Home
         routed()
+    }
+
+    /**
+     * Sayımda çakışma: rafı açtığını / (rafsız sayımda) ürünü okuttuğunu sunucuya bildirir. Aynısını sayan ya da gönderen başka
+     * terminal varsa [onOthers] ana iş parçacığında çağrılır. Sunucuya ulaşılamazsa ya da sunucu bilmiyorsa sessiz kalır (uyarıdır).
+     */
+    fun countClaim(sessionId: String, shelf: String?, productId: String?, onOthers: (List<CountClaim>) -> Unit) {
+        if (sessionId.startsWith("LOCAL-")) return
+        viewModelScope.launch {
+            val l = withContext(Dispatchers.IO) { runCatching { sync.backend().countClaim(sessionId, shelf, productId, userName) } }.getOrNull() ?: return@launch
+            if (l.isNotEmpty()) onOthers(l)
+        }
     }
 
     /** Kilitli belge listesini sunucudan yeniler (liste ekranları 10 sn'de bir çağırır). Ulaşılamazsa eski liste kalır. */

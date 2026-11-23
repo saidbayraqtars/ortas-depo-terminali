@@ -315,6 +315,11 @@ function terminalApi() {
   r.post('/lock/ping', sar((req) => kilit.nabiz({ belgeId: req.body?.docId, token: req.body?.token })));
   r.post('/lock/release', sar((req) => kilit.birak({ belgeId: req.body?.docId, token: req.body?.token })));
   r.get('/locks', sar(() => ({ locks: kilit.liste() })));
+  // 2.5.0+ terminal: sayımda rafı açınca / (rafsız sayımda) ürünü ilk okutunca; başka terminal aynısını sayıyorsa ya da gönderdiyse döner.
+  r.post('/count/claim', sar((req) => depo.sayimIzle({
+    sessionId: req.body?.sessionId, shelf: req.body?.shelf, productId: req.body?.productId,
+    user: String(req.body?.user || ''), device: String(req.body?.device || req.cihaz.name),
+  })));
   // Terminalin çökme/donma raporu (Diag.kt): günlüğe yazılır, destek sunucusuna iletilir.
   r.post(
     '/rapor',
@@ -847,7 +852,8 @@ function yoneticiApi() {
       vega_docs: s.vega_docs ? JSON.parse(s.vega_docs).docs : null,
       kalem: satir.get(s.id)?.n || 0,
       raf: raf.get(s.id) || 0,
-      rafFarkli: satir.get(s.id)?.fark || 0,
+      // Rafsız sayımda raf yok; "farklı" Vega ile karşılaştırmadır (sayım ekranında).
+      rafFarkli: s.kind === 'RAFSIZ' ? 0 : satir.get(s.id)?.fark || 0,
     }));
   }));
   r.get('/raf-gruplari', sar((req) => depo.rafGruplari(depo.depoCoz(req.query.depo))));
@@ -865,7 +871,8 @@ function yoneticiApi() {
   r.get('/sayim-urun', sar((req) => depo.urunRaflari(depo.depoCoz(req.query.depo), req.query.kodlar)));
   r.post('/sayimlar', sar((req) => {
     const b = req.body || {};
-    const kind = b.kind === 'GENEL' ? 'GENEL' : 'RAF';
+    // RAFSIZ: raf okutulmadan ürün sayılır, toplam Vega stokuyla karşılaştırılır (raf stoku değişmez).
+    const kind = b.kind === 'GENEL' || b.kind === 'RAFSIZ' ? b.kind : 'RAF';
     const d = depo.depoCoz(b.depo);
     // Genel sayım bütün depoyu sayar; kapsam yalnız raf sayımında. Ürün sayımında kapsam, ürünlerin bulunduğu raflardır
     // (tam raf kodları; önek sınırı uygulanmaz).
@@ -908,6 +915,14 @@ function yoneticiApi() {
   r.get('/sayim/:id/csv', sar((req, res) => {
     const o = depo.sayimOzet(req.params.id, { dahilSayilmayan: req.query.dahil === '1' });
     if (!o) throw Object.assign(new Error('Sayım bulunamadı'), { status: 404 });
+    if (o.oturum.kind === 'RAFSIZ') {
+      if (req.query.tur === 'raf') {
+        return csv(res, `${o.oturum.no}-terminaller.csv`, ['Terminal', 'Kod', 'Ad', 'Sayılan', 'Sayan', 'Zaman'],
+          o.satirlar.map((l) => [l.terminal, l.urunKod, l.urunAd, l.counted, l.user, tarihSaat(l.submitted_at)]));
+      }
+      return csv(res, `${o.oturum.no}-urunler.csv`, ['Kod', 'Ad', 'Birim', 'Sayılan', 'Vega stok', 'Fark', 'Durum'],
+        o.urunler.map((u) => [u.code, u.name, u.unit, u.sayilan, u.vegaStock, u.fark, u.sayilmadi ? 'Sayılmadı' : u.kontrol ? 'Elle bak' : '']));
+    }
     if (req.query.tur === 'raf') {
       return csv(res, `${o.oturum.no}-raflar.csv`, ['Raf', 'Kod', 'Ad', 'Önceki', 'Sayılan', 'Fark', 'Sayan', 'Cihaz', 'Zaman'],
         o.satirlar.map((l) => [l.shelf, l.urunKod, l.urunAd, l.server_before, l.counted, l.fark, l.user, l.device, tarihSaat(l.submitted_at)]));
@@ -915,9 +930,21 @@ function yoneticiApi() {
     csv(res, `${o.oturum.no}-urunler.csv`, ['Kod', 'Ad', 'Birim', 'Sayılan', 'Diğer raflar', 'Rafa kaldırılacak', 'Olması gereken', 'Vega stok', 'Fark'],
       o.urunler.map((u) => [u.code, u.name, u.unit, u.sayilan, u.digerRaflar, u.bekleyen, u.hedef, u.vegaStock, u.fark]));
   }));
+  // Excel: stok kodu, sayılan, seçilen depoların Vega stoku (depolar=1,108,110; boş = kullanılan bütün depolar).
+  r.get('/sayim/:id/xlsx', sar(async (req, res) => {
+    const x = await depo.sayimExcel(req.params.id, {
+      depolar: String(req.query.depolar || '').split(',').filter(Boolean),
+      dahilSayilmayan: req.query.dahil === '1',
+    });
+    if (!x) throw Object.assign(new Error('Sayım bulunamadı'), { status: 404 });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(x.ad)}`);
+    res.send(x.buf);
+  }));
   r.put('/sayim/:id', sar((req) => {
     const b = req.body || {};
-    db.run('UPDATE count_session SET title=COALESCE(?, title), blind=COALESCE(?, blind), kind=COALESCE(?, kind), note=COALESCE(?, note) WHERE id=?',
+    // Rafsız sayımın türü değişmez (satırları raf değil terminal bazında); raflı sayım da rafsıza çevrilmez.
+    db.run("UPDATE count_session SET title=COALESCE(?, title), blind=COALESCE(?, blind), kind=CASE WHEN kind='RAFSIZ' THEN kind ELSE COALESCE(?, kind) END, note=COALESCE(?, note) WHERE id=?",
       b.title ?? null, b.blind === undefined ? null : b.blind ? 1 : 0, b.kind === 'GENEL' || b.kind === 'RAF' ? b.kind : null, b.note ?? null, req.params.id);
     db.run("UPDATE count_session SET scope='' WHERE id=? AND kind='GENEL'", req.params.id);
     depo.degisti();

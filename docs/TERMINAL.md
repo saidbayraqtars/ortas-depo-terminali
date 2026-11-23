@@ -122,6 +122,34 @@ kapandı, Wi-Fi koptu) kilit kendiliğinden düşer. Sunucuya ulaşılamıyorsa 
 - Kilit yalnız arayüz korumasıdır; iki terminal yine de aynı belgeye işlem yollarsa sunucu miktar sınırlarıyla çakışmayı çözer.
 - Sayım kilitlenmez. 1.8.0'dan eski terminaller kilidi bilmez (Cihazlar'da "kilit desteği yok" etiketi).
 
+## Rafsız (envanter) sayım (2.5.0+)
+
+Yönetici › Sayımlar › Yeni sayım › **Rafsız (envanter)**. Terminal raf sormaz: ürün okutulur (her okutma +1), miktar elle de
+düzeltilir. Raf stoku değişmez; yönetici programı ürün başına sayılanı Vega stokuyla karşılaştırır.
+
+- Birden çok terminal aynı depoyu sayabilir; aynı ürünün sayıları toplanır.
+- "Sayımı bitir" → "Sayımı gönder". Sayım terminalde açık kalır: saymaya devam edip **Yeniden gönder** denebilir. Yeni gönderim bu
+  terminalin önceki gönderiminin yerine geçer (öbür terminallerinkine dokunmaz). Listede "son gönderim" saati, sonradan okutulan varsa
+  "henüz gönderilmedi" yazar.
+- Vega farkı ürün sayıldığı anda dondurulur (canlı sayımdaki gibi); sayımdan sonraki satış ve alış farka girmez.
+- Onayda "Vega'ya sayım fişi yaz" isteğe bağlıdır. Hiç okutulmayan stoklu ürünler "Sayılmayan stoklu ürünleri ekle" ile listeye gelir
+  ve seçilirse 0'a çekilir.
+- 2.5.0'dan eski terminal rafsız sayımı raf sayımı sanar; gönderimi sunucu "terminali güncelleyin" diye reddeder.
+
+## Aynı rafı / ürünü ikinci kez sayma uyarısı (2.5.0+)
+
+Bölümler karışınca aynı malın iki kez sayılmaması için terminal sorar (uyarıdır, işlemi engellemez):
+
+- **Raf sayımı, aynı terminal:** bu sayımda sayılmış raf yeniden okutulursa "Z-01 bu sayımda sayıldı (1 kalem, 2 adet)":
+  **Üzerine ekle** (rafta/yanında yerleştirilmemiş ayrı mal), **Baştan say** (rafın bu terminaldeki sayısı silinir), **Vazgeç**.
+- **Rafsız sayım, aynı terminal:** daha önce sayılan ürün, arka arkaya okutma dışında yeniden okutulursa "YF-1042 daha önce sayıldı:
+  2 adet" → **Üzerine ekle** / **Vazgeç**. Arka arkaya okutmada (+1, +1…) sorulmaz.
+- **Başka terminal:** raf açılınca (raf sayımı) ya da ürün bu terminalde ilk kez okutulunca (rafsız) sunucuya bildirilir
+  (`POST /api/count/claim`); aynı rafı/ürünü başka terminal saydıysa ya da şu an sayıyorsa "veli (EMU-02) · 12:01 · gönderdi, 5 adet"
+  uyarısı çıkar. Raf sayımında iki gönderimde son gönderen geçerli olur (**Yine de say** / **Raftan çık**); rafsızda sayılar toplanır
+  (**Ayrı mal, devam** / **Geri al**: ürünün bu terminaldeki sayısı silinir). Sunucuya ulaşılamazsa bu uyarı çıkmaz. "Şu an sayıyor"
+  bilgisi yönetici programının belleğindedir; program yeniden başlarsa yalnız gönderilmiş sayımlar görünür.
+
 ## Okuyucu ayarı
 
 Uygulama iki yolu da dinler; terminale göre biri seçilir.

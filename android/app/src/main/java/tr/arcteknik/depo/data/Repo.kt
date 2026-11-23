@@ -428,6 +428,23 @@ class Repo(val db: Db, val prefs: Prefs) {
         }
     }
 
+    /**
+     * Rafı baştan sayar: bu sayımda bu cihazda okutulanlar, "boş" işareti ve rafın açılış anı silinir (raf yeniden açılınca canlı
+     * sayımın açılış anı ve içerik görüntüsü yeniden alınır). Sunucuya bir şey gitmez; sayım gönderilince rafın son hali geçerlidir.
+     */
+    fun clearShelfCount(sessionId: String, shelf: String) {
+        val s = shelf.uppercase()
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            for (t in listOf("count_line", "count_shelf", "count_shelf_open", "count_shelf_snap")) w.execSQL("DELETE FROM $t WHERE session_id=? AND shelf=?", arrayOf<Any>(sessionId, s))
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+        changed()
+    }
+
     /** Rafta hiçbir şey yok: raf sayılmış olur, sistemde rafta görünen ürünler gönderilince 0'a çekilir. */
     fun markShelfEmpty(sessionId: String, shelf: String) {
         openShelf(sessionId, shelf)
@@ -533,6 +550,7 @@ class Repo(val db: Db, val prefs: Prefs) {
      * olarak gider: onay beklemez, Vega'ya hiçbir şey yazılmaz.
      */
     fun submitCount(session: CountSession, user: String) {
+        if (session.shelfless) return submitShelfless(session, user)
         val arrange = session.arrange
         val diffs = countDiffs(session.id)
         // Canlı sayım (2.2.0+ yönetici): satırın son okutulduğu an ve rafların açılış/bitiş anı. Sunucu sayarken rafa yapılan
@@ -569,6 +587,34 @@ class Repo(val db: Db, val prefs: Prefs) {
             } else {
                 op(OpType.COUNT_SUBMIT, payload, "Sayım · ${session.no}|${diffs.size} kalem, $changedCount farklı")
             })
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+        changed()
+    }
+
+    /**
+     * Rafsız (envanter) sayım: bu cihazda okutulan bütün ürünler gönderilir; sunucuda bu cihazın önceki gönderiminin yerine geçer
+     * (başka terminallerin sayısı korunur, ürün toplamı terminallerin toplamıdır). Raf stoku değişmez. Sayım cihazda açık kalır:
+     * saymaya devam edilip yeniden gönderilebilir.
+     */
+    private fun submitShelfless(session: CountSession, user: String) {
+        val counted = db.countLines(session.id).filter { it.qty > 0 }
+        val times = db.countLineTimes(session.id)
+        val lines = JSONArray()
+        counted.forEach {
+            val o = JSONObject().put("shelf", SHELFLESS).put("productId", it.product.id).put("system", 0).put("counted", it.qty)
+            times[it.shelf + "|" + it.product.id]?.let { at -> o.put("at", at) }
+            lines.put(o)
+        }
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            w.execSQL("UPDATE count_session SET sent_at=? WHERE id=?", arrayOf<Any>(System.currentTimeMillis(), session.id))
+            val payload = JSONObject().put("sessionId", session.id).put("no", session.no).put("title", session.title).put("depot", session.depot)
+                .put("shelfless", true).put("lines", lines).put("user", user)
+            db.insertOp(w, op(OpType.COUNT_SUBMIT, payload, "Rafsız sayım · ${session.no}|${counted.size} ürün, ${fmt(counted.sumOf { it.qty })} adet"))
             w.setTransactionSuccessful()
         } finally {
             w.endTransaction()

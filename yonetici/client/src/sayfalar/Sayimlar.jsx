@@ -106,7 +106,7 @@ function YeniSayim({ kapat, tamam }) {
     }, 250);
     return () => { iptal = true; clearTimeout(t); };
   }, [kapsam, depo, kapsamli]);
-  const varsayilanBaslik = kind === 'GENEL' ? 'Genel sayım' : urunlu ? (kodlar.trim() ? 'Ürün sayımı' : 'Tüm ürünlerin sayımı') : kapsamli ? `${kapsam.split(',').map((x) => x.trim().toLocaleUpperCase('tr-TR')).filter(Boolean).join(', ')} raf sayımı` : 'Raf sayımı';
+  const varsayilanBaslik = kind === 'GENEL' ? 'Genel sayım' : kind === 'RAFSIZ' ? 'Rafsız sayım' : urunlu ? (kodlar.trim() ? 'Ürün sayımı' : 'Tüm ürünlerin sayımı') : kapsamli ? `${kapsam.split(',').map((x) => x.trim().toLocaleUpperCase('tr-TR')).filter(Boolean).join(', ')} raf sayımı` : 'Raf sayımı';
   const ac = async () => {
     try {
       const r = await api('/sayimlar', { method: 'POST', body: { title: title || varsayilanBaslik, kind, blind, note, depo, scope: kind === 'RAF' && !urunlu ? kapsam : '', urunler: urunlu && kodlar.trim() ? kodlar : undefined } });
@@ -127,14 +127,16 @@ function YeniSayim({ kapat, tamam }) {
       )}
       <Alan etiket="Başlık" ipucu="Terminalde görünür: Koridor A, Yıl sonu sayımı…"><input className="inp" value={title} placeholder={varsayilanBaslik} onChange={(e) => setTitle(e.target.value)} autoFocus /></Alan>
       <Alan etiket="Sayım türü">
-        <Secim deger={kind} degis={setKind} secenekler={[['RAF', 'Raf sayımı'], ['GENEL', 'Genel sayım (Vega\'ya yazılır)']]} />
+        <Secim deger={kind} degis={setKind} secenekler={[['RAF', 'Raf sayımı'], ['GENEL', 'Genel sayım (Vega\'ya yazılır)'], ['RAFSIZ', 'Rafsız (envanter)']]} />
       </Alan>
       <div className={`notice ${kind === 'GENEL' ? 'warn' : 'info'}`}>
         <Icon name="info" />
         <p>
           {kind === 'GENEL'
             ? 'Onaylarken sayılan ürünlerin Vega stoku, raflardaki toplam + rafa kaldırılmayı bekleyen miktara çekilir (sayım giriş/çıkış fişi). Depo baştan sona sayılmalı.'
-            : 'Yalnız raf miktarları düzelir; Vega stoku değişmez. İlk yerleşim ve bölüm sayımları için.'}
+            : kind === 'RAFSIZ'
+              ? 'Raf okutulmaz: terminalde yalnız ürün okutulur. Birden çok terminal sayabilir, aynı ürünün sayıları toplanır. Sayılan toplam Vega stokuyla karşılaştırılır; raf miktarları değişmez. Onaylarken isterseniz Vega stoku sayılana çekilir. Terminal 2.5.0 gerekir.'
+              : 'Yalnız raf miktarları düzelir; Vega stoku değişmez. İlk yerleşim ve bölüm sayımları için.'}
         </p>
       </div>
       {kind === 'RAF' && (
@@ -192,7 +194,7 @@ export default function Sayimlar() {
                 <tr key={s.id} className="click" onClick={() => (window.location.hash = `/sayim/${s.id}`)}>
                   <td className="mono">{s.no}{cok && <div className="code">{s.depoAd}</div>}</td>
                   <td><b>{s.title}</b>{s.source === 'TERMINAL' && <div className="muted small">Terminalde başlatıldı · {s.note}</div>}</td>
-                  <td>{s.kind === 'GENEL' ? <Rozet tur="b-acc">Genel</Rozet> : <Rozet tur="b-mute">Raf</Rozet>}{s.blind ? <span className="muted small"> · kör</span> : ''}{s.scope && <div className="mono small">{s.scope.split(',').join(', ')}</div>}</td>
+                  <td>{s.kind === 'GENEL' ? <Rozet tur="b-acc">Genel</Rozet> : s.kind === 'RAFSIZ' ? <Rozet tur="b-info">Rafsız</Rozet> : <Rozet tur="b-mute">Raf</Rozet>}{s.blind ? <span className="muted small"> · kör</span> : ''}{s.scope && <div className="mono small">{s.scope.split(',').join(', ')}</div>}</td>
                   <td><Rozet tur={SAYIM_DURUM[s.status][1]}>{SAYIM_DURUM[s.status][0]}</Rozet></td>
                   <td className="num">{s.raf || ''}</td>
                   <td className="num">{s.kalem || ''}</td>
@@ -239,11 +241,13 @@ function KapsamKarti({ k }) {
 
 // Canlı sayım (2.2.0): ürünün Vega farkı sayım anında dondurulur. Notu: elle bakılacak / Vega bekleniyor / sonradan düşülen hareket.
 const isaret = (x) => (x > 0 ? '+' : x < 0 ? '−' : '') + miktar(Math.abs(x));
-function CanliNot({ u }) {
+function CanliNot({ u, rafsiz = false }) {
   if (u.kontrol) {
     const neden = u.belirsiz === null
       ? (u.donmaDetay?.neden || 'Sayım saatine ait Vega okuması yok')
-      : `Ürünün rafları farklı saatlerde sayıldı; arada Vega'da raf kaydına işlemeyen ${isaret(u.belirsiz)} hareket (satış vb.) var, hangi raftan olduğu bilinmiyor. Ürünü yeniden saydırın ya da farkı bilerek yazın.`;
+      : rafsiz
+        ? `Ürün terminallerde farklı saatlerde sayıldı; arada Vega'da ${isaret(u.belirsiz)} hareket (satış vb.) var, sayılmadan önce mi sonra mı çıktığı bilinmiyor. Ürünü yeniden saydırın ya da farkı bilerek yazın.`
+        : `Ürünün rafları farklı saatlerde sayıldı; arada Vega'da raf kaydına işlemeyen ${isaret(u.belirsiz)} hareket (satış vb.) var, hangi raftan olduğu bilinmiyor. Ürünü yeniden saydırın ya da farkı bilerek yazın.`;
     return <span title={neden}><Rozet tur="b-warn">Elle bak</Rozet>{u.belirsiz !== null && <span className="small muted"> arada {isaret(u.belirsiz)}</span>}</span>;
   }
   if (u.dondurma === 'BEKLIYOR') return <span title="Sayım gönderildikten sonraki ilk Vega okumasında sayım anındaki fark sabitlenir. O zamana kadar fark şu anki Vega stokuna göre gösterilir."><Rozet tur="b-mute">Vega bekleniyor</Rozet></span>;
@@ -260,6 +264,7 @@ const temiz = (u) => !u.kontrol && u.dondurma !== 'BEKLIYOR';
 function OnayPenceresi({ ozet, dahil, kapat, tamam }) {
   const { toast, durum } = useApp();
   const genel = ozet.oturum.kind === 'GENEL';
+  const rafsiz = ozet.oturum.kind === 'RAFSIZ';
   const [vegaYaz, setVegaYaz] = useState(genel);
   const farkli = ozet.urunler.filter((u) => u.vegadaVar && Math.abs(u.fark) > 1e-9);
   const [secili, setSecili] = useState(() => new Set(farkli.filter(temiz).map((u) => u.productId)));
@@ -283,7 +288,7 @@ function OnayPenceresi({ ozet, dahil, kapat, tamam }) {
   };
   return (
     <Modal genis baslik={`${ozet.oturum.no} onayla`} kapat={kapat} alt={<><Btn onClick={kapat}>Vazgeç</Btn><Btn kind="primary" icon="check" busy={mesgul} onClick={onayla} disabled={vegaYaz && !durum?.vega.ok}>{vegaYaz ? 'Onayla ve Vega\'ya yaz' : 'Onayla'}</Btn></>}>
-      <p style={{ margin: 0 }}>Raf miktarları sayım gönderilirken zaten güncellendi. Onay sayımı kapatır{vegaYaz ? ' ve Vega stokunu düzeltir' : ''}.</p>
+      <p style={{ margin: 0 }}>{rafsiz ? 'Rafsız sayım raf miktarlarını değiştirmez.' : 'Raf miktarları sayım gönderilirken zaten güncellendi.'} Onay sayımı kapatır{vegaYaz ? ' ve Vega stokunu düzeltir' : ''}.</p>
       <label className="check">
         <input type="checkbox" checked={vegaYaz} onChange={(e) => setVegaYaz(e.target.checked)} />
         <span><b>Vega'ya sayım fişi yaz</b><br /><span className="muted small">{donmus
@@ -291,7 +296,8 @@ function OnayPenceresi({ ozet, dahil, kapat, tamam }) {
           : 'Fark, fiş kesilirken Vega\'daki o anki stoka göre yeniden hesaplanır.'} Artı fark sayım giriş (93), eksi fark sayım çıkış (94) fişine gider.</span></span>
       </label>
       {vegaYaz && !durum?.vega.ok && <div className="notice err"><Icon name="wifiOff" /><p>Vega'ya şu an ulaşılamıyor.</p></div>}
-      {vegaYaz && !genel && <div className="notice warn"><Icon name="warning" /><p>Bu bir raf sayımı. Ürünün sayılmayan yerlerde (rafsız, başka bölümde) malı varsa Vega stoku eksik düşer. Emin değilseniz yalnız gerçekten tamamı sayılan ürünleri seçin.</p></div>}
+      {vegaYaz && rafsiz && <div className="notice warn"><Icon name="warning" /><p>Seçili ürünlerin Vega stoku terminallerin saydığı toplama çekilir. {dahil ? 'Hiç okutulmayan stoklu ürünler listede; seçilirse 0\'a çekilir.' : 'Hiç okutulmayan ürünler fişe girmez (sayım ekranında "Sayılmayan stoklu ürünleri ekle" işaretlenirse listeye gelir ve 0 sayılır).'}</p></div>}
+      {vegaYaz && !genel && !rafsiz && <div className="notice warn"><Icon name="warning" /><p>Bu bir raf sayımı. Ürünün sayılmayan yerlerde (rafsız, başka bölümde) malı varsa Vega stoku eksik düşer. Emin değilseniz yalnız gerçekten tamamı sayılan ürünleri seçin.</p></div>}
       {vegaYaz && (
         <>
           <div className="row">
@@ -302,10 +308,10 @@ function OnayPenceresi({ ozet, dahil, kapat, tamam }) {
             <Btn size="sm" onClick={() => setSecili(new Set(farkli.map((u) => u.productId)))}>Hepsi</Btn>
             <Btn size="sm" onClick={() => setSecili(new Set())}>Hiçbiri</Btn>
           </div>
-          {disarida > 0 && <div className="notice warn"><Icon name="warning" /><p>{disarida} ürün varsayılan olarak seçilmedi: sayım sırasında Vega'da raf kaydına işlemeyen hareket var ya da sayım anındaki Vega farkı henüz sabitlenmedi. Satırdaki nota bakın; gerekirse ürünü yeniden saydırın.</p></div>}
+          {disarida > 0 && <div className="notice warn"><Icon name="warning" /><p>{disarida} ürün varsayılan olarak seçilmedi: sayım sırasında Vega'da {rafsiz ? 'ne zaman olduğu belirsiz' : 'raf kaydına işlemeyen'} hareket var ya da sayım anındaki Vega farkı henüz sabitlenmedi. Satırdaki nota bakın; gerekirse ürünü yeniden saydırın.</p></div>}
           <div className="tbl-scroll" style={{ maxHeight: 320, border: '1px solid var(--line)', borderRadius: 8 }}>
             <table className="tbl">
-              <thead><tr><th /><th>Ürün</th><th className="num">Olması gereken</th><th className="num">Vega</th><th className="num">Fark</th><th>Not</th></tr></thead>
+              <thead><tr><th /><th>Ürün</th><th className="num">{rafsiz ? 'Sayılan' : 'Olması gereken'}</th><th className="num">Vega</th><th className="num">Fark</th><th>Not</th></tr></thead>
               <tbody>
                 {farkli.map((u) => (
                   <tr key={u.productId}>
@@ -314,7 +320,7 @@ function OnayPenceresi({ ozet, dahil, kapat, tamam }) {
                     <td className="num">{miktar(u.hedef)}</td>
                     <td className="num">{miktar(u.vegaStock)}</td>
                     <td className={`num ${u.fark > 0 ? 'pos' : 'neg'}`}>{miktar(u.fark, true)}</td>
-                    <td><CanliNot u={u} /></td>
+                    <td><CanliNot u={u} rafsiz={rafsiz} /></td>
                   </tr>
                 ))}
                 {farkli.length === 0 && <tr><td colSpan={6} className="empty">Vega ile fark yok.</td></tr>}
@@ -327,12 +333,54 @@ function OnayPenceresi({ ozet, dahil, kapat, tamam }) {
   );
 }
 
+/** Sayım sonucu Excel: stok kodu, sayılan adet ve seçilen depoların Vega stoku. Depo seçimi bu bilgisayarda hatırlanır. */
+function ExcelPenceresi({ ozet, dahil, kapat }) {
+  const { toast } = useApp();
+  const { depolar } = useDepo();
+  const [secili, setSecili] = useState(() => {
+    try {
+      const k = JSON.parse(localStorage.getItem('sayimExcelDepolar') || 'null');
+      if (Array.isArray(k) && k.some((d) => depolar.some((x) => x.ind === d))) return new Set(k.filter((d) => depolar.some((x) => x.ind === d)));
+    } catch {}
+    return new Set(depolar.map((d) => d.ind));
+  });
+  const [mesgul, setMesgul] = useState(false);
+  const indirExcel = async () => {
+    setMesgul(true);
+    try {
+      try { localStorage.setItem('sayimExcelDepolar', JSON.stringify([...secili])); } catch {}
+      await indir(`/sayim/${ozet.oturum.id}/xlsx?depolar=${[...secili].join(',')}${dahil ? '&dahil=1' : ''}`, `${ozet.oturum.no}.xlsx`);
+      kapat();
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      setMesgul(false);
+    }
+  };
+  return (
+    <Modal baslik="Excel'e aktar" kapat={kapat} alt={<><Btn onClick={kapat}>Vazgeç</Btn><Btn kind="primary" icon="export" busy={mesgul} disabled={!secili.size} onClick={indirExcel}>İndir</Btn></>}>
+      <p style={{ margin: 0 }}>Her ürün için stok kodu, sayılan adet ve seçtiğiniz depolardaki Vega stoku; sonda sayımın deposundaki fark.{dahil ? ' Sayılmayan stoklu ürünler de dahil.' : ''}</p>
+      <Alan etiket="Sütun olacak depolar" ipucu={'Listede olmayan depo (ör. ARIZALI) için: Ayarlar › Vega › Kullanılan depolar\'da işaretleyin; mal kabul işi doğmasın isterseniz "Yalnız sayım yapılan depolar"da da işaretleyin.'}>
+        <div className="chip-list" style={{ gap: 10 }}>
+          {depolar.map((d) => (
+            <label key={d.ind} className="check" style={{ minWidth: 160 }}>
+              <input type="checkbox" checked={secili.has(d.ind)} onChange={() => setSecili((s) => { const n = new Set(s); n.has(d.ind) ? n.delete(d.ind) : n.add(d.ind); return n; })} />
+              <span>{d.ad}</span>
+            </label>
+          ))}
+        </div>
+      </Alan>
+    </Modal>
+  );
+}
+
 export function SayimDetay({ id }) {
   const { toast } = useApp();
   const [dahil, setDahil] = useState(false);
   const [gorunum, setGorunum] = useState('urun');
   const { veri: o, hata, yukleniyor, yukle } = useVeri(`/sayim/${id}${dahil ? '?dahil=1' : ''}`, [dahil]);
   const [onay, setOnay] = useState(false);
+  const [excel, setExcel] = useState(false);
   const [sor, onayPenceresi] = useOnay();
   const [sadeceFark, setSadeceFark] = useState(false);
   const [sadeceKontrol, setSadeceKontrol] = useState(false);
@@ -356,19 +404,22 @@ export function SayimDetay({ id }) {
       {o && (() => {
         const s = o.oturum;
         const docs = s.vega_docs?.docs || [];
+        const rafsiz = s.kind === 'RAFSIZ';
         return (
           <>
-            <SayfaBaslik baslik={<><span className="mono">{s.no}</span> · {s.title}</>} alt={<>{s.depoAd} deposu · {s.kind === 'GENEL' ? 'Genel sayım' : 'Raf sayımı'}{s.scope ? ` (${s.scope.split(',').join(', ')})` : ''}{s.blind ? ' · kör' : ''} · açılış {tarihSaat(s.created_at)}{s.note ? ` · ${s.note}` : ''}</>} geri={['/sayimlar', 'Sayımlar']}>
+            <SayfaBaslik baslik={<><span className="mono">{s.no}</span> · {s.title}</>} alt={<>{s.depoAd} deposu · {s.kind === 'GENEL' ? 'Genel sayım' : rafsiz ? 'Rafsız (envanter) sayım' : 'Raf sayımı'}{s.scope ? ` (${s.scope.split(',').join(', ')})` : ''}{s.blind ? ' · kör' : ''} · açılış {tarihSaat(s.created_at)}{s.note ? ` · ${s.note}` : ''}</>} geri={['/sayimlar', 'Sayımlar']}>
               <Rozet tur={SAYIM_DURUM[s.status][1]}>{SAYIM_DURUM[s.status][0]}</Rozet>
               <Btn icon="export" onClick={() => indir(`/sayim/${id}/csv?tur=${gorunum === 'raf' ? 'raf' : 'urun'}${dahil ? '&dahil=1' : ''}`, `${s.no}.csv`).catch((e) => toast(e.message, true))}>CSV</Btn>
+              <Btn icon="export" disabled={!o.urunler.length} onClick={() => setExcel(true)}>Excel</Btn>
               {s.status === 'OPEN' && <Btn icon="lock" onClick={() => durumDegis('kapat', ['Sayım kapatılsın mı?', 'Terminallerde görünmez olur; onay için hazır hale gelir. Gerekirse yeniden açılabilir.', { tamam: 'Kapat' }])}>Sayımı kapat</Btn>}
               {s.status === 'CLOSED' && <Btn icon="refresh" onClick={() => durumDegis('ac')}>Yeniden aç</Btn>}
               {['OPEN', 'CLOSED'].includes(s.status) && <Btn kind="danger" icon="x" onClick={() => durumDegis('iptal', ['Sayım iptal edilsin mi?', 'Raf miktarları sayım gönderilirken güncellendi; iptal bunları geri almaz, yalnız sayımı kapatır ve Vega\'ya yazılmasını engeller.', { tamam: 'İptal et', tehlike: true }])}>İptal</Btn>}
-              {['OPEN', 'CLOSED'].includes(s.status) && <Btn kind="primary" icon="check" disabled={!o.satirlar.length} title={o.satirlar.length ? '' : 'Onaylamak için terminalden en az bir raf sayılıp gönderilmeli'} onClick={() => setOnay(true)}>Onayla</Btn>}
+              {['OPEN', 'CLOSED'].includes(s.status) && <Btn kind="primary" icon="check" disabled={!o.satirlar.length} title={o.satirlar.length ? '' : rafsiz ? 'Onaylamak için en az bir terminalden sayım gönderilmeli' : 'Onaylamak için terminalden en az bir raf sayılıp gönderilmeli'} onClick={() => setOnay(true)}>Onayla</Btn>}
               {s.status === 'APPROVED' && <Btn icon="undo" onClick={() => durumDegis('geri-al', ['Onay geri alınsın mı?', docs.length ? `Vega'daki ${docs.map((d) => d.belgeNo).join(', ')} fişleri silinir ve sayım "onay bekliyor"a döner.` : 'Sayım "onay bekliyor" durumuna döner.', { tamam: 'Geri al', tehlike: docs.length > 0 }])}>Onayı geri al</Btn>}
             </SayfaBaslik>
 
-            {s.status === 'OPEN' && <div className="notice info" style={{ marginBottom: 14 }}><Icon name="info" /><p>Sayım sürüyor. Terminaller raf raf sayıp gönderdikçe aşağıdaki liste dolar. Aynı raf tekrar sayılırsa son gönderim geçerlidir.{!o.satirlar.length && <> <b>Henüz hiçbir raf sayılıp gönderilmediği için Onayla kapalı</b>; terminalden en az bir raf gönderilince açılır.</>}</p></div>}
+            {s.status === 'OPEN' && rafsiz && <div className="notice info" style={{ marginBottom: 14 }}><Icon name="info" /><p>Sayım sürüyor. Terminaller raf okutmadan ürün sayıp gönderir; aynı ürünün terminallerdeki sayıları toplanır. Bir terminal yeniden gönderirse yalnız kendi önceki sayısının yerine geçer. Raf miktarları değişmez.{!o.satirlar.length && <> <b>Henüz gönderim olmadığı için Onayla kapalı.</b></>}</p></div>}
+            {s.status === 'OPEN' && !rafsiz && <div className="notice info" style={{ marginBottom: 14 }}><Icon name="info" /><p>Sayım sürüyor. Terminaller raf raf sayıp gönderdikçe aşağıdaki liste dolar. Aynı raf tekrar sayılırsa son gönderim geçerlidir.{!o.satirlar.length && <> <b>Henüz hiçbir raf sayılıp gönderilmediği için Onayla kapalı</b>; terminalden en az bir raf gönderilince açılır.</>}</p></div>}
             {docs.length > 0 && (
               <div className="notice ok" style={{ marginBottom: 14 }}>
                 <Icon name="check" />
@@ -384,26 +435,53 @@ export function SayimDetay({ id }) {
             )}
             {o.kapsam && <KapsamKarti k={o.kapsam} />}
 
+            {rafsiz ? (
+              <div className="grid g4" style={{ marginBottom: 14 }}>
+                <div className="card stat"><span className="k">Sayan terminal</span><span className="v">{o.toplam.terminal}</span></div>
+                <div className="card stat"><span className="k">Sayılan ürün</span><span className="v">{o.toplam.urun - o.toplam.sayilmadi}</span></div>
+                <div className="card stat"><span className="k">Sayılmayan stoklu</span><span className="v">{dahil ? o.toplam.sayilmadi : '—'}</span>{!dahil && <span className="s">aşağıdan "ekle" ile görünür</span>}</div>
+                <div className={`card stat ${o.toplam.vegaFarkli ? 'warn' : ''}`}><span className="k">Vega ile farklı</span><span className="v">{o.toplam.vegaFarkli}</span>{o.toplam.kontrol > 0 && <span className="s">{o.toplam.kontrol} ürüne elle bakılmalı</span>}</div>
+              </div>
+            ) : (
             <div className="grid g4" style={{ marginBottom: 14 }}>
               <div className="card stat"><span className="k">Sayılan raf</span><span className="v">{o.raflar.length}</span>{o.kapsam && <span className="s">kapsamda {o.kapsam.sayilan} / {o.kapsam.raf}</span>}</div>
               <div className="card stat"><span className="k">Raf kalemi</span><span className="v">{o.toplam.kalem}</span><span className="s">{o.toplam.rafFarkli} kalemde rafta fark</span></div>
               <div className="card stat"><span className="k">Ürün</span><span className="v">{o.toplam.urun}</span></div>
               <div className={`card stat ${o.toplam.vegaFarkli ? 'warn' : ''}`}><span className="k">Vega ile farklı</span><span className="v">{o.toplam.vegaFarkli}</span>{o.toplam.kontrol > 0 && <span className="s">{o.toplam.kontrol} ürüne elle bakılmalı</span>}</div>
             </div>
+            )}
 
             <div className="card">
               <div className="toolbar">
-                <Secim deger={gorunum} degis={setGorunum} secenekler={[['urun', 'Ürün bazında (Vega)'], ['raf', 'Raf bazında']]} />
+                <Secim deger={gorunum} degis={setGorunum} secenekler={[['urun', 'Ürün bazında (Vega)'], ['raf', rafsiz ? 'Terminal bazında' : 'Raf bazında']]} />
                 <label className="check"><input type="checkbox" checked={sadeceFark} onChange={(e) => setSadeceFark(e.target.checked)} /><span>Yalnız farklılar</span></label>
                 {gorunum === 'urun' && o.toplam.kontrol > 0 && <label className="check" title="Sayım sırasında Vega'da raf kaydına işlemeyen hareket (satış vb.) gören ürünler"><input type="checkbox" checked={sadeceKontrol} onChange={(e) => setSadeceKontrol(e.target.checked)} /><span>Yalnız elle bakılacaklar ({o.toplam.kontrol})</span></label>}
                 {gorunum === 'urun' && s.status !== 'APPROVED' && (
-                  <label className="check" title="Genel sayımda: hiç okutulmayan ama Vega'da stoğu olan ürünler de listeye girer (olması gereken = raflardaki + bekleyen)">
-                    <input type="checkbox" checked={dahil} onChange={(e) => setDahil(e.target.checked)} /><span>Sayılmayan stoklu ürünleri ekle</span>
+                  <label className="check" title={rafsiz ? 'Hiç okutulmayan ama Vega\'da stoğu olan ürünler de listeye girer ve 0 sayılır' : 'Genel sayımda: hiç okutulmayan ama Vega\'da stoğu olan ürünler de listeye girer (olması gereken = raflardaki + bekleyen)'}>
+                    <input type="checkbox" checked={dahil} onChange={(e) => setDahil(e.target.checked)} /><span>Sayılmayan stoklu ürünleri ekle{rafsiz ? ' (0 sayılır)' : ''}</span>
                   </label>
                 )}
               </div>
               {gorunum === 'urun' ? (
-                urunler.length === 0 ? <div className="empty">Henüz sayım gelmedi.</div> : (
+                urunler.length === 0 ? <div className="empty">Henüz sayım gelmedi.</div> : rafsiz ? (
+                  <div className="tbl-wrap tbl-scroll" style={{ maxHeight: 'calc(100vh - 330px)' }}>
+                    <table className="tbl">
+                      <thead><tr><th>Ürün</th><th>Sayan terminaller</th><th className="num">Sayılan</th><th className="num">Vega</th><th className="num">Fark</th><th>Not</th></tr></thead>
+                      <tbody>
+                        {urunler.map((u) => (
+                          <tr key={u.productId} className="click" onClick={() => (window.location.hash = `/urun/${u.productId}`)}>
+                            <td><div className="name">{u.name}</div><div className="code">{u.code}</div></td>
+                            <td className="mono small">{u.sayilmadi ? <Rozet tur="b-mute">sayılmadı</Rozet> : u.raflar.join(', ')}</td>
+                            <td className="num">{miktar(u.sayilan)}</td>
+                            <td className="num">{miktar(u.vegaStock)}</td>
+                            <td className={`num ${u.fark > 0 ? 'pos' : u.fark < 0 ? 'neg' : 'muted'}`} title={u.donmus ? `Sayım anındaki fark. Şu anki Vega stokuyla: ${isaret(u.farkSimdi)}` : ''}>{miktar(u.fark, true)}</td>
+                            <td><CanliNot u={u} rafsiz /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
                   <div className="tbl-wrap tbl-scroll" style={{ maxHeight: 'calc(100vh - 330px)' }}>
                     <table className="tbl">
                       <thead><tr><th>Ürün</th><th>Sayılan raflar</th><th className="num">Sayılan</th><th className="num">Diğer raflar</th><th className="num">Rafa kaldırılacak</th><th className="num">Olması gereken</th><th className="num">Vega</th><th className="num">Fark</th><th>Not</th></tr></thead>
@@ -425,7 +503,24 @@ export function SayimDetay({ id }) {
                     </table>
                   </div>
                 )
-              ) : satirlar.length === 0 ? <div className="empty">Henüz sayım gelmedi.</div> : (
+              ) : satirlar.length === 0 ? <div className="empty">Henüz sayım gelmedi.</div> : rafsiz ? (
+                <div className="tbl-wrap tbl-scroll" style={{ maxHeight: 'calc(100vh - 330px)' }}>
+                  <table className="tbl">
+                    <thead><tr><th>Terminal</th><th>Ürün</th><th className="num">Sayılan</th><th>Sayan</th><th>Gönderim</th></tr></thead>
+                    <tbody>
+                      {satirlar.map((l) => (
+                        <tr key={l.shelf + l.product_id}>
+                          <td className="mono">{l.terminal}</td>
+                          <td><div className="name">{l.urunAd}</div><div className="code">{l.urunKod}</div></td>
+                          <td className="num">{miktar(l.counted)}</td>
+                          <td className="muted">{l.user}</td>
+                          <td className="muted">{tarihSaat(l.submitted_at)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
                 <div className="tbl-wrap tbl-scroll" style={{ maxHeight: 'calc(100vh - 330px)' }}>
                   <table className="tbl">
                     <thead><tr><th>Raf</th><th>Ürün</th><th className="num">Önceki</th><th className="num">Sayılan</th><th className="num">Fark</th><th>Sayan</th><th>Zaman</th></tr></thead>
@@ -450,6 +545,7 @@ export function SayimDetay({ id }) {
                 </div>
               )}
             </div>
+            {excel && <ExcelPenceresi ozet={o} dahil={dahil} kapat={() => setExcel(false)} />}
             {onay && <OnayPenceresi ozet={o} dahil={dahil} kapat={() => setOnay(false)} tamam={() => { setOnay(false); yukle(); }} />}
             {onayPenceresi}
           </>

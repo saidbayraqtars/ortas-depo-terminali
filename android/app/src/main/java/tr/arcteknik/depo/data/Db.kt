@@ -19,7 +19,7 @@ import java.io.Reader
  * Çok depo: raf, raf stoku, Vega stoku ve asıl raf depoya bağlıdır. [depot] terminalin çalıştığı depodur
  * (transfer, sayım, sorgu); mal kabul belgesi kendi deposunu taşır ve rafa kaldırma orada olur.
  */
-class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
+class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 12) {
 
     init {
         // Eşitleme ana veriyi yazarken ekranlar (ana iş parçacığı) beklemeden son kaydedilmiş hali okusun.
@@ -32,7 +32,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
 
     override fun onCreate(db: SQLiteDatabase) {
         createMaster(db)
-        db.execSQL("CREATE TABLE count_session(id TEXT PRIMARY KEY, no TEXT NOT NULL, title TEXT NOT NULL, blind INTEGER NOT NULL, status TEXT NOT NULL, depot INTEGER NOT NULL DEFAULT 0, scope TEXT NOT NULL DEFAULT '')")
+        db.execSQL("CREATE TABLE count_session(id TEXT PRIMARY KEY, no TEXT NOT NULL, title TEXT NOT NULL, blind INTEGER NOT NULL, status TEXT NOT NULL, depot INTEGER NOT NULL DEFAULT 0, scope TEXT NOT NULL DEFAULT '', shelfless INTEGER NOT NULL DEFAULT 0, sent_at INTEGER)")
         db.execSQL("CREATE TABLE count_line(session_id TEXT NOT NULL, shelf TEXT NOT NULL, product_id TEXT NOT NULL, qty REAL NOT NULL, first_at INTEGER, last_at INTEGER, PRIMARY KEY(session_id, shelf, product_id))")
         createCountShelf(db)
         createShelfOpen(db)
@@ -165,6 +165,12 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
             addColumn(db, "count_line", "first_at", "INTEGER")
             addColumn(db, "count_line", "last_at", "INTEGER")
             createShelfOpen(db)
+        }
+        // 12: rafsız (envanter) sayım ve son gönderim anı. Baş parça yeniden istensin: sayımın rafsız olduğu bilgisi gelsin.
+        if (oldVersion < 12) {
+            addColumn(db, "count_session", "shelfless", "INTEGER NOT NULL DEFAULT 0")
+            addColumn(db, "count_session", "sent_at", "INTEGER")
+            db.execSQL("DELETE FROM master_part WHERE key='head'")
         }
     }
 
@@ -711,6 +717,8 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
             val c = counts!!.getJSONObject(i)
             serverIds += c.getString("id")
             val status = scalar("SELECT status FROM count_session WHERE id=?", c.getString("id")) ?: "OPEN"
+            // Rafsız sayımda cihazın son gönderim anı yereldir; sunucudan gelen kayıt onu silmesin.
+            val sentAt = scalar("SELECT sent_at FROM count_session WHERE id=?", c.getString("id"))?.toLongOrNull()
             db.insertWithOnConflict("count_session", null, ContentValues().apply {
                 put("id", c.getString("id"))
                 put("no", c.getString("no"))
@@ -720,6 +728,8 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
                 put("depot", c.optInt("depot", dd))
                 val scope = c.optJSONArray("scope")
                 put("scope", (0 until (scope?.length() ?: 0)).joinToString(",") { scope!!.getString(it) })
+                put("shelfless", if (c.optBoolean("shelfless", false)) 1 else 0)
+                if (sentAt != null) put("sent_at", sentAt) else putNull("sent_at")
             }, SQLiteDatabase.CONFLICT_REPLACE)
         }
         // Sunucuda artık açık olmayan oturumlar (yöneticide kapatılan, iptal edilen, gönderilmiş) cihazdan kalkar.
@@ -1042,18 +1052,20 @@ class Db(context: Context) : SQLiteOpenHelper(context, "depo.db", null, 11) {
 
     /** Çalışılan depodaki açık sayımlar (Raf Düzenle oturumları sayım değildir, listede görünmez). */
     fun countSessions(): List<CountSession> =
-        query("SELECT id, no, title, blind, status, depot, scope FROM count_session WHERE status='OPEN' AND depot=? AND id NOT LIKE '$ARRANGE_PREFIX%' ORDER BY no DESC", depot.toString()) { it.countSession() }
+        query("SELECT id, no, title, blind, status, depot, scope, shelfless, sent_at FROM count_session WHERE status='OPEN' AND depot=? AND id NOT LIKE '$ARRANGE_PREFIX%' ORDER BY no DESC", depot.toString()) { it.countSession() }
 
     /** Çalışılan depoda yarım kalmış (henüz gönderilmemiş) Raf Düzenle oturumu; yoksa null. */
     fun openArrange(): CountSession? =
-        query("SELECT id, no, title, blind, status, depot, scope FROM count_session WHERE status='OPEN' AND depot=? AND id LIKE '$ARRANGE_PREFIX%' ORDER BY rowid DESC LIMIT 1", depot.toString()) { it.countSession() }.firstOrNull()
+        query("SELECT id, no, title, blind, status, depot, scope, shelfless, sent_at FROM count_session WHERE status='OPEN' AND depot=? AND id LIKE '$ARRANGE_PREFIX%' ORDER BY rowid DESC LIMIT 1", depot.toString()) { it.countSession() }.firstOrNull()
 
     fun countSession(id: String): CountSession? =
-        query("SELECT id, no, title, blind, status, depot, scope FROM count_session WHERE id=?", id) { it.countSession() }.firstOrNull()
+        query("SELECT id, no, title, blind, status, depot, scope, shelfless, sent_at FROM count_session WHERE id=?", id) { it.countSession() }.firstOrNull()
 
     private fun Cursor.countSession() = CountSession(
         getString(0), getString(1), getString(2), getInt(3) == 1, getString(4), getInt(5),
         getString(6).split(',').filter { it.isNotBlank() },
+        getInt(7) == 1,
+        if (isNull(8)) null else getLong(8),
     )
 
     /** Depoda sayımın kapsamına uyan tanımlı raflar. */
