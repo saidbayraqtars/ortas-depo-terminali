@@ -382,7 +382,13 @@ function belgesizDepolar() {
  */
 function sayimDepolari() {
   const l = config.load().vega?.sayimDepolar;
-  return new Set(Array.isArray(l) ? l.map(Number).filter((n) => Number.isInteger(n) && n > 0) : []);
+  const s = new Set(Array.isArray(l) ? l.map(Number).filter((n) => Number.isInteger(n) && n > 0) : []);
+  // Bekleme depolarının hedefi (Ortaş: MERKEZ) yalnız sayım olamaz: 106/109'a giren alış hedefte rafa kaldırılacak iştir.
+  // İşaretlenirse (varsayılan depo "İlk depo" iken engel yoktu) Merkez'in bütün belgeleri ve rafa bekleyeni kayboluyor,
+  // terminalde yeni gelen mal "Belgesiz" görünüyordu (2026-11-25). Kayıtlı ayar yok sayılır.
+  const bek = bekleme.ayar();
+  if (bek) s.delete(bek.hedef);
+  return s;
 }
 
 /** Özel raf yalnız rafa kaldırmada kullanılır; raftan alma, transfer, sayım, raf düzenleme gibi stok gerektiren işlemde reddedilir. */
@@ -1616,10 +1622,17 @@ function belgeler({ shelved, kapali } = kabulDurumu()) {
   });
 }
 
-/** Belgesiz (BEK- satırından ya da belge numarasız) rafa kaldırmalar, milattan beri: [{ depo, pid, q }]. */
+/**
+ * Rafa bekleyenden ürün bazlı düşen miktar, milattan beri: [{ depo, pid, q }] (depo malın durduğu depo, depo+ürün başına tek satır).
+ *   - belgesiz (BEK- satırından ya da belge numarasız) rafa kaldırmalar,
+ *   - depodan RAFSIZ gönderilen mal (terminal Depoya Gönder, raf stoku yokken): mal rafa konmadan gitti, bu depoda rafa
+ *     kaldırılacak iş değil (alan depoda rafsız kabul edilirse orada rafa bekleyen olur). Bu düşülmeden Merkez'e alışla gelip
+ *     rafa konmadan Toybelen'e giden malın alış satırı hiç kapanmıyordu: Ortaş'ta "Rafa kalkmış" alış belgesi hiç çıkmıyordu
+ *     (2026-11-25). Geri alınan gönderim sayılmaz.
+ */
 function belgesizRafa() {
   const bas = new Date(`${config.kabulBaslangic(config.load())}T00:00:00`).getTime();
-  return db.all(
+  const rafa = db.all(
     `SELECT m.depo AS depo, m.product_id AS pid, SUM(m.delta) AS q
        FROM movement m LEFT JOIN op o ON o.id = m.op_id
       WHERE m.kind = 'PUTAWAY' AND m.geri_at IS NULL AND m.ts >= ?
@@ -1628,6 +1641,22 @@ function belgesizRafa() {
       GROUP BY m.depo, m.product_id`,
     bas,
   );
+  const rafsizGiden = db.all(
+    `SELECT t.from_depo AS depo, l.product_id AS pid, SUM(l.qty) AS q
+       FROM transfer t JOIN transfer_line l ON l.transfer_id = t.id
+      WHERE t.kind = 'SEND' AND t.durum <> 'GERI' AND l.shelf = '' AND t.created_at >= ?
+      GROUP BY t.from_depo, l.product_id`,
+    bas,
+  );
+  const out = new Map();
+  for (const r of [...rafa, ...rafsizGiden]) {
+    const depo = depoCoz(r.depo);
+    const k = `${depo}|${r.pid}`;
+    const x = out.get(k) || { depo, pid: String(r.pid), q: 0 };
+    x.q += Number(r.q) || 0;
+    out.set(k, x);
+  }
+  return [...out.values()];
 }
 
 /**
@@ -1637,7 +1666,7 @@ function belgesizRafa() {
  */
 function belgelerDagitimli() {
   const liste = belgeler().map((r) => ({ ...r, lines: r.lines.map((l) => ({ ...l })) }));
-  const kalanRafa = new Map(belgesizRafa().map((b) => [`${depoCoz(b.depo)}|${b.pid}`, Number(b.q)]));
+  const kalanRafa = new Map(belgesizRafa().map((b) => [`${b.depo}|${b.pid}`, Number(b.q)]));
   // En eskiden yeniye: liste ts'ye göre yeniden eskiye sıralı geldiği için tersten gidilir.
   for (let i = liste.length - 1; i >= 0; i--) {
     const r = liste[i];
@@ -1687,9 +1716,9 @@ function bekleyenUrunler() {
       x.belgeler.add(r.id);
     }
   }
-  // Belgesiz rafa kaldırmalar (ve eski terminalin belge numarası olmayan kayıtları): ürün başına gelenden düşer.
+  // Belgesiz rafa kaldırmalar (ve eski terminalin belge numarası olmayan kayıtları) ile rafsız gönderilen mal: ürün başına gelenden düşer.
   for (const b of belgesizRafa()) {
-    const x = out.get(anahtar(depoCoz(b.depo), String(b.pid)));
+    const x = out.get(anahtar(b.depo, b.pid));
     if (x) x.rafa += Number(b.q);
   }
   for (const x of out.values()) {
@@ -1727,6 +1756,75 @@ function bekleyenListe({ depoNo = null, metin = '', limit = 1000 } = {}) {
   return {
     urunler: liste,
     ozet: { urun: tum.length, adet: yuvarla(tum.reduce((t, x) => t + x.bekleyen, 0)), depolar: [...depolar.values()].sort((a, b) => a.depo - b.depo) },
+  };
+}
+
+/**
+ * Yönetici ekranı: rafa kaldırılan ürünler (ürün bazlı, belgeye bakılmaz). `bas` (ms) ile bitişsiz aralık; verilmezse milat.
+ * Rafa kaldırma (geri alınanlar hariç, SIPARIS SATIS dahil) ve aynı aralıkta depodan rafsız gönderilen mal depo + ürün başına.
+ * Dönen: { urunler: [{ depo, depoAd, productId, urunKod, urunAd, birim, rafa, rafsizGiden, kayit, son, raflar, kisiler }], ozet }.
+ */
+function kaldirilanListe({ depoNo = null, metin = '', bas = null, limit = 2000 } = {}) {
+  const milat = new Date(`${config.kabulBaslangic(config.load())}T00:00:00`).getTime();
+  const b = Number.isFinite(Number(bas)) && Number(bas) > 0 ? Number(bas) : milat;
+  const out = new Map();
+  const al = (depo, pid) => {
+    const d = depoCoz(depo);
+    const k = `${d}|${pid}`;
+    let x = out.get(k);
+    if (!x) out.set(k, (x = { depo: d, productId: String(pid), rafa: 0, rafsizGiden: 0, kayit: 0, son: 0, raflar: new Set(), kisiler: new Set() }));
+    return x;
+  };
+  for (const m of db.all(
+    `SELECT depo, product_id, shelf, delta, user, ts FROM movement
+      WHERE kind = 'PUTAWAY' AND geri_at IS NULL AND ts >= ? AND delta > 0`,
+    b,
+  )) {
+    const x = al(m.depo, m.product_id);
+    x.rafa += Number(m.delta);
+    x.kayit++;
+    x.son = Math.max(x.son, m.ts);
+    if (m.shelf) x.raflar.add(m.shelf);
+    if (m.user) x.kisiler.add(m.user);
+  }
+  for (const t of db.all(
+    `SELECT t.from_depo AS depo, l.product_id, l.qty, t.user, t.created_at AS ts
+       FROM transfer t JOIN transfer_line l ON l.transfer_id = t.id
+      WHERE t.kind = 'SEND' AND t.durum <> 'GERI' AND l.shelf = '' AND t.created_at >= ?`,
+    b,
+  )) {
+    const x = al(t.depo, t.product_id);
+    x.rafsizGiden += Number(t.qty);
+    x.son = Math.max(x.son, t.ts);
+    if (t.user) x.kisiler.add(t.user);
+  }
+  const q = String(metin || '').trim().toLocaleLowerCase('tr');
+  const tum = [...out.values()].filter((x) => depoNo === null || x.depo === depoNo);
+  const liste = tum
+    .map((x) => ({ x, p: urun(x.productId) }))
+    .filter(({ x, p }) => !q || [p?.code, p?.name, x.productId, ...(goruntu?.barcodes[x.productId] || [])].some((s) => String(s || '').toLocaleLowerCase('tr').includes(q)))
+    .sort((p1, p2) => p2.x.son - p1.x.son);
+  const depolar = new Map();
+  for (const x of tum) {
+    const d = depolar.get(x.depo) || { depo: x.depo, depoAd: depoAdi(x.depo), urun: 0, rafa: 0, rafsizGiden: 0 };
+    d.urun++;
+    d.rafa = yuvarla(d.rafa + x.rafa);
+    d.rafsizGiden = yuvarla(d.rafsizGiden + x.rafsizGiden);
+    depolar.set(x.depo, d);
+  }
+  return {
+    bas: b,
+    milat,
+    urunler: liste.slice(0, limit).map(({ x, p }) => ({
+      depo: x.depo, depoAd: depoAdi(x.depo), productId: x.productId, urunKod: p ? p.code : x.productId, urunAd: p ? p.name : '', birim: p?.unit || '',
+      rafa: yuvarla(x.rafa), rafsizGiden: yuvarla(x.rafsizGiden), kayit: x.kayit, son: x.son, raflar: [...x.raflar].sort(), kisiler: [...x.kisiler].sort(),
+    })),
+    ozet: {
+      urun: liste.length,
+      rafa: yuvarla(liste.reduce((t, { x }) => t + x.rafa, 0)),
+      rafsizGiden: yuvarla(liste.reduce((t, { x }) => t + x.rafsizGiden, 0)),
+      depolar: [...depolar.values()].sort((p1, p2) => p1.depo - p2.depo),
+    },
   };
 }
 
@@ -2370,6 +2468,7 @@ async function stokTani(ara) {
   // Sanal bekleme depoları da kullanılan depodur; yalnız terminalde ayrı depo olarak görünmez.
   const kullanilan = new Set([...depolar().map((d) => d.ind), ...(goruntu?.depolar || []).map((d) => Number(d.ind))]);
   const bek0 = bekleme.ayar();
+  const yalnizSayim = sayimDepolari();
   const secili = new Set((cfg.kabul.izahat || []).map(String));
   const bas = cfg.kabul.baslangic || '';
   const blg = new Map(belgelerDagitimli().map((r) => [r.id, r]));
@@ -2385,6 +2484,8 @@ async function stokTani(ara) {
       const sonuc = (durum, neden) => ({ ...g, depoAd: ad(g.depo), anahtar, durum, neden });
       if (kartNeden) return sonuc('yok', kartNeden);
       if (!kullanilan.has(g.depo)) return sonuc('yok', 'Depo kullanılan depolar arasında değil (Ayarlar › Vega)');
+      const fiz = bekleme.fiziksel(g.depo, bek0);
+      if (yalnizSayim.has(fiz)) return sonuc('yok', `${ad(fiz)} yalnız sayım deposu: mal kabul işi üretmez (Ayarlar › Vega › Yalnız sayım yapılan depolar)`);
       if (g.tip === 93) return sonuc('bilgi', 'Sayım fişi: sayılan mal zaten rafta sayılmıştır');
       if (!secili.has(anahtar)) return sonuc('yok', `Belge türü seçili değil (Ayarlar › Mal kabul: ${anahtar})`);
       if (bas && g.gun && g.gun < bas) return sonuc('yok', `Mal kabul başlangıç tarihinden (${bas}) eski`);
@@ -2394,7 +2495,9 @@ async function stokTani(ara) {
       if (!r) {
         const ham = bek0 && goruntu?.receipts.find((x) => x.id === `${anahtar}-${g.belgeInd}-${g.depo}`);
         if (ham && bekleme.grupIci(ham, bek0)) return sonuc('bilgi', 'Bekleme deposundan geçiş: mal yer değiştirmedi, fatura belgesinden rafa kalkar');
-        return sonuc('yok', "Programdaki Vega görüntüsünde yok (Vega'yı yenileyin; yenilendiyse bildirin)");
+        if (ham) return sonuc('bilgi', 'Bekleme deposundan başka depoya giden malla mahsup edildi: rafa kaldırılacak miktar kalmadı');
+        const okuma = goruntu?.at ? ` (son Vega okuması ${new Date(goruntu.at).toLocaleString('tr-TR')})` : '';
+        return sonuc('yok', `Programdaki Vega görüntüsünde yok${okuma}: Vega'yı yenileyin; yenilendiyse bildirin`);
       }
       if (r.elleKapali) return sonuc('tamam', 'Belge yönetici programında elle kapatıldı');
       const l = r.lines.find((x) => x.productId === k.id);
@@ -3025,6 +3128,7 @@ module.exports = {
   belgelerDagitimli,
   bekleyenUrunler,
   bekleyenListe,
+  kaldirilanListe,
   bekleyenKabul,
   master,
   urunListesi,

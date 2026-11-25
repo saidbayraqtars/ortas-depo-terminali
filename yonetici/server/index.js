@@ -479,6 +479,9 @@ function yoneticiApi() {
         if (Array.isArray(b.vega.sayimDepolar)) yeni.vega.sayimDepolar = [...new Set(b.vega.sayimDepolar.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
         // Yalnız sayım deposu varsayılan depo olamaz (terminal ilk açılışta mal kabul yapılacak depoda başlar).
         if (yeni.vega.sayimDepolar?.includes(Number(yeni.vega.depo))) throw Object.assign(new Error('Varsayılan depo "yalnız sayım" olamaz'), { status: 400 });
+        // Bekleme depolarının hedefi de olamaz (depo.sayimDepolari zaten yok sayar); eski kayıttan kalan işaret kaydederken silinir.
+        const bek = bekleme.ayar(yeni);
+        if (bek && Array.isArray(yeni.vega.sayimDepolar)) yeni.vega.sayimDepolar = yeni.vega.sayimDepolar.filter((d) => d !== bek.hedef);
         if (typeof b.vega.password === 'string' && b.vega.password) yeni.vega.password = b.vega.password;
       }
       if (b.kabul) {
@@ -816,6 +819,8 @@ function yoneticiApi() {
   }));
   // Rafa bekleyen ürünler (ürün bazlı, belge aranmaz): depo ve metin süzgeci.
   r.get('/bekleyen', sar((req) => depo.bekleyenListe({ depoNo: depo.depoSuzgec(req.query.depo), metin: req.query.q || '', limit: Math.min(5000, Number(req.query.limit) || 1000) })));
+  // Rafa kaldırılan ürünler (ürün bazlı): `bas` ms, yoksa milat.
+  r.get('/kaldirilan', sar((req) => depo.kaldirilanListe({ depoNo: depo.depoSuzgec(req.query.depo), metin: req.query.q || '', bas: req.query.bas, limit: Math.min(5000, Number(req.query.limit) || 2000) })));
   r.get('/kabul/:id', sar((req) => {
     const b = depo.belgelerDagitimli().find((x) => x.id === req.params.id);
     if (!b) throw Object.assign(new Error('Belge bulunamadı'), { status: 404 });

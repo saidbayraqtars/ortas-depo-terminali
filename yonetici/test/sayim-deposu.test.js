@@ -107,3 +107,47 @@ test('paketle gelen B2B raf listesi Zincir\'e kopyalanmaz', () => {
   assert.deepStrictEqual(depo.zimmetler(110, '101'), []);
   assert.deepStrictEqual(depo.zimmetler(1, '101').map((z) => z.shelf), ['A-01-01']);
 });
+
+// 2026-11-25 Ortaş: 106'ya (bekleme deposu) giren alışlar Merkez'de bekleyen olmadı, terminalde "Belgesiz" çıktı; tanı "Programdaki
+// Vega görüntüsünde yok" dedi. Bekleme depolarının hedefi yalnız sayım işaretlenirse 106 belgesi hedefe taşınıp orada süzülüyordu.
+test('bekleme hedefi (Merkez) yalnız sayım işaretli olsa da bekleme deposunun alışı Merkez\'de rafa bekler', async () => {
+  config.update({ vega: { depo: null, sayimDepolar: [1, 110] }, bekleme: { aktif: true, hedef: 1, depolar: [106] } });
+  const g = {
+    surum: 2,
+    at: Date.now(),
+    depolar: [{ ind: 1, ad: 'MERKEZ' }, { ind: 106, ad: 'TRANSFER SPCT 106' }, { ind: 108, ad: 'TOYBELEN SANAYİ' }, { ind: 110, ad: 'ZİNCİRDEPO' }],
+    products: [{ id: '101', code: 'KALE-1', name: 'Fren balata', unit: 'Adet' }],
+    stock: { 106: { 101: 5 } },
+    moved: [],
+    barcodes: {},
+    receipts: [belge('FAT-106', 106, [['101', 5]]), belge('FAT-Z', 110, [['101', 2]])],
+  };
+  const eski = vega.stokTani;
+  try {
+    depo._goruntuKur(g, true);
+    assert.deepStrictEqual(depo.sayimDepolari(), new Set([110]));
+    assert.strictEqual(depo.bekleyenKabul(1).get('101'), 5);
+    assert.ok(depo.belgeler().some((r) => r.id === 'FAT-106'));
+    assert.ok(!depo.belgeler().some((r) => r.id === 'FAT-Z'));
+
+    // Tanı: yalnız sayım deposunun girişi nedeniyle gösterilir, görüntüde olmayan giriş son okuma saatiyle.
+    const giris = (x) => ({ tur: 'Alış faturası', tarih: '', gun: '2026-11-23', iade: false, iptal: false, tip: 20, ...x });
+    config.update({ kabul: { izahat: ['20'], baslangic: '2026-10-31' } });
+    vega.stokTani = async () => ({
+      depolar: g.depolar,
+      kartlar: [{
+        id: '101', kod: 'KALE-1', ad: 'Fren balata', suzgec: [], pasifAd: false, stok: { 106: 5, 110: 2 },
+        girisler: [giris({ depo: 110, belgeInd: 7, belgeNo: 'Z7', miktar: 2 }), giris({ depo: 106, belgeInd: 8, belgeNo: 'Y8', miktar: 5 })],
+        cikislar: [],
+      }],
+    });
+    const k = (await depo.stokTani('KALE-1')).kartlar[0];
+    assert.match(k.girisler[0].neden, /ZİNCİRDEPO yalnız sayım deposu/);
+    assert.match(k.girisler[1].neden, /görüntüsünde yok \(son Vega okuması/);
+    assert.strictEqual(k.depolar.find((d) => d.depo === 1).bekleyen, 5);
+  } finally {
+    vega.stokTani = eski;
+    config.update({ vega: { depo: 1, sayimDepolar: [110] }, bekleme: { aktif: false } });
+    kur();
+  }
+});

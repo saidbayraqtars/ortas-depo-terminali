@@ -72,7 +72,75 @@ function BekleyenUrunler() {
           </div>
         </Durum>
         <div className="muted small" style={{ padding: '10px 4px 0' }}>
-          Bekleyen = milattan beri Vega'da kabul edilen − aynı ürün için rafa kaldırılan (belgeli ya da belgesiz fark etmez). Mal önce rafa konup fatura sonra girilse de toplam doğru çıkar.
+          Bekleyen = milattan beri Vega'da kabul edilen − aynı ürün için rafa kaldırılan (belgeli ya da belgesiz fark etmez) − rafa konmadan başka depoya gönderilen. Mal önce rafa konup fatura sonra girilse de toplam doğru çıkar.
+        </div>
+      </div>
+    </>
+  );
+}
+
+const gunBasi = (gunOnce) => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - gunOnce);
+  return d.getTime();
+};
+const ARALIK = [['bugun', 'Bugün', 0], ['7', 'Son 7 gün', 6], ['30', 'Son 30 gün', 29], ['milat', 'Milattan beri', null]];
+
+/** Rafa kaldırılan ürünler: belgeye bakılmaz; ürün başına rafa kaldırılan + rafsız gönderilen (sunucu `kaldirilanListe`). */
+function KaldirilanUrunler() {
+  const { cok, depo, ad } = useDepo();
+  const [q, setQ] = useState('');
+  const [aralik, setAralik] = useState('7');
+  const gun = ARALIK.find((x) => x[0] === aralik)[2];
+  const bas = gun === null ? '' : String(gunBasi(gun));
+  const { veri, hata, yukleniyor } = useVeri(`/kaldirilan?limit=5000${bas ? `&bas=${bas}` : ''}`, [bas], { enAz: 10000 });
+  const liste = useMemo(() => {
+    const a = q.trim().toLocaleLowerCase('tr');
+    return (veri?.urunler || []).filter((u) => (!depo || u.depo === Number(depo))
+      && (!a || u.urunKod.toLocaleLowerCase('tr').includes(a) || u.urunAd.toLocaleLowerCase('tr').includes(a)));
+  }, [veri, q, depo]);
+  const toplam = useMemo(() => liste.reduce((t, u) => ({ rafa: t.rafa + u.rafa, giden: t.giden + u.rafsizGiden }), { rafa: 0, giden: 0 }), [liste]);
+  return (
+    <>
+      <div className="grid g4" style={{ marginBottom: 14 }}>
+        <div className="card stat"><span className="k">Rafa kaldırılan ürün</span><span className="v">{veri ? miktar(liste.length) : '—'}</span><span className="s">çeşit{depo ? ` · ${ad(depo)}` : ''}</span></div>
+        <div className="card stat"><span className="k">Rafa kaldırılan adet</span><span className="v">{veri ? miktar(toplam.rafa) : '—'}</span><span className="s">{ARALIK.find((x) => x[0] === aralik)[1].toLocaleLowerCase('tr')}</span></div>
+        <div className="card stat"><span className="k">Rafsız gönderilen</span><span className="v">{veri ? miktar(toplam.giden) : '—'}</span><span className="s">rafa konmadan başka depoya</span></div>
+      </div>
+      <div className="card">
+        <div className="toolbar">
+          <select className="inp" style={{ width: 160 }} value={aralik} onChange={(e) => setAralik(e.target.value)} title="Tarih aralığı">
+            {ARALIK.map(([k, etiket]) => <option key={k} value={k}>{etiket}</option>)}
+          </select>
+          <Ara deger={q} degis={setQ} yer="Stok kodu ya da ürün adı" />
+          <div className="grow" />
+          <span className="muted">{liste.length} ürün</span>
+        </div>
+        <Durum yukleniyor={yukleniyor && !veri} hata={hata} bos={liste.length === 0 && 'Bu aralıkta rafa kaldırılan ürün yok.'}>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr><th>Ürün</th>{cok && !depo && <th>Depo</th>}<th className="num">Rafa kaldırılan</th><th className="num">Rafsız gönderilen</th><th>Raf</th><th>Kim</th><th>Son</th></tr>
+              </thead>
+              <tbody>
+                {liste.map((u) => (
+                  <tr key={`${u.depo}|${u.productId}`} className="click" onClick={() => (window.location.hash = `/urun/${u.productId}`)}>
+                    <td><div className="name">{u.urunAd}</div><div className="code">{u.urunKod}</div></td>
+                    {cok && !depo && <td>{u.depoAd}</td>}
+                    <td className="num"><b>{miktar(u.rafa)}</b> <span className="muted small">{u.birim}</span>{u.kayit > 1 && <div className="muted small">{u.kayit} kez</div>}</td>
+                    <td className="num">{u.rafsizGiden ? miktar(u.rafsizGiden) : <span className="muted">—</span>}</td>
+                    <td className="mono small" style={{ whiteSpace: 'nowrap' }}>{u.raflar.slice(0, 3).join(', ')}{u.raflar.length > 3 ? ` +${u.raflar.length - 3}` : ''}</td>
+                    <td className="muted small">{u.kisiler.join(', ')}</td>
+                    <td className="muted">{tarihSaat(u.son)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Durum>
+        <div className="muted small" style={{ padding: '10px 4px 0' }}>
+          Belgeye bakılmaz: terminalden rafa kaldırılan her ürün burada görünür (geri alınanlar hariç). Rafsız gönderilen mal rafa konmadan başka depoya gittiği için bu depoda rafa bekleyenden düşer.
         </div>
       </div>
     </>
@@ -100,9 +168,9 @@ export default function Kabul() {
   return (
     <>
       <SayfaBaslik baslik="Mal kabul" alt={`Rafa kaldırılmayı bekleyen mal ürün bazlı izlenir${milat ? ` · ${milat} ve sonrası (Ayarlar › Mal kabul'den değişir)` : ''}`}>
-        <Secim deger={sekme} degis={setSekme} secenekler={[['urun', 'Bekleyen ürünler'], ['belge', 'Belgeler']]} />
+        <Secim deger={sekme} degis={setSekme} secenekler={[['urun', 'Bekleyen ürünler'], ['kalkan', 'Rafa kaldırılan ürünler'], ['belge', 'Belgeler']]} />
       </SayfaBaslik>
-      {sekme === 'urun' ? <BekleyenUrunler /> : (
+      {sekme === 'urun' ? <BekleyenUrunler /> : sekme === 'kalkan' ? <KaldirilanUrunler /> : (
         <div className="card">
           <div className="toolbar">
             <Secim deger={durum} degis={setDurum} secenekler={[['tumu', 'Tümü'], ['acik', 'Rafa kalkmamış'], ['kapali', 'Rafa kalkmış']]} />

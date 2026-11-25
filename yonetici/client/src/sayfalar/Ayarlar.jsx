@@ -199,11 +199,13 @@ function VegaAyari({ a, kaydet }) {
         <Alan etiket="Yalnız sayım yapılan depolar" ipucu="Sayımda ve terminalde seçilir, Vega stoku okunur; ama mal kabul belgesi ve rafa bekleyen çıkmaz, rafları stok kartının raf adresine (KOD10) yazılmaz, B2B raf listesi kopyalanmaz. Ortaş: ZİNCİRDEPO.">
           <div className="chip-list" style={{ maxHeight: 140, overflow: 'auto', gap: 10 }}>
             {kullanilan.map((x) => {
-              const secili = (v.sayimDepolar || []).map(Number).includes(x.ind);
               const varsayilan = Number(v.depo) === x.ind;
+              // Bekleme depolarının hedefi (Merkez) yalnız sayım olamaz; eski kayıtta işaretliyse sunucu yok sayar, burada da boş görünür.
+              const hedef = Boolean(a.bekleme?.aktif) && Number(a.bekleme?.hedef) === x.ind;
+              const secili = !hedef && (v.sayimDepolar || []).map(Number).includes(x.ind);
               return (
-                <label key={x.ind} className="check" style={{ minWidth: 180 }} title={varsayilan ? 'Varsayılan depo yalnız sayım olamaz' : ''}>
-                  <input type="checkbox" checked={secili} disabled={varsayilan && !secili} onChange={() => setV((y) => ({
+                <label key={x.ind} className="check" style={{ minWidth: 180 }} title={hedef ? 'Bekleme depolarının hedefi yalnız sayım olamaz' : varsayilan ? 'Varsayılan depo yalnız sayım olamaz' : ''}>
+                  <input type="checkbox" checked={secili} disabled={hedef || (varsayilan && !secili)} onChange={() => setV((y) => ({
                     ...y,
                     sayimDepolar: secili ? (y.sayimDepolar || []).filter((d) => Number(d) !== x.ind) : [...(y.sayimDepolar || []), x.ind],
                   }))} />
